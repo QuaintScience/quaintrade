@@ -1,0 +1,7 @@
+kiteconnect==5.0.0
+matplotlib==3.8.1
+mplfinance==0.12.10b0
+pandas==2.1.2
+pytz==2023.3.post1
+redis==5.0.1
+TA_Lib==0.4.28

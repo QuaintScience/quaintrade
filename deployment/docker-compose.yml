@@ -1,0 +1,16 @@
+services:
+  redis:
+    hostname: redis
+    image: "redis/redis-stack:latest"
+    ports:
+      - 6379:6379
+  quaintrade_kite_listener:
+    build:
+      dockerfile: services/kite-listener/Dockerfile
+      context: .
+
+    volumes:
+      - "/code/github/finance/quaintrade/quaintrade:/app/quaintrade"
+      - "/code/github/finance/quaintrade/data_cache/kite:/data_cache/kite"
+    env_file: 
+      - .kite.env
