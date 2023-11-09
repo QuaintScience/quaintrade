@@ -1,7 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import Optional, Union
+import copy
 
 import pandas as pd
+import talib
 
 from .logging import LoggerMixin
 from .ds import Order, TradeType, OrderState
@@ -13,158 +15,230 @@ class Indicator(ABC, LoggerMixin):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    @abstractmethod
+    def preprocess(self, df: pd.DataFrame,
+                output_column_name: Optional[Union[str, list[str]]] = None,
+                settings: Optional[dict] = None) -> (pd.DataFrame, Optional[Union[str, list[str]]], Optional[dict]):
+        if settings is None:
+            settings = {}
+        return df, output_column_name, settings
+
+    def postprocess(self, df: pd.DataFrame,
+                output_column_name: Optional[Union[str, list[str]]] = None,
+                settings: Optional[dict] = None) -> (pd.DataFrame, Optional[Union[str, list[str]]], Optional[dict]):
+        for column in output_column_name:
+            df[column] = df[column].astype(float)
+        return df, output_column_name, settings
+
     def compute(self, df: pd.DataFrame,
+                output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                settings: Optional[dict] = None) -> pd.DataFrame:
+        df, output_column_name, settings = self.preprocess(df=df,
+                                                           output_column_name=output_column_name,
+                                                           settings=settings)
+        df, output_column_name, settings = self.compute_impl(df=df,
+                                                             output_column_name=output_column_name,
+                                                             settings=settings)
+        df, output_column_name, settings = self.postprocess(df=df,
+                                                            output_column_name=output_column_name,
+                                                            settings=settings)
+        return df, output_column_name
+
+    @abstractmethod
+    def compute_impl(self, df: pd.DataFrame,
                 output_column_name: Optional[Union[str, dict[str, str]]] = None,
                 settings: Optional[dict] = None) -> pd.DataFrame:
         pass
 
 
-class StrategyExecutor(ABC, LoggerMixin):
-
-    NON_TRADING_FIRST_HOUR = [{"from": {"hour": 9, "minute": 0}, "to": {"hour" 9, "minute": 59}}]
-    NON_TRADING_AFTERNOON = [{"from": {"hour": 2, "minute": 30}, "to": {"hour" 3, "minute": 15}}]
-
+class IndicatorPipeline(Indicator):
+    
     def __init__(self,
-                 indicators: dict[str, Indicator],
-                 order_indicator: str,
-                 buy_order_template: Order,
-                 sell_order_template: Order,
-                 trade_manager: TradeManager,
-                 non_trading_timeslots: list[dict[str, str]] = None,
-                 intraday_squareoff: bool = True,
-                 squareoff_hour: int = 15,
-                 squareoff_minute: int = 10,
-                 *args, **kwargs):
-        self.orders = []
+                 indicators: list[(Indicator, Union[str, dict[str, str]], dict)],
+                 *args,
+                 **kwargs):
         self.indicators = indicators
-        self.order_indicator = order_indicator
-        self.buy_order_template = buy_order_template
-        self.sell_order_template = sell_order_template
-        self.intraday_squareoff = intraday_squareoff
-        self.squareoff_hour = squareoff_hour
-        self.squareoff_minute = squareoff_minute
-        if non_trading_timeslots is None:
-            non_trading_timeslots = []
-        self.non_trading_timeslots = non_trading_timeslots
-        self.trade_manager = trade_manager
         super().__init__(*args, **kwargs)
 
+    def compute_impl(self, df: pd.DataFrame,
+                output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                settings: Optional[dict] = None) -> pd.DataFrame:
+        for indicator, output_column_name, indicator_settings in self.indicators:
+            if indicator_settings is None:
+                indicator_settings = {}
+            indicator_settings = copy.deepcopy(indicator_settings).update(settings)
+            df, output_column_name, indicator_settings = indicator.compute(df,
+                                                                           output_column_name,
+                                                                           indicator_settings)
+        return df, output_column_name, settings
 
-    def perform_squareoff(self, df: pd.DataFrame, idx: int):
-        if (df.iloc[idx].index.dt.hour == self.squareoff_hour and
-            df.iloc[idx].index.dt.minute == self.squareoff_minute):
-            for order in self.orders:
-                if order.state == OrderState.PENDING:
-                    self.trade_manager.cancel_order(order)
-                elif order.state == OrderState.COMPLETED:
-                    
+class DonchainIndicator(Indicator):
 
-    @abstractmethod
-    def compute(self, df: pd.DataFrame,
-                output_column_name: Optional[str] = None,
-                stream: bool = False) -> Union[pd.DataFrame, Order]:
-
-    @property
-    def pending_orders(self) -> list[Order]:
-        return [order for order in self.orders if order.state == OrderState.PENDING]
-
-
-class AbsoluteStopLossStrategyMixin():
-
-    def __init__(self,
-                 absolute_stoploss_value: float,
-                 absolute_target_value: float,
-                 *args,
-                 **kwargs):
-        self.absolute_stoploss_value = absolute_stoploss_value
-        self.absolute_target_value = absolute_target_value
+    def __init__(self, *args, period: int = 15, **kwargs):
+        self.period = period
         super().__init__(*args, **kwargs)
-    
-    def get_stoploss(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        return self.absolute_stoploss_value
 
-    def get_target(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        return self.absolute_target_value
+    def compute_impl(self, df: pd.DataFrame,
+                output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                settings: Optional[dict] = None) -> pd.DataFrame:
+        if output_column_name is None:
+            output_column_name = ["donchainUpper", "donchainMiddle", "donchainLower"]
+        df[output_column_name[0]] = df["high"].rolling(self.period).apply(lambda x: max(x))
+        df[output_column_name[2]] = df["low"].rolling(self.period).apply(lambda x: min(x))
+        df[output_column_name[1]] = (df[output_column_name[2]] + df[output_column_name[0]]) /2
+        return df, output_column_name, settings
 
 
-class RelativeStopLossStrategyExecutorMixin():
+class PastPeriodHighLowIndicator(Indicator):
 
-    def __init__(self,
-                 relative_stoploss_value: float,
-                 relative_target_value: float,
-                 price_column: str,
-                 *args,
+    def __init__(self, *args,
+                 period_interval: str = "1d",
+                 data_interval: str = "1d",
+                 shift: int = 1,
                  **kwargs):
-        self.relative_stoploss_value = relative_stoploss_value
-        self.relative_target_value = relative_target_value
+        self.period_interval = period_interval
+        self.data_interval = data_interval
+        self.shift = shift
+        super().__init__(*args, **kwargs)
+
+    def compute_impl(self, df: pd.DataFrame,
+                output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                settings: Optional[dict] = None) -> pd.DataFrame:
+
+        if output_column_name is None:
+            if self.shift == 1:
+                output_column_name = [f"p{self.period_interval}h", f"p{self.period_interval}l"]
+            elif self.shift == 0:
+                output_column_name = [f"c{self.period_interval}h", f"c{self.period_interval}l"]
+            else:
+                output_column_name = [f"p{self.shift}-{self.period_interval}h", f"p{self.shift}-{self.period_interval}l"]
+        
+        h = df["high"].resample(self.period_interval).apply("max").shift(self.shift, freq=self.period_interval)
+        df[output_column_name[0]] = h.resample(self.data_interval).ffill().ffill()
+        pwl = df["low"].resample(self.period_interval).apply("min").shift(self.shift, freq=self.period_interval)
+        df[output_column_name[1]] = pwl.resample(self.data_interval).ffill().ffill()
+        return df, output_column_name, settings
+
+
+class SMAIndicator(Indicator):
+        
+    def __init__(self, *args,
+                 period: int = 22,
+                 **kwargs):
+        self.period = period
+        super().__init__(*args, **kwargs)
+
+    def compute_impl(self, df: pd.DataFrame,
+                output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                settings: Optional[dict] = None) -> pd.DataFrame:
+        if output_column_name is None:
+            output_column_name = f"SMA{self.period}"
+        
+        df[output_column_name] = talib.SMA(df[settings.get("input_column", "close")], timeperiod=22)
+
+
+class ADXIndicator(Indicator):
+        
+    def __init__(self, *args,
+                 **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def compute_impl(self, df: pd.DataFrame,
+                output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                settings: Optional[dict] = None) -> pd.DataFrame:
+        if output_column_name is None:
+            output_column_name = f"ADX"
+        
+        df[output_column_name] = talib.ADX(df["high"], df["low"], df["close"])
+
+class RSIIndicator(Indicator):
+        
+    def __init__(self, *args,
+                 **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def compute_impl(self, df: pd.DataFrame,
+                output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                settings: Optional[dict] = None) -> pd.DataFrame:
+        if output_column_name is None:
+            output_column_name = f"RSI"
+        
+        df[output_column_name] = talib.RSI(df["close"])
+
+
+class ATRIndicator(Indicator):
+        
+    def __init__(self, *args,
+                 **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def compute_impl(self, df: pd.DataFrame,
+                output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                settings: Optional[dict] = None) -> pd.DataFrame:
+        if output_column_name is None:
+            output_column_name = f"ATR"
+        
+        df[output_column_name] = talib.ATR(df["high"], df["low"], df["close"])
+
+
+class BBANDSIndicator(Indicator):
+        
+    def __init__(self, *args,
+                 **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def compute_impl(self, df: pd.DataFrame,
+                output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                settings: Optional[dict] = None) -> pd.DataFrame:
+        if output_column_name is None:
+            output_column_name = ["BBandUpper", "BBandMiddle", "BBandLower"]
+        
+        df[output_column_name[0]], df[output_column_name[1]], df[output_column_name[2]] = talib.BBANDS(df["close"])
+
+
+class CDLPatternIndicator(Indicator):
+        
+    def __init__(self, *args,
+                 **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                     settings: Optional[dict] = None) -> pd.DataFrame:
+        if output_column_name is None:
+            output_column_name = ""
+        
+        for item in dir(talib):
+            if item.startswith("CDL"):
+                df[f"{output_column_name}{item}"] = getattr(talib,
+                                                            item)(df["open"],
+                                                                  df["high"],
+                                                                  df["low"],
+                                                                  df["close"])
+
+
+class BreakoutIndicator(Indicator):
+        
+     def __init__(self,
+                  upper_breakout_column: str,
+                  lower_breakout_column: str,
+                  data_interval: str,
+                  *args,
+                  price_column: str = "close",
+                 **kwargs):
+        self.upper_breakout_column = upper_breakout_column
+        self.lower_breakout_column = lower_breakout_column
         self.price_column = price_column
+        self.data_interval = data_interval
         super().__init__(*args, **kwargs)
-    
-    def get_stoploss(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        if trade_type == TradeType.BUY:
-            return window.iloc[-1][self.price_column] - self.relative_stoploss_value
-        else:
-            return window.iloc[-1][self.price_column] + self.relative_stoploss_value
-    
-    def get_target(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        if trade_type == TradeType.BUY:
-            return window.iloc[-1][self.price_column] + self.relative_target_value
-        else:
-            return window.iloc[-1][self.price_column] - self.relative_target_value
 
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                     settings: Optional[dict] = None) -> pd.DataFrame:
+        
+        df.loc[((df[self.price_column] > df[self.upper_breakout_column].shift(freq=self.data_interval)) &
+                (df[self.price_column].shift(2, freq=self.data_interval) < df[self.upper_breakout_column])),
+                f"{output_column_name}_upper"] = 1.0
 
-class CandleStopLossStrategyExecutorMixin():
-
-    def __init__(self,
-                 entry_column: str,
-                 stoploss_column: str,
-                 *args,
-                 entry_candle_idx: int = -1,
-                 stoploss_candle_idx: int = -1,
-                 extra: float = 1.0,
-                 target_multiplier: float = 2.0,
-                 **kwargs):
-        self.entry_column = entry_column
-        self.stoploss_column = stoploss_column
-        self.extra = extra
-        self.target_multiplier = target_multiplier
-        self.entry_candle_idx = entry_candle_idx
-        self.stoploss_candle_idx = stoploss_candle_idx
-        super().__init__(*args, **kwargs)
-    
-    def get_stoploss(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        if trade_type == TradeType.BUY:
-            return window.iloc[self.stoploss_candle_idx][self.stoploss_column] - self.extra
-        else:
-            return window.iloc[self.stoploss_candle_idx][self.stoploss_column] + self.extra
-    
-    def get_target(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        abs_val = self.target_multiplier * abs(window.iloc[self.entry_candle_idx][self.entry_column] - window.iloc[self.stoploss_candle_idx][self.stoploss_column])
-        if trade_type == TradeType.BUY:
-            return window.iloc[self.entry_candle_idx][self.entry_column] + abs_val
-        else:
-            return window.iloc[self.entry_candle_idx][self.entry_column] - abs_val
-
-
-class IndicatorValueBasedStopLossStrategyExecutorMixin():
-
-    def __init__(self,
-                 absolute_target_value: float,
-                 stoploss_indicator_column: str,
-                 price_column: str,
-                 *args,
-                 extra: float = 1.0,
-                 **kwargs):
-
-        self.absolute_target_value = absolute_target_value
-        self.stoploss_indicator_column = stoploss_indicator_column
-        self.price_column = price_column
-        self.extra = extra
-        super().__init__(*args, **kwargs)
-    
-    def get_stoploss(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        return window.iloc[-1][self.stoploss_indicator_column]
-    
-    def get_target(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        return self.absolute_target_value
+        df.loc[((df[self.price_column] < df[self.lower_breakout_column].shift(freq=self.data_interval)) &
+                (df[self.price_column].shift(2, freq=self.data_interval) > df[self.lower_breakout_column])),
+                f"{output_column_name}_lower"] = 1.0

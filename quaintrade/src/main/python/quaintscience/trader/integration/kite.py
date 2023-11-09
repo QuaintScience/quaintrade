@@ -2,9 +2,9 @@ import datetime
 import copy
 import json
 import pytz
-from collections import defaultdict
 import os
 from threading import Thread
+from functools import cache
 
 from typing import Union
 
@@ -14,11 +14,9 @@ import datetime
 import time
 import traceback
 
-from ..core.ds import Order, OrderType, TradingProduct, TransactionType
+from ..core.ds import Order, OrderType, TradingProduct, TransactionType, Position
 from .common import TradeManager
-
-
-
+from ..core.util import today_timestamp, hash_dict, datestring_to_datetime
 
 
 class KiteManager(TradeManager):
@@ -34,8 +32,10 @@ class KiteManager(TradeManager):
         self.ticker_thread = None
         super().__init__(*args, **kwargs)
 
+    # Login related methods go here
 
     @property
+    @cache
     def access_token_filepath(self):
         return os.path.join(self.cache_path, "access_token.cache")
 
@@ -74,11 +74,12 @@ class KiteManager(TradeManager):
             self.auth_state["trace_back"] = traceback.format_exc()
         self.init()
 
+    # Initialization
     def init(self):
-        self.load_instrument_token_mapper()
+        self.__load_instrument_token_mapper()
 
-    def load_instrument_token_mapper(self, force_refresh: bool = False):
-        today = self.today_timestamp()
+    def __load_instrument_token_mapper(self, force_refresh: bool = False):
+        today = today_timestamp()
         filepath = os.path.join(f"{self.cache_path}", f"instruments-{today}.csv")
         if not os.path.exists(filepath) or force_refresh:
             instruments = pd.DataFrame(self.kite.instruments())
@@ -86,21 +87,14 @@ class KiteManager(TradeManager):
         
         self.instruments = pd.read_csv(filepath)
 
-    def kite_timestamp_to_datetime(self, d):
+    # Kite specific help utils
+
+    def __kite_timestamp_to_datetime(self, d):
         return datetime.datetime.strptime(d, "%Y-%m-%d %H:%M:%S")
 
-    def place_order(self, order: Order) -> str:
-        order_id = self.kite.place_order(tradingsymbol=order.scrip,
-                                         exchange=order.exchange,
-                                         transaction_type=order.transaction_type.value,
-                                         quantity=order.quantity,
-                                         variety=self.kite.VARIETY_REGULAR,
-                                         order_type=order.order_type.value,
-                                         product=order.product.value,
-                                         validity=order.validity)
-        return order_id
-
-    def get_instrument_object(self, instruments):
+    @hash_dict
+    @cache
+    def __get_instrument_object(self, instruments):
         result = []
         instruments_lst = instruments
         if isinstance(instruments, dict):
@@ -120,6 +114,55 @@ class KiteManager(TradeManager):
             return result[0]
         return result
 
+    # Order management
+
+    def place_order(self, order: Order) -> str:
+        order_id = self.kite.place_order(tradingsymbol=order.scrip,
+                                         exchange=order.exchange,
+                                         transaction_type=order.transaction_type.value,
+                                         quantity=order.quantity,
+                                         variety=self.kite.VARIETY_REGULAR,
+                                         order_type=order.order_type.value,
+                                         product=order.product.value,
+                                         validity=order.validity)
+        return order_id
+
+    def order_callback(self, orders):
+        raise NotImplementedError("Order Callback")
+
+    def get_positions(self) -> list[Position]:
+        raise NotImplementedError("get_positions")
+
+    def place_another_order_on_entry(self,
+                                     entry_order: Order,
+                                     other_order: Order):
+        raise NotImplementedError("place_another_order_on_entry")
+
+    def get_orders(self):
+        orders = self.kite.orders()
+        result = []
+        for order in orders:
+            result.append(Order(order_id=order["order_id"],
+                                scrip_id=order["instrument_token"],
+                                exchange_id=order["exchange"],
+                                scrip=order["exchange_symbol"],
+                                exchange=order["exchange"],
+                                transaction_type=TransactionType[order["transaction_type"]],
+                                raw_dict=order,
+                                timestamp=self.__kite_timestamp_to_datetime(order["order_timestamp"]),
+                                order_type = OrderType[order["order_type"]],
+                                product = TradingProduct[order["product"]],
+                                quantity = order["quantity"],
+                                purchase_price = order["price"],
+                                trigger_price = order["trigger_price"],
+                                limit_price = order["limit_price"],
+                                filled_quantity = order["filled_quantity"],
+                                pending_quantity = order["pending_quantity"],
+                                cancelled_quantity = order["cancelled_quantity"]))
+        return result
+
+    # Historic data download
+
     def download_historic_data(self,
                                scrip:str,
                                exchange: str,
@@ -127,11 +170,11 @@ class KiteManager(TradeManager):
                                from_date: Union[datetime.datetime, str],
                                to_date: Union[datetime.datetime, str]) -> bool:
         if isinstance(from_date, str):
-            from_date = self.__date_file_date_to_datetime(from_date)
+            from_date = datestring_to_datetime(from_date)
         if isinstance(to_date, str):
-            to_date = self.__date_file_date_to_datetime(to_date)
+            to_date = datestring_to_datetime(to_date)
 
-        instrument = self.get_instrument_object({"scrip": scrip, "exchange": exchange})
+        instrument = self.__get_instrument_object({"scrip": scrip, "exchange": exchange})
         subtracting_func = {"days": KiteManager.BATCH_SIZE}
 
         batch_to_date = to_date
@@ -181,34 +224,10 @@ class KiteManager(TradeManager):
             if time_elapsed < KiteManager.RATE_LIMIT_TIME:
                 time.sleep(KiteManager.RATE_LIMIT_TIME - time_elapsed)
 
-    def __date_file_date_to_datetime(self, d):
-        return datetime.datetime.strptime(d, "%Y%m%d")
-
-    def get_orders(self):
-        orders = self.kite.orders()
-        result = []
-        for order in orders:
-            result.append(Order(order_id=order["order_id"],
-                                scrip_id=order["instrument_token"],
-                                exchange_id=order["exchange"],
-                                scrip=order["exchange_symbol"],
-                                exchange=order["exchange"],
-                                transaction_type=TransactionType[order["transaction_type"]],
-                                raw_dict=order,
-                                timestamp=self.kite_timestamp_to_datetime(order["order_timestamp"]),
-                                order_type = OrderType[order["order_type"]],
-                                product = TradingProduct[order["product"]],
-                                quantity = order["quantity"],
-                                purchase_price = order["price"],
-                                trigger_price = order["trigger_price"],
-                                limit_price = order["limit_price"],
-                                filled_quantity = order["filled_quantity"],
-                                pending_quantity = order["pending_quantity"],
-                                cancelled_quantity = order["cancelled_quantity"]))
-        return result
+    # Streaming
 
     def start_realtime_ticks_impl(self, instruments, *args, **kwargs):
-        instruments = self.get_instrument_object(instruments)
+        instruments = self.__get_instrument_object(instruments)
         if isinstance(instruments, dict):
             instruments = [instruments]
         self.ticker_instruments = instruments
@@ -221,6 +240,27 @@ class KiteManager(TradeManager):
         self.ticker_thread = Thread(target=self.kws.connect, kwargs={"threaded": True})
         self.ticker_thread.start()
 
+    def on_connect_realtime_ticks(self, ws, response, *args, **kwargs):
+        self.logger.info(f"Ticker Websock connected {response}.")
+        self.logger.info(f"Subscribing to {self.ticker_instruments}")
+        tokens = [instrument["instrument_token"] for instrument in self.ticker_instruments]
+        self.kws.subscribe(tokens)
+        self.kws.set_mode(KiteTicker.MODE_QUOTE, tokens)
+
+    def on_close_realtime_ticks(self, ws, code, reason, *args, **kwargs):
+        self.logger.info(f"Ticker Websock closed {code} / {reason}.")
+
+
+    @cache
+    def __get_readable_string(self, instrument_token):
+        data = self.instruments[self.instruments["instrument_token"] == instrument_token]
+        if len(data) == 0:
+            raise ValueError(f"Could not find details of instrument token {instrument_token}")
+        if len(data) > 1:
+            raise ValueError(f"Unambiguous instrument token {instrument_token} = {data}")
+        return self.get_key_from_scrip(data.iloc[0]["tradingsymbol"],
+                                       data.iloc[0]["exchange"])
+
     def __on_ticks(self, ws, ticks, *args, **kwargs):
         if self.kill_tick_thread:
             self.kill_tick_thread = False
@@ -232,29 +272,5 @@ class KiteManager(TradeManager):
             ltt = tick.get("last_trade_time", datetime.datetime.now(pytz.timezone('Asia/Kolkata')))
             key = ltt.strftime("%Y%m%d %H:%M")
             token = tick["instrument_token"]
+            token = self.__get_readable_string(tick["instrument_token"])
             self.on_tick(token, ltp, ltq, ltt, key, *args, **kwargs)
-
-    def on_connect_realtime_ticks(self, ws, response, *args, **kwargs):
-        self.logger.info(f"Ticker Websock connected {response}.")
-        self.logger.info(f"Subscribing to {self.ticker_instruments}")
-        tokens = [instrument["instrument_token"] for instrument in self.ticker_instruments]
-        self.kws.subscribe(tokens)
-        self.kws.set_mode(KiteTicker.MODE_QUOTE, tokens)
-
-    def on_close_realtime_ticks(self, ws, code, reason, *args, **kwargs):
-        self.logger.info(f"Ticker Websock closed {code} / {reason}.")
-
-    def get_tick_data(self, instruments=None):
-        with self.tick_data_lock:
-            if instruments is None:
-                return copy.deepcopy(self.tick_data)
-            instruments = self.get_instrument_object(instruments)
-            result = {}
-            for instrument in instruments:
-                exchange = instrument["exchange"]
-                tradingsymbol = instrument["tradingsymbol"]
-                token = instrument["instrument_token"]
-                if not exchange in result:
-                    result[exchange] = {}
-                result[exchange][tradingsymbol] = copy.deepcopy(self.tick_data[token])
-            return result

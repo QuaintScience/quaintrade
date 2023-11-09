@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import datetime
 import os
+import copy
 from threading import Lock
 import http.server
 import socketserver
@@ -11,7 +12,12 @@ import pandas as pd
 import redis
 
 from ..core.logging import LoggerMixin
-from ..core.ds import Order
+from ..core.ds import (Order,
+                       Position,
+                       TransactionType,
+                       TradingProduct,
+                       OrderType)
+from ..core.util import today_timestamp
 
 
 def CallbackHandleFactory(context):
@@ -31,7 +37,7 @@ def CallbackHandleFactory(context):
 
 class OAuthCallBackServer(socketserver.TCPServer):
 
-    # Avoid "address already used" error when frequently restarting the script 
+    # Avoid "address already used" error when frequently restarting the script
     allow_reuse_address = True
 
     @staticmethod
@@ -45,7 +51,7 @@ class OAuthCallBackServer(socketserver.TCPServer):
         return context
 
 
-class TradeManager(LoggerMixin):
+class TradeManager(ABC, LoggerMixin):
 
     def __init__(self,
                  user_credentials: dict,
@@ -64,6 +70,7 @@ class TradeManager(LoggerMixin):
         self.tick_data_lock = Lock()
         self.oauth_callback_port = oauth_callback_port
         self.auth_state = {"state": "Not Logged In."}
+        self.backtesting_time = datetime.datetime.now()
         if self.redis_server is not None:
             self.redis = redis.Redis(self.redis_server,
                                      self.redis_port)
@@ -71,118 +78,104 @@ class TradeManager(LoggerMixin):
             self.redis = None
         super().__init__(*args, **kwargs)
 
+
+    # Backtesting related
+
+    def set_backtesting_time(self,
+                             tim: datetime.datetime):
+        self.backtesting_time = tim
+
+    # Utils
+
+    def get_key_from_scrip(self,
+                           scrip: str,
+                           exchange: str):
+        return f'{scrip.replace(":", " _")}:{exchange.replace(":", "_")}'
+
+    def get_scrip_and_exchange_from_key(self, key: str):
+        parts = key.split(":")
+        return parts
+
+    def current_datetime(self):
+        return datetime.datetime.now()
+
+    # Login related
+
     def listen_to_login_callback(self):
         return OAuthCallBackServer.get_oauth_callback_data(self.oauth_callback_port)
-
-    def today_timestamp(self):
-        return datetime.datetime.now().strftime("%Y%m%d")
-
-    def postprocess_data(self,
-                           data,
-                           interval,
-                           donchain_N=15):
-        data.fillna(0., inplace=True)
-        if "time" in data.columns and "date" in data.columns:
-            data["timestamp"] = pd.to_datetime(data["date"] + ", " + data["time"])
-            data.drop(["date", "time"], inplace=True, axis=1)
-            data.index = data["timestamp"]
-        data.dropna(inplace=True)
-        data = data.resample(interval).apply({'open': 'first',
-                                              'high': 'max',
-                                              'low': 'min',
-                                              'close': 'last'})
-        data.dropna(inplace=True)
-        data["donchainUpper"] = data["high"].rolling(donchain_N).apply(lambda x: max(x))
-        data["donchainLower"] = data["low"].rolling(donchain_N).apply(lambda x: min(x))
-        data["donchainMiddle"] = (data["donchainLower"] + data["donchainUpper"]) /2
-
-        pwh = data["high"].resample('1w').apply("max").shift(1, freq='d')
-        data["pwh"] = pwh.resample(interval).ffill().ffill()
-        pwl = data["low"].resample('1w').apply("min").shift(1, freq='d')
-        data["pwl"] = pwl.resample(interval).ffill().ffill()
-
-        pdh = data["high"].resample('1d').apply("max").shift(1,
-                                                             freq='d')
-        data["pdh"] = pdh.resample(interval).ffill().ffill()
-        pdl = data["low"].resample('1d').apply("min").shift(1,
-                                                            freq='d')
-        data["pdl"] = pdl.resample(interval).ffill().ffill()
-
-        pdc = data["close"].resample('1d').apply("last").shift(1, freq='d')
-        data["pdc"] = pdh.resample(interval).ffill().ffill()
-        pdo = data["open"].resample('1d').apply("first").shift(1, freq='d')
-        data["pdo"] = pdo.resample(interval).ffill().ffill()
-
-        cdh = data["high"].resample('1d').apply("max")
-        data["cdh"] = cdh.resample(interval).ffill().ffill()
-        cdl = data["low"].resample('1d').apply("min")
-        data["cdl"] = cdl.resample(interval).ffill().ffill()
-
-        cdc = data["close"].resample('1d').apply("last")
-        data["cdc"] = cdc.resample(interval).ffill().ffill()
-        cdo = data["open"].resample('1d').apply("first")
-        data["cdo"] = cdo.resample(interval).ffill().ffill()
-        for c in data.columns:
-            data[c] = data[c].astype(float)
-        #data.dropna(inplace=True)
-        data["breakoutCandidateUpper"] = 0
-        data.loc[(data["close"] > data["donchainUpper"].shift()) &
-                 (data.index.hour < 15) &
-                 ((data.index.hour > 9) |
-                  (data.index.minute > 30)),
-                  "breakoutCandidateUpper"] = 1.0
-        data["breakoutCandidateLower"] = 0
-        data.loc[(data["close"] < data["donchainLower"].shift()) &
-                 (data.index.hour < 15) &
-                 ((data.index.hour > 9) |
-                  (data.index.minute > 30)),
-                  "breakoutCandidateLower"] = 1.0
-
-        data["breakoutCandidate"] = ((data["breakoutCandidateUpper"] == 1) |
-                                     (data["breakoutCandidateLower"] == 1))
-        data["sma_22"] = talib.SMA(data["close"], timeperiod=22)
-        data["sma_33"] = talib.SMA(data["close"], timeperiod=33)
-        data["sma_44"] = talib.SMA(data["close"], timeperiod=44)
-        data["adx"] = talib.ADX(data["high"], data["l"], data["c"])
-        data["rsi"] = talib.RSI(data["close"])
-        data["atr"] = talib.ATR(data["high"], data["l"], data["c"])
-        data["bbands_upper"], data["bbands_middle"], data["bbands_lower"] = talib.BBANDS(data["close"])
-        for item in dir(talib):
-            if item.startswith("CDL"):
-                data[item] = getattr(talib, item)(data["o"], data["h"], data["l"], data["c"])
-        return data
 
     @abstractmethod
     def start_login(self) -> str:
         pass
 
     @abstractmethod
-    def finish_login(self, *args, **kwargs) -> bool:
-        pass
-
-    @abstractmethod
-    def init(self):
+    def finish_login(self,
+                     *args,
+                     **kwargs) -> bool:
         pass
 
     def get_state(self):
         return self.auth_state
 
-    def order_callback(self, orders):
-        raise NotImplementedError("Order Callback")
-
-    def on_connect_realtime_ticks(self, *args, **kwargs):
-        raise NotImplementedError("Order Callback")
-
-    def on_close_realtime_ticks(self, *args, **kwargs):
-        raise NotImplementedError("Order Callback")
+    # Initialization
 
     @abstractmethod
-    def get_tick_data(self, instruments=None):
+    def init(self):
         pass
+
+    # Order streaming / management
 
     @abstractmethod
     def get_orders(self) -> list[Order]:
         pass
+
+    @abstractmethod
+    def place_order(self,
+                    order: Order):
+        pass
+
+    def order_callback(self,
+                       orders):
+        raise NotImplementedError("Order Callback")
+
+    @abstractmethod
+    def get_positions(self) -> list[Position]:
+        pass
+
+    @abstractmethod
+    def express_market_order(self, 
+                             scrip: str,
+                             exchange: str,
+                             quantity: int,
+                             transaction_type: TransactionType = TransactionType.BUY,
+                             product: TradingProduct = TradingProduct.MIS,
+                             order_type: OrderType = OrderType.MARKET):
+        self.place_order(Order(order_id=self.__new_id,
+                               scrip_id=scrip,
+                               exchange_id=exchange,
+                               scrip=scrip,
+                               exchange=exchange,
+                               transaction_type=transaction_type,
+                               raw_dict={},
+                               timestamp=self.current_datetime(),
+                               order_type = order_type,
+                               product = product,
+                               quantity = quantity,
+                               purchase_price = None,
+                               trigger_price = None,
+                               limit_price = None,
+                               filled_quantity = 0,
+                               pending_quantity = 0,
+                               cancelled_quantity = 0))
+
+    @abstractmethod
+    def place_another_order_on_entry(self, 
+                                     entry_order: Order,
+                                     other_order: Order):
+        pass   
+
+    # Get Historical Data
+
 
     @abstractmethod
     def download_historic_data(self,
@@ -192,49 +185,6 @@ class TradeManager(LoggerMixin):
                                from_date: datetime.datetime,
                                to_date: datetime.datetime) -> bool:
         pass
-
-    @abstractmethod
-    def place_order(self,
-                    order: Order):
-        pass
-
-    def load_tick_data_from_redis(self):
-        self.tick_data = self.redis.json().get(f'kite-ticks-{self.today_timestamp()}', '$')
-        if self.tick_data is None:
-            self.logger.info("Tick data is empty")
-            self.tick_data = {}
-        if isinstance(self.tick_data, list):
-            self.tick_data = self.tick_data[0]
-    
-    def store_tick_data_to_redis(self):
-        self.redis.json().set(f'kite-ticks-{self.today_timestamp()}', '$', self.tick_data)
-
-    def start_realtime_ticks(self, instruments: list, *args, **kwargs):
-        self.load_tick_data_from_redis()
-        self.start_realtime_ticks_impl(instruments, *args, **kwargs)
-
-    @abstractmethod
-    def start_realtime_ticks_impl(self, instruments: list, *args, **kwargs):
-        pass
-
-    def read_data_file(self, filepath, **kwargs):
-        return pd.read_csv(filepath, index_col="date", **kwargs)
-
-    def get_filepath_for_data(self, scrip, exchange, from_date, to_date):
-        sanitized_scrip = scrip.replace("-",
-                                        "_").replace(" ",
-                                                     "_")
-        sanitized_exchange = exchange.replace("-",
-                                              "_").replace(" ",
-                                                           "_")
-        filepath = os.path.join(self.cache_path,
-                                "historical_data",
-                                exchange,
-                                sanitized_scrip,
-                                f"data-{sanitized_scrip}-{sanitized_exchange}-"
-                                f"{from_date.year:04d}{from_date.month:02d}{from_date.day:02d}"
-                                f"-{to_date.year:04d}{to_date.month:02d}{to_date.day:02d}.csv")
-        return filepath        
 
     def get_historic_data(self,
                           scrip:str,
@@ -262,7 +212,7 @@ class TradeManager(LoggerMixin):
                     return self.postprocess_data(pd.concat([d for d in data if len(d) > 0],
                                                              axis=0,
                                                              ignore_index=True),
-                                                   interval)
+                                                 interval)
             else:
                 self.download_historic_data(scrip,
                                             exchange,
@@ -275,6 +225,58 @@ class TradeManager(LoggerMixin):
                                               from_date,
                                               to_date,
                                               download=False)
+
+    def read_data_file(self, filepath, **kwargs):
+        return pd.read_csv(filepath, index_col="date", **kwargs)
+
+    def get_filepath_for_data(self, scrip, exchange, from_date, to_date):
+        sanitized_scrip = scrip.replace("-",
+                                        "_").replace(" ",
+                                                     "_")
+        sanitized_exchange = exchange.replace("-",
+                                              "_").replace(" ",
+                                                           "_")
+        filepath = os.path.join(self.cache_path,
+                                "historical_data",
+                                exchange,
+                                sanitized_scrip,
+                                f"data-{sanitized_scrip}-{sanitized_exchange}-"
+                                f"{from_date.year:04d}{from_date.month:02d}{from_date.day:02d}"
+                                f"-{to_date.year:04d}{to_date.month:02d}{to_date.day:02d}.csv")
+        return filepath
+
+    def postprocess_data(self,
+                         data,
+                         interval):
+        data.fillna(0., inplace=True)
+        if "time" in data.columns and "date" in data.columns:
+            data["timestamp"] = pd.to_datetime(data["date"] + ", " + data["time"])
+            data.drop(["date", "time"], inplace=True, axis=1)
+            data.index = data["timestamp"]
+        data.dropna(inplace=True)
+        data = data.resample(interval).apply({'open': 'first',
+                                              'high': 'max',
+                                              'low': 'min',
+                                              'close': 'last'})
+        data.dropna(inplace=True)
+        
+        return data
+
+    # Streaming data
+
+    def start_realtime_ticks(self, instruments: list, *args, **kwargs):
+        self.load_tick_data_from_redis()
+        self.start_realtime_ticks_impl(instruments, *args, **kwargs)
+
+    @abstractmethod
+    def start_realtime_ticks_impl(self, instruments: list, *args, **kwargs):
+        pass
+
+    def on_connect_realtime_ticks(self, *args, **kwargs):
+        raise NotImplementedError("On Connect Realtime Ticks")
+
+    def on_close_realtime_ticks(self, *args, **kwargs):
+        raise NotImplementedError("On Close Realtime Ticks")
 
     def stop_realtime_ticks(self):
         self.kill_tick_thread = True
@@ -297,12 +299,12 @@ class TradeManager(LoggerMixin):
                     self.logger.error(f"Error creating data from {self.tick_data}")
             if key not in self.tick_data[token]:
                 self.tick_data[token][key] = {"date": key,
-                                            "open": ltp,
-                                            "high": ltp,
-                                            "low": ltp,
-                                            "close": ltp,
-                                            "volume": ltq,
-                                            "oi": 0.}
+                                              "open": ltp,
+                                              "high": ltp,
+                                              "low": ltp,
+                                              "close": ltp,
+                                              "volume": ltq,
+                                              "oi": 0.}
             if ltp > self.tick_data[token][key]["high"]:
                 self.tick_data[token][key]["high"] = ltp
             if ltp < self.tick_data[token][key]["low"]:
@@ -311,12 +313,36 @@ class TradeManager(LoggerMixin):
             self.tick_data[token][key]["volume"] += ltq
             self.store_tick_data_to_redis()
 
-    def get_tick_data_as_ohlc(self, from_redis: bool = True) -> list[pd.DataFrame]:
-        if from_redis:
+    def load_tick_data_from_redis(self):
+        self.tick_data = self.redis.json().get(f'kite-ticks-{today_timestamp()}', '$')
+        if self.tick_data is None:
+            self.logger.info("Tick data is empty")
+            self.tick_data = {}
+        if isinstance(self.tick_data, list):
+            self.tick_data = self.tick_data[0]
+
+    def get_redis_tick_data_as_ohlc(self, refresh: bool = True, interval: str = "1m") -> list[pd.DataFrame]:
+        if refresh:
             self.load_tick_data_from_redis()
         dfs = {}
-        for instrument_token, data in self.tick_data.items():
+        for instrument, data in self.tick_data.items():
             df = pd.DataFrame.from_dict(data, orient='index')
             df.index = pd.to_datetime(df.index)
-            dfs[instrument_token] = df
+            dfs[instrument] = self.postprocess_data(df, interval)
         return dfs
+
+    def store_tick_data_to_redis(self):
+        self.redis.json().set(f'kite-ticks-{today_timestamp()}', '$', self.tick_data)
+
+    def get_tick_data(self, instruments=None):
+        with self.tick_data_lock:
+            if instruments is None:
+                return copy.deepcopy(self.tick_data)
+            result = {}
+            for instrument in instruments:
+                if instrument["exchange"] not in result:
+                    result[instrument["exchange"]] = {}
+                this_tick_data = self.tick_data[self.get_key_from_scrip(instrument["scrip"],
+                                                                        instrument["exchange"])]
+                result[instrument["exchange"]][instrument["scrip"]] = copy.deepcopy(this_tick_data)
+            return result

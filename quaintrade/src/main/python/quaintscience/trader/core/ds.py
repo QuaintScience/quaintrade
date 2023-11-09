@@ -58,9 +58,11 @@ class Order:
 @dataclass
 class Position:
     position_id: str
+    timestamp: datetime.datetime
     scrip_id: str
     scrip: str
     exchange_id: str
+    exchange: str
     product: TradingProduct
     quantity: int
     average_price: float
@@ -68,3 +70,20 @@ class Position:
     pnl: float
     day_change: float
     raw_dict: dict
+
+    def __hash__(self):
+        return hash(self.scrip, self.exchange, self.product)
+
+    def __eq__(self, other: object):
+        if not isinstance(other, Position):
+            return False
+        if (self.scrip == other.scrip
+            and self.exchange == other.exchange
+            and self.product == other.product):
+            return True
+        return False
+
+
+class ExecutionType(Enum):
+    BACKTESTING = "backtesting"
+    LIVE = "live"
