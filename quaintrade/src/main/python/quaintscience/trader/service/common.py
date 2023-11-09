@@ -3,7 +3,7 @@ from typing import Union
 
 from ..core.logging import LoggerMixin
 from ..integration.kite import KiteManager
-from ..integration.common import TradeManager
+from ..integration.paper import PaperTradeManager
 
 
 class Service(LoggerMixin):
@@ -41,6 +41,7 @@ class TradeManagerService(Service):
                  instruments: Union[str, list]=None,
                  provider: str = "kite",
                  login_needed: bool = True,
+                 init: bool = True,
                  **kwargs):
 
         super().__init__(*args, **kwargs)
@@ -50,25 +51,25 @@ class TradeManagerService(Service):
         self.instruments = instruments
 
         if provider == "kite":
-            self.manager = KiteManager(user_credentials={"API_KEY": api_key,
-                                                        "API_SECRET": api_secret},
-                                    cache_path=cache_path,
-                                    redis_server=redis_server,
-                                    redis_port=redis_port)
+            self.trade_manager = KiteManager(user_credentials={"API_KEY": api_key,
+                                                               "API_SECRET": api_secret},
+                                             cache_path=cache_path,
+                                             redis_server=redis_server,
+                                             redis_port=redis_port)
             if login_needed:
-                res = self.manager.start_login()
+                res = self.trade_manager.start_login()
                 self.logger.info(f"Start Login Result {res}")
                 if res is not None:
                     if request_token is not None:
-                        self.manager.finish_login(request_token)
+                        self.trade_manager.finish_login(request_token)
                     elif access_token is not None:
-                        self.manager.kite.set_access_token(access_token)
-                        self.manager.auth_state["access_token"] = access_token
-        elif provider == "vanilla":
-            self.manager = TradeManager(cache_path=cache_path,
-                                        redis_server=redis_server,
-                                        redis_port=redis_port)
+                        self.trade_manager.kite.set_access_token(access_token)
+                        self.trade_manager.auth_state["access_token"] = access_token
+        elif provider == "paper":
+            self.trade_manager = PaperTradeManager(cache_path=cache_path,
+                                             redis_server=redis_server,
+                                             redis_port=redis_port)
         else:
             raise ValueError(f"Provider {provider} not found.")
-        if self.manager is not None:
-            self.manager.init()
+        if self.trade_manager is not None and init:
+            self.trade_manager.init()

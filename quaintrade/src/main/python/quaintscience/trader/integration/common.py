@@ -17,7 +17,7 @@ from ..core.ds import (Order,
                        TransactionType,
                        TradingProduct,
                        OrderType)
-from ..core.util import today_timestamp
+from ..core.util import today_timestamp, datestring_to_datetime
 
 
 def CallbackHandleFactory(context):
@@ -142,31 +142,45 @@ class TradeManager(ABC, LoggerMixin):
     def get_positions(self) -> list[Position]:
         pass
 
-    @abstractmethod
-    def express_market_order(self, 
-                             scrip: str,
-                             exchange: str,
-                             quantity: int,
-                             transaction_type: TransactionType = TransactionType.BUY,
-                             product: TradingProduct = TradingProduct.MIS,
-                             order_type: OrderType = OrderType.MARKET):
-        self.place_order(Order(order_id=self.__new_id,
-                               scrip_id=scrip,
-                               exchange_id=exchange,
-                               scrip=scrip,
-                               exchange=exchange,
-                               transaction_type=transaction_type,
-                               raw_dict={},
-                               timestamp=self.current_datetime(),
-                               order_type = order_type,
-                               product = product,
-                               quantity = quantity,
-                               purchase_price = None,
-                               trigger_price = None,
-                               limit_price = None,
-                               filled_quantity = 0,
-                               pending_quantity = 0,
-                               cancelled_quantity = 0))
+    def create_express_order(self, 
+                            scrip: str,
+                            exchange: str,
+                            quantity: int,
+                            transaction_type: TransactionType = TransactionType.BUY,
+                            product: TradingProduct = TradingProduct.MIS,
+                            order_type: OrderType = OrderType.MARKET,
+                            limit_price: float = None,
+                            trigger_price: float = None):
+        return Order(order_id=self.__new_id,
+                     scrip_id=scrip,
+                     exchange_id=exchange,
+                     scrip=scrip,
+                     exchange=exchange,
+                     transaction_type=transaction_type,
+                     timestamp=self.current_datetime(),
+                     order_type = order_type,
+                     product = product,
+                     quantity = quantity,
+                     trigger_price = trigger_price,
+                     limit_price = limit_price)
+
+    def place_express_order(self, 
+                            scrip: str,
+                            exchange: str,
+                            quantity: int,
+                            transaction_type: TransactionType = TransactionType.BUY,
+                            product: TradingProduct = TradingProduct.MIS,
+                            order_type: OrderType = OrderType.MARKET,
+                            limit_price: float = None,
+                            trigger_price: float = None):
+        self.place_order(self.create_express_order(scrip=scrip,
+                                                   exchange=exchange,
+                                                   quantity=quantity,
+                                                   transaction_type=transaction_type,
+                                                   product=product,
+                                                   order_type=order_type,
+                                                   limit_price=limit_price,
+                                                   trigger_price=trigger_price))
 
     @abstractmethod
     def place_another_order_on_entry(self, 
@@ -200,19 +214,23 @@ class TradeManager(ABC, LoggerMixin):
             if not download:
                 dirname = os.path.dirname(filepath)
                 files = os.listdir(dirname)
-                for f in files:
-                    scrip, exchange, fdate, tdate = f.split("-")
-                    fdate = self.date_file_date_to_datetime(fdate)
-                    tdate = self.date_file_date_to_datetime(tdate)
-                    data = []
+                data = []
+                for f in files: 
+                    f_base = ".".join(f.split(".")[:-1])
+                    if len(f_base.split("-")) == 5:
+                        _, scrip, exchange, fdate, tdate = f_base.split("-")
+                    else:
+                        scrip, exchange, fdate, tdate = f_base.split("-")
+                    fdate = datestring_to_datetime(fdate)
+                    tdate = datestring_to_datetime(tdate)
                     if ((fdate >= from_date and tdate <=to_date)
                         or (tdate >= from_date and tdate <= to_date)
                         or (fdate >= from_date and fdate <= to_date)):
-                        data.append(self.read_data_file(os.path.join(dirname, f)))
-                    return self.postprocess_data(pd.concat([d for d in data if len(d) > 0],
-                                                             axis=0,
-                                                             ignore_index=True),
-                                                 interval)
+                        this_fpath = os.path.join(dirname, f)
+                        self.logger.info(f"Reading {this_fpath}")
+                        data.append(self.read_data_file(this_fpath))
+                data = pd.concat(data, axis=0) if len(data) > 0 else data[0]
+                return self.postprocess_data(data, interval)
             else:
                 self.download_historic_data(scrip,
                                             exchange,
@@ -254,12 +272,12 @@ class TradeManager(ABC, LoggerMixin):
             data.drop(["date", "time"], inplace=True, axis=1)
             data.index = data["timestamp"]
         data.dropna(inplace=True)
+        data.index = pd.to_datetime(data.index)
         data = data.resample(interval).apply({'open': 'first',
                                               'high': 'max',
                                               'low': 'min',
                                               'close': 'last'})
         data.dropna(inplace=True)
-        
         return data
 
     # Streaming data
@@ -346,3 +364,5 @@ class TradeManager(ABC, LoggerMixin):
                                                                         instrument["exchange"])]
                 result[instrument["exchange"]][instrument["scrip"]] = copy.deepcopy(this_tick_data)
             return result
+
+    # Backtesting specific methods

@@ -14,8 +14,8 @@ class RealtimeListener(TradeManagerService):
 
     def start(self):
         self.logger.info("Starting stream....")
-        self.manager.start_realtime_ticks(self.instruments)
-        self.manager.ticker_thread.join()
+        self.trade_manager.start_realtime_ticks(self.instruments)
+        self.trade_manager.ticker_thread.join()
         while True: time.sleep(1)
 
     @staticmethod

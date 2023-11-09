@@ -1,5 +1,8 @@
+from dataclasses import field
 import functools
 import datetime
+import copy
+import uuid
 
 
 def crossunder(df, col1, col2):
@@ -49,3 +52,16 @@ def hash_dict(func):
         kwargs = {k: freeze(v) for k, v in kwargs.items()}
         return func(*args, **kwargs)
     return wrapped
+
+
+def default_dataclass_field(obj):
+    """Create a default field"""
+    return field(default_factory=lambda: copy.copy(obj))
+
+def current_datetime_field():
+    """Create a default field"""
+    return field(default_factory=lambda: datetime.datetime.now())
+
+def new_id_field():
+    """Create a default field"""
+    return field(default_factory=lambda: str(uuid.uuid4()).replace("-", ""))

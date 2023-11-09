@@ -1,44 +1,73 @@
 from abc import ABC, abstractmethod
 from typing import Optional, Union
 import copy
+from functools import partial
 
 import pandas as pd
 
 from .logging import LoggerMixin
-from .ds import Order, TradeType, OrderType, TransactionType, ExecutionType
+from .ds import (Order,
+                 TradeType,
+                 OrderType,
+                 TransactionType,
+                 ExecutionType,
+                 TradingProduct)
 from .indicator import IndicatorPipeline
 
 from ..integration.common import TradeManager
+from ..integration.paper import PaperTradeManager
 
 
 class StrategyExecutor(ABC, LoggerMixin):
 
-    NON_TRADING_FIRST_HOUR = [{"from": {"hour": 9, "minute": 0},
-                               "to": {"hour" 9, "minute": 59}}]
-    NON_TRADING_AFTERNOON = [{"from": {"hour": 2, "minute": 30},
-                              "to": {"hour" 3, "minute": 15}}]
+    NON_TRADING_FIRST_HOUR = [{"from": {"hour": 9,
+                                        "minute": 0},
+                               "to": {"hour": 9,
+                                      "minute": 59}}]
+    NON_TRADING_AFTERNOON = [{"from": {"hour": 2,
+                                       "minute": 30},
+                              "to": {"hour": 3,
+                                     "minute": 15}}]
 
     def __init__(self,
+                 signal_scrip: str,
+                 long_scrip: str,
+                 short_scrip: str,
+                 exchange: str,
                  indicator_pipeline: IndicatorPipeline,
-                 buy_order_template: Order,
-                 sell_order_template: Order,
-                 trade_manager: TradeManager,
+                 *args,
+                 default_quantity: int = 1,
+                 product: TradingProduct = TradingProduct.MIS,
                  non_trading_timeslots: list[dict[str, str]] = None,
                  intraday_squareoff: bool = True,
                  squareoff_hour: int = 15,
                  squareoff_minute: int = 10,
                  execution_type: ExecutionType = ExecutionType.BACKTESTING,
                  moving_window_size: int = 2,
-                 *args, **kwargs):
+                 trade_manager: TradeManager = None,
+                 **kwargs):
+        self.signal_scrip = signal_scrip
+        self.long_scrip = long_scrip
+        self.short_scrip = short_scrip
+        self.product = product
+        self.exchange = exchange
         self.indicator_pipeline = indicator_pipeline
-        self.buy_order_template = buy_order_template
-        self.sell_order_template = sell_order_template
+        self.default_quantity = default_quantity
         self.intraday_squareoff = intraday_squareoff
         self.squareoff_hour = squareoff_hour
         self.squareoff_minute = squareoff_minute
         if non_trading_timeslots is None:
             non_trading_timeslots = []
         self.non_trading_timeslots = non_trading_timeslots
+        if trade_manager is None:
+            # If no trade maanger is given, use paper trading...
+            instruments = [{"scrip": scrip, "exchange": exchange}
+                           for scrip in list(set([signal_scrip, long_scrip, short_scrip]))]
+            trade_manager = PaperTradeManager(instruments=instruments,
+                                              load_from_files=True,
+                                              load_from_redis=True)
+            self.trade_manager.start_login()
+            self.trade_manager.init()        
         self.trade_manager = trade_manager
         self.execution_type = execution_type
         self.moving_window_size = moving_window_size
@@ -48,22 +77,24 @@ class StrategyExecutor(ABC, LoggerMixin):
 
     def perform_squareoff(self, window: pd.DataFrame):
         if self.execution_type == ExecutionType.BACKTESTING:
-            self.trade_manager.set_backtesting_time(window.iloc[-1].index.to_pydatetime())
+            self.trade_manager.set_backtesting_time(window.iloc[-1].index[0].to_pydatetime())
         if (window.iloc[-1].index.dt.hour >= self.squareoff_hour and
             window.iloc[-1].index.dt.minute >= self.squareoff_minute):
             self.trade_manager.cancel_pending_orders()
             positions = self.trade_manager.get_positions()
             for position in positions:
                 if position.quantity > 0:
-                    self.trade_manager.express_market_order(scrip=position.scrip,
-                                                            exchange=position.exchange,
-                                                            quantity=position.quantity,
-                                                            transaction_type=TransactionType.SELL)
+                    self.trade_manager.place_express_order(scrip=position.scrip,
+                                                           exchange=position.exchange,
+                                                           quantity=position.quantity,
+                                                           transaction_type=TransactionType.SELL,
+                                                           order_type=OrderType.MARKET)
                 if position.quantity < 0:
-                    self.trade_manager.express_market_order(scrip=position.scrip,
-                                                            exchange=position.exchange,
-                                                            quantity=-position.quantity,
-                                                            trade_type=TransactionType.BUY)
+                    self.trade_manager.place_express_order(scrip=position.scrip,
+                                                           exchange=position.exchange,
+                                                           quantity=-position.quantity,
+                                                           trade_type=TransactionType.BUY,
+                                                           order_type=OrderType.MARKET)
 
     def can_trade(self, window: pd.DataFrame):
         row = window.iloc[-1]
@@ -78,7 +109,7 @@ class StrategyExecutor(ABC, LoggerMixin):
         return True
     
     @abstractmethod
-    def get_entry_price(self, window: pd.DataFrame, trade_type: TradeType):
+    def get_entry(self, window: pd.DataFrame, trade_type: TradeType):
         pass
 
     @abstractmethod
@@ -89,45 +120,86 @@ class StrategyExecutor(ABC, LoggerMixin):
     def get_target(self, window: pd.DataFrame, trade_type: TradeType) -> float:
         pass
 
+    def get_quantity(self, window: pd.DataFrame, trade_type: TradeType):
+        return self.default_quantity
+
     def take_position(self, window: pd.DataFrame, trade_type: TradeType):
-        if self.execution_type == ExecutionType.BACKTESTING:
-            self.trade_manager.set_backtesting_time(window.iloc[-1].index.to_pydatetime())
-        entry_order = None
+        scrip = None
         if trade_type == TradeType.LONG:
-            entry_order = copy.deepcopy(self.buy_order_template)
+            scrip = self.long_scrip
+            transaction_type = TransactionType.BUY
         else:
-            entry_order = copy.deepcopy(self.sell_order_template)
-        entry_order.order_type = OrderType.LIMIT
-        entry_order.limit_price = self.get_entry_price(window=window, trade_type=TradeType.BUY)
+            scrip = self.short_scrip
+            entry_price = self.get_entry(window=window,
+                                         trade_type=TradeType.SELL)
+            transaction_type = TransactionType.SELL
+        order_template = partial(self.trade_manager.create_express_order,
+                                 scrip=scrip,
+                                 exchange=self.exchange,
+                                 quantity=self.get_quantity(window, trade_type),
+                                 product=self.product)
+        
+        entry_order = order_template(transaction_type=transaction_type,
+                                     order_type=OrderType.LIMIT,
+                                     limit_price=self.get_entry(window=window,
+                                                                      trade_type=trade_type))
         entry_order = self.trade_manager.place_order(entry_order)
 
         stoploss_order = None
         if trade_type == TradeType.LONG:
-            stoploss_order = copy.deepcopy(self.sell_order_template)
+            transaction_type = TransactionType.SELL
         else:
-            stoploss_order = copy.deepcopy(self.buy_order_template)
-        stoploss_order.order_type = OrderType.SL_LIMIT
-        stoploss_order.trigger_price = self.get_stoploss(window=window, trade_type=TradeType.BUY)
-        stoploss_order.limit_price = self.get_stoploss(window=window, trade_type=TradeType.BUY)
+            transaction_type = TransactionType.BUY
+        sl_price = self.get_stoploss(window=window, trade_type=TradeType.BUY)
+        stoploss_order = order_template(transaction_type=transaction_type,
+                                        order_type=OrderType.SL_LIMIT,
+                                        limit_price=sl_price,
+                                        trigger_price=sl_price)
 
-        stoploss_order = self.trade_manager.place_sl_on_entry(entry_order, stoploss_order)
+        stoploss_order = self.trade_manager.place_another_order_on_entry(entry_order, stoploss_order)
         self.order_journal.append({"entry": entry_order,
                                    "sl": stoploss_order,
                                    "timestamp": window.iloc[-1].index})
 
     @abstractmethod
+    def strategy(self, window: pd.DataFrame) -> Optional[TradeType]:
+        pass
+
     def trade(self,
               df: pd.DataFrame,
               stream: bool = False) -> list[Order]:
         if not stream:
-            for window in df.rolling(self.moving_window_size):
-                
+            for ii in range(0, len(df) - self.moving_window_size + 1, 1):
+                window = df.iloc[ii: ii + self.moving_window_size]
+                if self.execution_type == ExecutionType.BACKTESTING:
+                    self.trade_manager.set_current_time(window.iloc[-1].name.to_pydatetime(),
+                                                        traverse=True)
+                self.trade_manager
+                ts = window.iloc[-1].index
+                if not self.can_trade(window):
+                    self.logger.info(f"Cannot trade at {ts}")
+                    continue
+                self.logger.debug(f"Trading at {ts}")
+                window = self.indicator_pipeline.compute(window)
+                trade_type = self.strategy(window)
+                if trade_type is None:
+                    continue
+                self.logger.info(f"Found trade {trade_type} at {ts}")
+                self.take_position(window, trade_type)
+                self.perform_squareoff(window)
+        else:
+            if self.can_trade(df):
+                trade_type = self.strategy(df)
+                if trade_type is not None:
+                    self.logger.info(f"Found trade {trade_type} at {ts}")
+                    self.take_position(df, trade_type)
+            self.perform_squareoff(df)
 
 
 class PriceEntryMixin(ABC):
 
     @abstractmethod
-    def get_entry_price(self, window: pd.DataFrame, trade_type: TradeType):
+    def get_entry(self, window: pd.DataFrame, trade_type: TradeType):
         pass
 
 
@@ -144,7 +216,7 @@ class NextPsychologicalPriceEntryMixin(PriceEntryMixin):
         self.extra = extra
         super().__init__(*args, **kwargs)
 
-    def get_entry_price(self, window: pd.DataFrame, trade_type: TradeType):
+    def get_entry(self, window: pd.DataFrame, trade_type: TradeType):
         x = window.iloc[-1][self.price_column]
         if trade_type == TradeType.BUY:
             return (x - x % self.psychological_number) + self.psychological_number + self.extra
@@ -155,17 +227,17 @@ class NextPsychologicalPriceEntryMixin(PriceEntryMixin):
 class CandleBasedPriceEntryMixin(PriceEntryMixin):
 
     def __init__(self,
-                 price_column: str,
+                 entry_price_column: str,
                  *args,
                  idx: int = -1,
                  extra: float = 1,
                  **kwargs):
-        self.price_column = price_column
+        self.price_column = entry_price_column
         self.extra = extra
         self.idx = idx
         super().__init__(*args, **kwargs)
 
-    def get_entry_price(self, window: pd.DataFrame, trade_type: TradeType):
+    def get_entry(self, window: pd.DataFrame, trade_type: TradeType):
         x = window.iloc[self.idx][self.price_column]
         if trade_type == TradeType.LONG:
             return x + self.extra
@@ -212,12 +284,12 @@ class RelativeStopLossAndTargetMixin(StopLossAndTargetMixin):
     def __init__(self,
                  relative_stoploss_value: float,
                  relative_target_value: float,
-                 price_column: str,
+                 sl_target_price_column: str,
                  *args,
                  **kwargs):
         self.relative_stoploss_value = relative_stoploss_value
         self.relative_target_value = relative_target_value
-        self.price_column = price_column
+        self.price_column = sl_target_price_column
         super().__init__(*args, **kwargs)
 
     def get_stoploss(self, window: pd.DataFrame, trade_type: TradeType) -> float:

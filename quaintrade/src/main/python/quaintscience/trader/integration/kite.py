@@ -153,7 +153,6 @@ class KiteManager(TradeManager):
                                 order_type = OrderType[order["order_type"]],
                                 product = TradingProduct[order["product"]],
                                 quantity = order["quantity"],
-                                purchase_price = order["price"],
                                 trigger_price = order["trigger_price"],
                                 limit_price = order["limit_price"],
                                 filled_quantity = order["filled_quantity"],

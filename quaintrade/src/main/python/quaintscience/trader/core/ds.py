@@ -3,6 +3,11 @@ from dataclasses import dataclass
 import datetime
 
 
+from .util import (default_dataclass_field,
+                   current_datetime_field,
+                   new_id_field)
+
+
 class OrderType(Enum):
     LIMIT = "limit"
     MARKET = "market"
@@ -32,20 +37,23 @@ class OrderState(Enum):
     COMPLETED = "completed"
 
 
+class ExecutionType(Enum):
+    BACKTESTING = "backtesting"
+    LIVE = "live"
+
+
 @dataclass
 class Order:
-    order_id: str
     scrip_id: str
     exchange_id: str
-    transaction_type: TransactionType
     scrip: str
     exchange: str
-    raw_dict: dict
-    timestamp: datetime.datetime
-    order_type: OrderType
-    product: TradingProduct
-    quantity: int
-    purchase_price: float
+    order_id: str = new_id_field()
+    transaction_type: TransactionType = TransactionType.BUY
+    timestamp: datetime.datetime = current_datetime_field()
+    order_type: OrderType = OrderType.MARKET
+    product: TradingProduct = TradingProduct.MIS
+    quantity: int = 1    
     validity: str = "DAY"
     state: OrderState = OrderState.PENDING
     trigger_price: float = None
@@ -53,23 +61,23 @@ class Order:
     filled_quantity: float = 0
     pending_quantity: float = 0
     cancelled_quantity: float = 0
-
+    raw_dict: dict = default_dataclass_field({})
 
 @dataclass
 class Position:
-    position_id: str
-    timestamp: datetime.datetime
     scrip_id: str
     scrip: str
     exchange_id: str
     exchange: str
-    product: TradingProduct
-    quantity: int
-    average_price: float
-    last_price: float
-    pnl: float
-    day_change: float
-    raw_dict: dict
+    position_id: str = new_id_field()
+    product: TradingProduct = TradingProduct.MIS
+    timestamp: datetime.datetime = current_datetime_field()
+    quantity: int = 0
+    average_price: float = 0.
+    last_price: float = 0.
+    pnl: float = 0.
+    day_change: float = 0.
+    raw_dict: dict = default_dataclass_field({})
 
     def __hash__(self):
         return hash(self.scrip, self.exchange, self.product)
@@ -82,8 +90,3 @@ class Position:
             and self.product == other.product):
             return True
         return False
-
-
-class ExecutionType(Enum):
-    BACKTESTING = "backtesting"
-    LIVE = "live"

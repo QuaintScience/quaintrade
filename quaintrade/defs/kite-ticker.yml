@@ -1,0 +1,9 @@
+
+include:
+  - generics/trade-manager-service.yml
+
+override:
+  classes:
+      TradeManagerService1:
+        class: quaintscience.trader.service.realtime_listener.RealtimeListener
+

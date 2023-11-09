@@ -218,12 +218,12 @@ class CDLPatternIndicator(Indicator):
 
 class BreakoutIndicator(Indicator):
         
-     def __init__(self,
-                  upper_breakout_column: str,
-                  lower_breakout_column: str,
-                  data_interval: str,
-                  *args,
-                  price_column: str = "close",
+    def __init__(self,
+                 upper_breakout_column: str,
+                 lower_breakout_column: str,
+                 data_interval: str,
+                 *args,
+                 price_column: str = "close",
                  **kwargs):
         self.upper_breakout_column = upper_breakout_column
         self.lower_breakout_column = lower_breakout_column
@@ -237,8 +237,8 @@ class BreakoutIndicator(Indicator):
         
         df.loc[((df[self.price_column] > df[self.upper_breakout_column].shift(freq=self.data_interval)) &
                 (df[self.price_column].shift(2, freq=self.data_interval) < df[self.upper_breakout_column])),
-                f"{output_column_name}_upper"] = 1.0
+                f"{output_column_name}_breakout"] = 1.0
 
         df.loc[((df[self.price_column] < df[self.lower_breakout_column].shift(freq=self.data_interval)) &
                 (df[self.price_column].shift(2, freq=self.data_interval) > df[self.lower_breakout_column])),
-                f"{output_column_name}_lower"] = 1.0
+                f"{output_column_name}_breakout"] = 1.0

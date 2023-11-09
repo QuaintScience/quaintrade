@@ -1,4 +1,3 @@
-import uuid
 import datetime
 from typing import Optional
 from dataclasses import dataclass
@@ -9,40 +8,40 @@ from ..core.ds import Order, Position, OrderType, TradingProduct, OrderState, Tr
 from .common import TradeManager
 
 
-
-@dataclass
+@dataclass(kw_only=True)
 class PaperPosition(Position):
     quantity_and_price_history: list[(float, float)]
 
 class PaperTradeManager(TradeManager):
 
     def __init__(self,
-                 instruments: list,
                  *args,
+                 instruments: list = None,
                  load_from_files: bool = True,
                  load_from_redis: bool = False,
                  redis_load_frequency: float = 0.5,
                  historic_context_from: datetime.datetime = None,
                  historic_context_to: datetime.datetime = None,
-                 min_interval: str = "1min",
+                 interval: str = "10min",
                  **kwargs):
         self.orders = []
         self.positions = {}
         self.gtt_orders = []
+        if instruments is None:
+            instruments = []
         self.instruments = instruments
         self.load_from_files = load_from_files
         self.load_from_redis = load_from_redis
         self.redis_load_frequency = redis_load_frequency
+        if historic_context_from is None:
+            historic_context_from = datetime.datetime.now() - datetime.timedelta(days=60)
+        if historic_context_to is None:
+            historic_context_to = datetime.datetime.now()
         self.historic_context_from = historic_context_from
         self.historic_context_to = historic_context_to
-        self.min_interval = min_interval
+        self.interval = interval
+        kwargs["user_credentials"] = None
         super().__init__(*args, **kwargs)
-
-    # Util
-
-    @property
-    def __new_id(self):
-        return str(uuid.uuid4().replace("-",""))
 
     # Login related
 
@@ -56,7 +55,8 @@ class PaperTradeManager(TradeManager):
     # Initialization
     def init(self):
         if self.load_from_redis:
-            ohlc_data = self.get_redis_tick_data_as_ohlc(refresh=True, interval='1min')
+            ohlc_data = self.get_redis_tick_data_as_ohlc(refresh=True,
+                                                         interval=self.interval)
             if isinstance(self.data, pd.Dataframe):
                 self.data = pd.concat([self.data, ohlc_data],
                                       axis=0)
@@ -66,7 +66,7 @@ class PaperTradeManager(TradeManager):
             for instrument in self.instruments:
                 data = self.get_historic_data(scrip=instrument["scrip"],
                                               exchange=instrument["exchange"],
-                                              interval=self.min_interval,
+                                              interval=self.interval,
                                               from_date=self.historic_context_from,
                                               to_date=self.historic_context_to,
                                               download=False)
@@ -77,7 +77,7 @@ class PaperTradeManager(TradeManager):
                 else:
                     self.data[key] = data
 
-    def set_current_time(self, scrip, exchange, dt: datetime.datatime, traverse: bool = False):
+    def set_current_time(self, dt: datetime.datetime, traverse: bool = False):
         for instrument in self.data.keys():
             to_idx = self.data[instrument].index.get_loc(dt, method="nearest")
             if self.data[instrument].iloc[to_idx].index < dt:
@@ -89,6 +89,7 @@ class PaperTradeManager(TradeManager):
                 self.current_time = dt
                 self.idx[instrument] = to_idx
                 return
+
             scrip, exchange = self.get_scrip_and_exchange_from_key(instrument)
             for idx in range(self.idx[instrument], to_idx):
                 self.idx[instrument] = idx
@@ -114,19 +115,14 @@ class PaperTradeManager(TradeManager):
         if price is None:
             price = order.limit_price
         
-        position = PaperPosition(position_id=self.__new_id,
-                                 timestamp=self.current_time,
+        position = PaperPosition(timestamp=self.current_time,
                                  scrip_id=order.scrip_id,
                                  scrip=order.scrip,
                                  exchange_id=order.exchange_id,
                                  exchange=order.exchange,
                                  product=order.product,
-                                 quantity=0,
                                  average_price=price,
-                                 last_price=last_price,
-                                 pnl=0,
-                                 day_change=0,
-                                 raw_dict={})
+                                 last_price=last_price)
 
         # Position generates a hash if exchange, scrip, and product are the same
         # So updating position to all the latest values if it already exists..

@@ -4,16 +4,27 @@ import datetime
 import configargparse
 
 from ..integration.kite import KiteManager
+from ..strategies.donchain_breakout import DonchainBreakoutStrategy
 from .common import TradeManagerService
 
 
-class HistoricDataDownloader(TradeManagerService):
+class BackTesterService(TradeManagerService):
 
     def __init__(self,
-                 *args, from_date=None, to_date=None, **kwargs):
+                 *args,
+                 from_date=None,
+                 to_date=None,
+                 interval="10min",
+                 **kwargs):
+        kwargs["provider"] = "paper"
         super().__init__(*args, **kwargs)
         self.from_date = self.__correct(from_date)
         self.to_date = self.__correct(to_date)
+        self.interval = interval
+        self.trade_manager.interval = interval
+        self.trade_manager.historic_context_from = self.from_date
+        self.trade_manager.historic_context_to = self.to_date
+
 
     def __correct(self, dt):
         if isinstance(dt, str):
@@ -24,15 +35,22 @@ class HistoricDataDownloader(TradeManagerService):
         return dt
 
     def start(self):
-        self.logger.info("Getting historic data....")
+        self.logger.info("Running backtest...")
         for instrument in self.instruments:
             print(instrument)
-            self.logger.info(f"Downloading instrument {instrument}")
-            self.trade_manager.download_historic_data(scrip=instrument["scrip"],
-                                                exchange=instrument["exchange"],
-                                                interval="minute",
-                                                from_date=self.from_date,
-                                                to_date=self.to_date)
+            self.strategy_executer = DonchainBreakoutStrategy(signal_scrip=instrument["scrip"],
+                                                              long_scrip=instrument["scrip"],
+                                                              short_scrip=instrument["scrip"],
+                                                              exchange=instrument["exchange"],
+                                                              trade_manager=self.trade_manager)
+            df = self.trade_manager.get_historic_data(scrip=instrument["scrip"],
+                                                      exchange=instrument["exchange"],
+                                                      interval=self.interval,
+                                                      from_date=self.from_date,
+                                                      to_date=self.to_date,
+                                                      download=False)
+            self.strategy_executer.trade(df=df,
+                                         stream=False)
 
     @staticmethod
     def get_args():

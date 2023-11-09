@@ -29,13 +29,13 @@ class OHLCRealtimeGrapher(TradeManagerService):
         super().__init__(*args, login_needed=False, **kwargs)
 
     def animate(self, ival):
-        df = list(self.manager.get_redis_tick_data_as_ohlc(from_redis=True).values())[0]
+        df = list(self.trade_manager.get_redis_tick_data_as_ohlc(from_redis=True).values())[0]
         self.ax.clear()
         mpf.plot(df, ax=self.ax,type='candle', style=self.candlestick_style)
 
     def start(self):
         self.candlestick_style = mpf.make_mpf_style(base_mpf_style='yahoo', rc={'font.size': 6})
-        self.fig, self.axes = mpf.plot(list(self.manager.get_redis_tick_data_as_ohlc(from_redis=True).values())[0],
+        self.fig, self.axes = mpf.plot(list(self.trade_manager.get_redis_tick_data_as_ohlc(from_redis=True).values())[0],
                                        returnfig=True,
                                        type='candle',
                                        title='Live Data',
