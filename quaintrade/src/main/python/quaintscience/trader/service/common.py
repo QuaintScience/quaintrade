@@ -67,8 +67,9 @@ class TradeManagerService(Service):
                         self.trade_manager.auth_state["access_token"] = access_token
         elif provider == "paper":
             self.trade_manager = PaperTradeManager(cache_path=cache_path,
-                                             redis_server=redis_server,
-                                             redis_port=redis_port)
+                                                   redis_server=redis_server,
+                                                   redis_port=redis_port,
+                                                   instruments=instruments)
         else:
             raise ValueError(f"Provider {provider} not found.")
         if self.trade_manager is not None and init:

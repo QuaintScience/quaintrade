@@ -1,21 +1,7 @@
-import asyncio
-import os
-from typing import Iterator
-import time
-
-import pandas as pd
-
-import mplfinance as mpf
-import matplotlib
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
-
-
-matplotlib.use('TkAgg')
+from ..core.graphing import live_ohlc_plot
 
 import configargparse
 
-from ..integration.kite import KiteManager
 from .common import TradeManagerService
 
 
@@ -28,21 +14,11 @@ class OHLCRealtimeGrapher(TradeManagerService):
         self.interval = interval
         super().__init__(*args, login_needed=False, **kwargs)
 
-    def animate(self, ival):
-        df = list(self.trade_manager.get_redis_tick_data_as_ohlc(from_redis=True).values())[0]
-        self.ax.clear()
-        mpf.plot(df, ax=self.ax,type='candle', style=self.candlestick_style)
+    def __get_live_data(self):
+        return list(self.trade_manager.get_redis_tick_data_as_ohlc(from_redis=True).values())[0]
 
     def start(self):
-        self.candlestick_style = mpf.make_mpf_style(base_mpf_style='yahoo', rc={'font.size': 6})
-        self.fig, self.axes = mpf.plot(list(self.trade_manager.get_redis_tick_data_as_ohlc(from_redis=True).values())[0],
-                                       returnfig=True,
-                                       type='candle',
-                                       title='Live Data',
-                                       style=self.candlestick_style)
-        self.ax = self.axes[0]
-        ani = animation.FuncAnimation(self.fig, self.animate, interval=250)
-        mpf.show()
+        live_ohlc_plot(get_live_ohlc_func=self.__get_live_data)
 
     @staticmethod
     def get_args():

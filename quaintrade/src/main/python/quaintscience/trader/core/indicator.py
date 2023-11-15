@@ -41,7 +41,7 @@ class Indicator(ABC, LoggerMixin):
         df, output_column_name, settings = self.postprocess(df=df,
                                                             output_column_name=output_column_name,
                                                             settings=settings)
-        return df, output_column_name
+        return df, output_column_name, settings
 
     @abstractmethod
     def compute_impl(self, df: pd.DataFrame,
@@ -66,6 +66,7 @@ class IndicatorPipeline(Indicator):
             if indicator_settings is None:
                 indicator_settings = {}
             indicator_settings = copy.deepcopy(indicator_settings).update(settings)
+            self.logger.info(f"Applying {indicator}")
             df, output_column_name, indicator_settings = indicator.compute(df,
                                                                            output_column_name,
                                                                            indicator_settings)
@@ -134,7 +135,7 @@ class SMAIndicator(Indicator):
             output_column_name = f"SMA{self.period}"
         
         df[output_column_name] = talib.SMA(df[settings.get("input_column", "close")], timeperiod=22)
-
+        return df, output_column_name, settings
 
 class ADXIndicator(Indicator):
         
@@ -149,6 +150,7 @@ class ADXIndicator(Indicator):
             output_column_name = f"ADX"
         
         df[output_column_name] = talib.ADX(df["high"], df["low"], df["close"])
+        return df, output_column_name, settings
 
 class RSIIndicator(Indicator):
         
@@ -163,6 +165,7 @@ class RSIIndicator(Indicator):
             output_column_name = f"RSI"
         
         df[output_column_name] = talib.RSI(df["close"])
+        return df, output_column_name, settings
 
 
 class ATRIndicator(Indicator):
@@ -178,6 +181,7 @@ class ATRIndicator(Indicator):
             output_column_name = f"ATR"
         
         df[output_column_name] = talib.ATR(df["high"], df["low"], df["close"])
+        return df, output_column_name, settings
 
 
 class BBANDSIndicator(Indicator):
@@ -193,6 +197,7 @@ class BBANDSIndicator(Indicator):
             output_column_name = ["BBandUpper", "BBandMiddle", "BBandLower"]
         
         df[output_column_name[0]], df[output_column_name[1]], df[output_column_name[2]] = talib.BBANDS(df["close"])
+        return df, output_column_name, settings
 
 
 class CDLPatternIndicator(Indicator):
@@ -214,6 +219,7 @@ class CDLPatternIndicator(Indicator):
                                                                   df["high"],
                                                                   df["low"],
                                                                   df["close"])
+        return df, output_column_name, settings
 
 
 class BreakoutIndicator(Indicator):
@@ -235,10 +241,14 @@ class BreakoutIndicator(Indicator):
                      output_column_name: Optional[Union[str, dict[str, str]]] = None,
                      settings: Optional[dict] = None) -> pd.DataFrame:
         
-        df.loc[((df[self.price_column] > df[self.upper_breakout_column].shift(freq=self.data_interval)) &
-                (df[self.price_column].shift(2, freq=self.data_interval) < df[self.upper_breakout_column])),
-                f"{output_column_name}_breakout"] = 1.0
+        if output_column_name is None or len(output_column_name) == 0:
+            output_column_name = [f"{self.upper_breakout_column}_breakout",
+                                  f"{self.lower_breakout_column}_breakout"]
+        df.loc[((df[self.price_column] > df[self.upper_breakout_column].shift()) &
+                (df[self.price_column].shift(2) < df[self.upper_breakout_column])),
+                output_column_name[0]] = 1.0
 
-        df.loc[((df[self.price_column] < df[self.lower_breakout_column].shift(freq=self.data_interval)) &
-                (df[self.price_column].shift(2, freq=self.data_interval) > df[self.lower_breakout_column])),
-                f"{output_column_name}_breakout"] = 1.0
+        df.loc[((df[self.price_column] < df[self.lower_breakout_column].shift()) &
+                (df[self.price_column].shift(2) > df[self.lower_breakout_column])),
+                output_column_name[1]] = 1.0
+        return df, output_column_name, settings

@@ -17,6 +17,7 @@ class BackTesterService(TradeManagerService):
                  interval="10min",
                  **kwargs):
         kwargs["provider"] = "paper"
+        kwargs["init"] = False
         super().__init__(*args, **kwargs)
         self.from_date = self.__correct(from_date)
         self.to_date = self.__correct(to_date)
@@ -24,7 +25,7 @@ class BackTesterService(TradeManagerService):
         self.trade_manager.interval = interval
         self.trade_manager.historic_context_from = self.from_date
         self.trade_manager.historic_context_to = self.to_date
-
+        self.trade_manager.init()
 
     def __correct(self, dt):
         if isinstance(dt, str):

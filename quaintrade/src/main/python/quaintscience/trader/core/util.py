@@ -54,6 +54,10 @@ def hash_dict(func):
     return wrapped
 
 
+def new_id():
+    return str(uuid.uuid4()).replace("-", "")
+
+
 def default_dataclass_field(obj):
     """Create a default field"""
     return field(default_factory=lambda: copy.copy(obj))
@@ -64,4 +68,4 @@ def current_datetime_field():
 
 def new_id_field():
     """Create a default field"""
-    return field(default_factory=lambda: str(uuid.uuid4()).replace("-", ""))
+    return field(default_factory=lambda: new_id())

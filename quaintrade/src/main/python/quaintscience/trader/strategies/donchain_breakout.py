@@ -15,10 +15,10 @@ class DonchainBreakoutStrategy(RelativeStopLossAndTargetMixin,
                                StrategyExecutor):
 
     def __init__(self, *args, **kwargs):
-        indicators = indicators=[DonchainIndicator(),
-                                 BreakoutIndicator(upper_breakout_column="donchainUpper",
+        indicators = indicators=[(DonchainIndicator(), None, None),
+                                 (BreakoutIndicator(upper_breakout_column="donchainUpper",
                                                    lower_breakout_column="donchainLower",
-                                                   data_interval="10min")]
+                                                   data_interval="10min"), None, None)]
         kwargs["indicator_pipeline"] = IndicatorPipeline(indicators=indicators)
         kwargs["entry_price_column"] = "close"
         kwargs["sl_target_price_column"] = "close"

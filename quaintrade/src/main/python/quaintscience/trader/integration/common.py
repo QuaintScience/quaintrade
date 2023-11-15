@@ -6,8 +6,8 @@ from threading import Lock
 import http.server
 import socketserver
 from urllib.parse import urlparse, parse_qs
+from typing import Optional
 
-import talib
 import pandas as pd
 import redis
 
@@ -78,13 +78,6 @@ class TradeManager(ABC, LoggerMixin):
             self.redis = None
         super().__init__(*args, **kwargs)
 
-
-    # Backtesting related
-
-    def set_backtesting_time(self,
-                             tim: datetime.datetime):
-        self.backtesting_time = tim
-
     # Utils
 
     def get_key_from_scrip(self,
@@ -131,12 +124,20 @@ class TradeManager(ABC, LoggerMixin):
 
     @abstractmethod
     def place_order(self,
-                    order: Order):
+                    order: Order) -> Order:
         pass
 
     def order_callback(self,
                        orders):
         raise NotImplementedError("Order Callback")
+
+    @abstractmethod
+    def cancel_pending_orders(self):
+        pass
+
+    @abstractmethod
+    def cancel_order(self, order: Order) -> Order:
+        pass
 
     @abstractmethod
     def get_positions(self) -> list[Position]:
@@ -150,9 +151,11 @@ class TradeManager(ABC, LoggerMixin):
                             product: TradingProduct = TradingProduct.MIS,
                             order_type: OrderType = OrderType.MARKET,
                             limit_price: float = None,
-                            trigger_price: float = None):
-        return Order(order_id=self.__new_id,
-                     scrip_id=scrip,
+                            trigger_price: float = None,
+                            tags: Optional[list] = None) -> Order:
+        if tags is None:
+            tags = []
+        return Order(scrip_id=scrip,
                      exchange_id=exchange,
                      scrip=scrip,
                      exchange=exchange,
@@ -162,7 +165,8 @@ class TradeManager(ABC, LoggerMixin):
                      product = product,
                      quantity = quantity,
                      trigger_price = trigger_price,
-                     limit_price = limit_price)
+                     limit_price = limit_price,
+                     tags=tags)
 
     def place_express_order(self, 
                             scrip: str,
@@ -172,20 +176,22 @@ class TradeManager(ABC, LoggerMixin):
                             product: TradingProduct = TradingProduct.MIS,
                             order_type: OrderType = OrderType.MARKET,
                             limit_price: float = None,
-                            trigger_price: float = None):
-        self.place_order(self.create_express_order(scrip=scrip,
-                                                   exchange=exchange,
-                                                   quantity=quantity,
-                                                   transaction_type=transaction_type,
-                                                   product=product,
-                                                   order_type=order_type,
-                                                   limit_price=limit_price,
-                                                   trigger_price=trigger_price))
+                            trigger_price: float = None) -> Order:
+        order = self.create_express_order(scrip=scrip,
+                                          exchange=exchange,
+                                          quantity=quantity,
+                                          transaction_type=transaction_type,
+                                          product=product,
+                                          order_type=order_type,
+                                          limit_price=limit_price,
+                                          trigger_price=trigger_price)
+        order = self.place_order(order)
+        return order
 
     @abstractmethod
     def place_another_order_on_entry(self, 
                                      entry_order: Order,
-                                     other_order: Order):
+                                     other_order: Order) -> (Order, Order):
         pass   
 
     # Get Historical Data
@@ -223,14 +229,16 @@ class TradeManager(ABC, LoggerMixin):
                         scrip, exchange, fdate, tdate = f_base.split("-")
                     fdate = datestring_to_datetime(fdate)
                     tdate = datestring_to_datetime(tdate)
+                    print(fdate, tdate)
                     if ((fdate >= from_date and tdate <=to_date)
                         or (tdate >= from_date and tdate <= to_date)
                         or (fdate >= from_date and fdate <= to_date)):
                         this_fpath = os.path.join(dirname, f)
                         self.logger.info(f"Reading {this_fpath}")
                         data.append(self.read_data_file(this_fpath))
-                data = pd.concat(data, axis=0) if len(data) > 0 else data[0]
-                return self.postprocess_data(data, interval)
+                data = pd.concat(data, axis=0) if len(data) > 1 else data[0]
+                data = self.postprocess_data(data, interval)
+                return data.loc[(data.index >= from_date) & (data.index <= to_date)]
             else:
                 self.download_historic_data(scrip,
                                             exchange,

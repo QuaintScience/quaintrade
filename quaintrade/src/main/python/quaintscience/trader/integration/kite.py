@@ -116,7 +116,13 @@ class KiteManager(TradeManager):
 
     # Order management
 
-    def place_order(self, order: Order) -> str:
+    def cancel_pending_orders(self):
+        pass
+
+    def cancel_order(self, order: Order) -> Order:
+        raise NotImplemented(f"Cancel order ({order})")
+
+    def place_order(self, order: Order) -> Order:
         order_id = self.kite.place_order(tradingsymbol=order.scrip,
                                          exchange=order.exchange,
                                          transaction_type=order.transaction_type.value,
@@ -125,7 +131,8 @@ class KiteManager(TradeManager):
                                          order_type=order.order_type.value,
                                          product=order.product.value,
                                          validity=order.validity)
-        return order_id
+        order.order_id = order_id
+        return order
 
     def order_callback(self, orders):
         raise NotImplementedError("Order Callback")

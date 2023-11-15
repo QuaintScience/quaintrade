@@ -1,6 +1,7 @@
 from enum import Enum
 from dataclasses import dataclass
 import datetime
+from typing import Optional
 
 
 from .util import (default_dataclass_field,
@@ -61,7 +62,10 @@ class Order:
     filled_quantity: float = 0
     pending_quantity: float = 0
     cancelled_quantity: float = 0
+    price: float = 0
     raw_dict: dict = default_dataclass_field({})
+    tags: list = default_dataclass_field([])
+    parent_order_id: Optional[str] = None
 
 @dataclass
 class Position:
