@@ -147,9 +147,8 @@ class ADXIndicator(Indicator):
                 output_column_name: Optional[Union[str, dict[str, str]]] = None,
                 settings: Optional[dict] = None) -> pd.DataFrame:
         if output_column_name is None:
-            output_column_name = f"ADX"
-        
-        df[output_column_name] = talib.ADX(df["high"], df["low"], df["close"])
+            output_column_name = ["ADX"]
+        df[output_column_name[0]] = talib.ADX(df["high"], df["low"], df["close"])
         return df, output_column_name, settings
 
 class RSIIndicator(Indicator):
@@ -162,9 +161,9 @@ class RSIIndicator(Indicator):
                 output_column_name: Optional[Union[str, dict[str, str]]] = None,
                 settings: Optional[dict] = None) -> pd.DataFrame:
         if output_column_name is None:
-            output_column_name = f"RSI"
+            output_column_name = ["RSI"]
         
-        df[output_column_name] = talib.RSI(df["close"])
+        df[output_column_name[0]] = talib.RSI(df["close"])
         return df, output_column_name, settings
 
 
@@ -229,12 +228,16 @@ class BreakoutIndicator(Indicator):
                  lower_breakout_column: str,
                  data_interval: str,
                  *args,
-                 price_column: str = "close",
+                 upper_price_column: str = "high",
+                 lower_price_column: str = "low",
+                 candle_confirmation: bool = True,
                  **kwargs):
         self.upper_breakout_column = upper_breakout_column
         self.lower_breakout_column = lower_breakout_column
-        self.price_column = price_column
+        self.upper_price_column = upper_price_column
+        self.lower_price_column = lower_price_column
         self.data_interval = data_interval
+        self.candle_confirmation = candle_confirmation
         super().__init__(*args, **kwargs)
 
     def compute_impl(self, df: pd.DataFrame,
@@ -244,11 +247,15 @@ class BreakoutIndicator(Indicator):
         if output_column_name is None or len(output_column_name) == 0:
             output_column_name = [f"{self.upper_breakout_column}_breakout",
                                   f"{self.lower_breakout_column}_breakout"]
-        df.loc[((df[self.price_column] > df[self.upper_breakout_column].shift()) &
-                (df[self.price_column].shift(2) < df[self.upper_breakout_column])),
+        df[output_column_name[0]] = 0.
+        df[output_column_name[1]] = 0.
+        df.loc[((df[self.upper_price_column] > df[self.upper_breakout_column].shift()) &
+                (df[self.upper_price_column].shift() <= df[self.upper_breakout_column].shift(2)) &
+                (df["close"] >= df["open"])),
                 output_column_name[0]] = 1.0
 
-        df.loc[((df[self.price_column] < df[self.lower_breakout_column].shift()) &
-                (df[self.price_column].shift(2) > df[self.lower_breakout_column])),
+        df.loc[((df[self.lower_price_column] < df[self.lower_breakout_column].shift()) &
+                (df[self.lower_price_column].shift() >= df[self.lower_breakout_column].shift(2)) &
+                (df["close"] <= df["open"])),
                 output_column_name[1]] = 1.0
         return df, output_column_name, settings

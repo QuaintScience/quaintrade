@@ -12,6 +12,7 @@ from .ds import (Order,
                  TransactionType,
                  ExecutionType,
                  TradingProduct)
+from .graphing import backtesting_results_plot
 from .indicator import IndicatorPipeline
 
 from ..integration.common import TradeManager
@@ -45,6 +46,8 @@ class StrategyExecutor(ABC, LoggerMixin):
                  execution_type: ExecutionType = ExecutionType.BACKTESTING,
                  moving_window_size: int = 2,
                  trade_manager: TradeManager = None,
+                 plot_results: bool = True,
+                 indicator_fields: Optional[list] = None,
                  **kwargs):
         self.signal_scrip = signal_scrip
         self.long_scrip = long_scrip
@@ -71,6 +74,10 @@ class StrategyExecutor(ABC, LoggerMixin):
         self.trade_manager = trade_manager
         self.execution_type = execution_type
         self.moving_window_size = moving_window_size
+        self.plot_results = plot_results
+        if indicator_fields is None:
+            indicator_fields = []
+        self.indicator_fields = indicator_fields
         self.order_journal = []
 
         super().__init__(*args, **kwargs)
@@ -184,7 +191,6 @@ class StrategyExecutor(ABC, LoggerMixin):
                 window = df.iloc[ii: ii + self.moving_window_size]
                 now_tick = window.iloc[-1].name.to_pydatetime()
                 if self.execution_type == ExecutionType.BACKTESTING:
-                    print(f"now_tick {now_tick}")
                     self.trade_manager.set_current_time(now_tick,
                                                         traverse=True)
                 self.trade_manager
@@ -201,7 +207,9 @@ class StrategyExecutor(ABC, LoggerMixin):
                 self.perform_squareoff(window)
             if self.execution_type == ExecutionType.BACKTESTING:
                 # Plot candlestick + strategy markers + PnL
-                pass
+                if self.plot_results:
+                    backtesting_results_plot(df, events=self.trade_manager.events,
+                                             indicator_fields=self.indicator_fields)
 
         else:
             if self.can_trade(df):
@@ -243,18 +251,24 @@ class NextPsychologicalPriceEntryMixin(PriceEntryMixin):
 class CandleBasedPriceEntryMixin(PriceEntryMixin):
 
     def __init__(self,
-                 entry_price_column: str,
+                 long_entry_price_column: str,
+                 short_entry_price_column: str,
                  *args,
                  idx: int = -1,
                  extra: float = 1,
                  **kwargs):
-        self.price_column = entry_price_column
+        self.long_entry_price_column = long_entry_price_column
+        self.short_entry_price_column = short_entry_price_column
         self.extra = extra
         self.idx = idx
         super().__init__(*args, **kwargs)
 
     def get_entry(self, window: pd.DataFrame, trade_type: TradeType):
-        x = window.iloc[self.idx][self.price_column]
+        x = None
+        if trade_type == TradeType.LONG:
+            x = window.iloc[self.idx][self.long_entry_price_column]
+        else:
+            x = window.iloc[self.idx][self.short_entry_price_column]
         if trade_type == TradeType.LONG:
             return x + self.extra
         else:
@@ -300,25 +314,31 @@ class RelativeStopLossAndTargetMixin(StopLossAndTargetMixin):
     def __init__(self,
                  relative_stoploss_value: float,
                  relative_target_value: float,
-                 sl_target_price_column: str,
+                 sl_price_column_long: str,
+                 sl_price_column_short: str,
+                 target_price_column_long: str,
+                 target_price_column_short: str,
                  *args,
                  **kwargs):
         self.relative_stoploss_value = relative_stoploss_value
         self.relative_target_value = relative_target_value
-        self.price_column = sl_target_price_column
+        self.sl_price_column_long = sl_price_column_long
+        self.sl_price_column_short = sl_price_column_short
+        self.target_price_column_long = target_price_column_long
+        self.target_price_column_short = target_price_column_short
         super().__init__(*args, **kwargs)
 
     def get_stoploss(self, window: pd.DataFrame, trade_type: TradeType) -> float:
         if trade_type == TradeType.LONG:
-            return window.iloc[-1][self.price_column] - self.relative_stoploss_value
+            return window.iloc[-1][self.sl_price_column_long] - self.relative_stoploss_value
         else:
-            return window.iloc[-1][self.price_column] + self.relative_stoploss_value
+            return window.iloc[-1][self.sl_price_column_short] + self.relative_stoploss_value
     
     def get_target(self, window: pd.DataFrame, trade_type: TradeType) -> float:
         if trade_type == TradeType.LONG:
-            return window.iloc[-1][self.price_column] + self.relative_target_value
+            return window.iloc[-1][self.target_price_column_long] + self.relative_target_value
         else:
-            return window.iloc[-1][self.price_column] - self.relative_target_value
+            return window.iloc[-1][self.target_price_column_short] - self.relative_target_value
 
 
 class CandleBasedStopLossAndTargetMixin(StopLossAndTargetMixin):

@@ -229,7 +229,6 @@ class TradeManager(ABC, LoggerMixin):
                         scrip, exchange, fdate, tdate = f_base.split("-")
                     fdate = datestring_to_datetime(fdate)
                     tdate = datestring_to_datetime(tdate)
-                    print(fdate, tdate)
                     if ((fdate >= from_date and tdate <=to_date)
                         or (tdate >= from_date and tdate <= to_date)
                         or (fdate >= from_date and fdate <= to_date)):
