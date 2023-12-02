@@ -66,6 +66,8 @@ class Order:
     raw_dict: dict = default_dataclass_field({})
     tags: list = default_dataclass_field([])
     parent_order_id: Optional[str] = None
+    group_id: Optional[str] = None
+
 
 @dataclass
 class Position:
@@ -84,7 +86,7 @@ class Position:
     raw_dict: dict = default_dataclass_field({})
 
     def __hash__(self):
-        return hash(self.scrip, self.exchange, self.product)
+        return hash(self.scrip, self.exchange, self.product.value)
 
     def __eq__(self, other: object):
         if not isinstance(other, Position):
@@ -94,3 +96,9 @@ class Position:
             and self.product == other.product):
             return True
         return False
+
+
+class CandleType(Enum):
+
+    OHLC = "ohlc"
+    HEIKIN_ASHI = "heikin_ashi"

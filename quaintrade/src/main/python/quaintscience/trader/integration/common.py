@@ -16,7 +16,8 @@ from ..core.ds import (Order,
                        Position,
                        TransactionType,
                        TradingProduct,
-                       OrderType)
+                       OrderType,
+                       OrderState)
 from ..core.util import today_timestamp, datestring_to_datetime
 
 
@@ -76,6 +77,7 @@ class TradeManager(ABC, LoggerMixin):
                                      self.redis_port)
         else:
             self.redis = None
+        self.gtt_orders = []
         super().__init__(*args, **kwargs)
 
     # Utils
@@ -118,6 +120,45 @@ class TradeManager(ABC, LoggerMixin):
 
     # Order streaming / management
 
+    def cancel_invalid_child_orders(self):
+        for order in self.get_orders():
+            if (order.parent_order_id is not None and
+                order.state == OrderState.COMPLETED):
+                for other_order in self.get_orders():
+                    if (other_order.parent_order_id == order.parent_order_id and
+                        other_order.order_id != order.order_id and
+                        other_order.state == OrderState.PENDING):
+                        self.logger.info(f"Cancelling order {order.order_id}/"
+                                         f"{order.scrip}/{order.exchange}/"
+                                         f"{order.transaction_type}/{order.order_type}"
+                                         f"{','.join(order.tags)} due OCO (Sibling)")
+                        self.cancel_order(other_order)
+                        self.delete_gtt_orders_for(other_order)
+
+    def cancel_invalid_group_orders(self):
+        for order in self.get_orders():
+            if (order.group_id is not None
+                and order.state == OrderState.COMPLETED):
+                for other_order in self.get_orders():
+                    if (other_order.group_id == order.group_id
+                        and other_order.order_id != order.order_id
+                        and other_order.state == OrderState.PENDING
+                        and "entry_order" in other_order.tags):
+                        self.logger.info(f"Cancelling order {other_order.order_id[:4]}/"
+                                         f"{other_order.scrip}/{other_order.exchange}/"
+                                         f"{other_order.transaction_type}/{other_order.order_type}"
+                                         f"{','.join(other_order.tags)} due OCO (Group)")
+                        self.cancel_order(other_order)
+                        self.delete_gtt_orders_for(other_order)
+
+    @abstractmethod
+    def get_orders_as_table(self) -> (list[list], list):
+        pass
+
+    @abstractmethod
+    def get_positions_as_table(self) -> (list[list], list):
+        pass
+
     @abstractmethod
     def get_orders(self) -> list[Order]:
         pass
@@ -130,6 +171,10 @@ class TradeManager(ABC, LoggerMixin):
     def order_callback(self,
                        orders):
         raise NotImplementedError("Order Callback")
+
+    @abstractmethod
+    def update_order(self, order: Order) -> Order:
+        pass
 
     @abstractmethod
     def cancel_pending_orders(self):
@@ -152,7 +197,9 @@ class TradeManager(ABC, LoggerMixin):
                             order_type: OrderType = OrderType.MARKET,
                             limit_price: float = None,
                             trigger_price: float = None,
-                            tags: Optional[list] = None) -> Order:
+                            tags: Optional[list] = None,
+                            group_id: Optional[str] = None,
+                            parent_order_id: Optional[str] = None) -> Order:
         if tags is None:
             tags = []
         return Order(scrip_id=scrip,
@@ -166,7 +213,9 @@ class TradeManager(ABC, LoggerMixin):
                      quantity = quantity,
                      trigger_price = trigger_price,
                      limit_price = limit_price,
-                     tags=tags)
+                     tags=tags,
+                     group_id=group_id,
+                     parent_order_id=parent_order_id)
 
     def place_express_order(self, 
                             scrip: str,
@@ -176,7 +225,10 @@ class TradeManager(ABC, LoggerMixin):
                             product: TradingProduct = TradingProduct.MIS,
                             order_type: OrderType = OrderType.MARKET,
                             limit_price: float = None,
-                            trigger_price: float = None) -> Order:
+                            trigger_price: float = None,
+                            group_id: Optional[str] = None,
+                            parent_order_id: Optional[str] = None,
+                            tags: Optional[list] = None) -> Order:
         order = self.create_express_order(scrip=scrip,
                                           exchange=exchange,
                                           quantity=quantity,
@@ -184,15 +236,49 @@ class TradeManager(ABC, LoggerMixin):
                                           product=product,
                                           order_type=order_type,
                                           limit_price=limit_price,
-                                          trigger_price=trigger_price)
+                                          trigger_price=trigger_price,
+                                          group_id=group_id,
+                                          parent_order_id=parent_order_id,
+                                          tags=tags)
         order = self.place_order(order)
         return order
 
-    @abstractmethod
-    def place_another_order_on_entry(self, 
-                                     entry_order: Order,
-                                     other_order: Order) -> (Order, Order):
-        pass   
+    def place_gtt_order(self,
+                        entry_order: Order,
+                        other_order: Order) -> (Order, Order):
+        self.gtt_orders.append((entry_order, other_order))
+        return entry_order, other_order
+
+    def get_gtt_orders(self) -> list[(Order, Order)]:
+        return self.gtt_orders
+
+    def get_gtt_orders_for(self, order: Order) -> list[Order]:
+        result = []
+        for o1, o2 in self.get_gtt_orders():
+            if o1.order_id == order.order_id:
+                result.append(o2)
+        return result
+
+    def update_gtt_order(self,
+                         entry_order: Order,
+                         other_order: Order) -> (Order, Order):
+        for ii, (o1, o2) in enumerate(self.gtt_orders):
+            if (o1.order_id == entry_order.order_id
+                and o2.order_id == other_order.order_id):
+                self.gtt_orders[ii] == (entry_order, other_order)
+        return entry_order, other_order
+
+    def delete_gtt_orders_for(self, order: Order):
+        new_gtt_orders = []
+        for o1, o2 in self.get_gtt_orders():
+            if o1.order_id == order.order_id:
+                continue
+            new_gtt_orders.append((o1, o2))
+        self.gtt_orders = new_gtt_orders
+
+
+    def clear_gtt_orders(self):
+        self.gtt_orders =[]
 
     # Get Historical Data
 
@@ -237,6 +323,7 @@ class TradeManager(ABC, LoggerMixin):
                         data.append(self.read_data_file(this_fpath))
                 data = pd.concat(data, axis=0) if len(data) > 1 else data[0]
                 data = self.postprocess_data(data, interval)
+                self.logger.info(f"Read {len(data)} rows.")
                 return data.loc[(data.index >= from_date) & (data.index <= to_date)]
             else:
                 self.download_historic_data(scrip,

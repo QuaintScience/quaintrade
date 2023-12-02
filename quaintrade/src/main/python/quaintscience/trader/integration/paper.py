@@ -130,24 +130,58 @@ class PaperTradeManager(TradeManager):
                 self.__process_orders(scrip=scrip,
                                       exchange=exchange)
 
-    def __refresh_positions(self):
+    def get_orders_as_table(self):
+        status = [[self.current_time,
+                       sum([1 for order in self.orders if order.state == OrderState.PENDING]),
+                       sum([1 for order in self.orders if order.state == OrderState.COMPLETED]),
+                       sum([1 for order in self.orders if order.state == OrderState.CANCELLED])]]
+        print(tabulate(status, headers=["Time", "Pending", "Completed", "Cancelled"], tablefmt="double_outline"))
+        
+        printable_orders = []
+        for order in self.orders:
+            if order.state == OrderState.PENDING:
+                printable_orders.append(["R",
+                                         order.order_id[:4],
+                                         order.parent_order_id[:4] if order.parent_order_id is not None else "",
+                                         order.scrip,
+                                         order.exchange,
+                                         order.transaction_type,
+                                         order.quantity,
+                                         order.order_type,
+                                         order.limit_price,
+                                         ", ".join(order.tags)])
+        for from_order, to_order in self.gtt_orders:
+            printable_orders.append(["GTT",
+                                     to_order.order_id[:4],
+                                     from_order.order_id[:4],
+                                     to_order.scrip,
+                                     to_order.exchange,
+                                     to_order.transaction_type,
+                                     to_order.quantity,
+                                     to_order.order_type,
+                                     to_order.limit_price,
+                                     ", ".join(to_order.tags)])
+        headers = ["Typ", "id", "parent", "scrip", "exchange",
+                   "buy/sell", "qty", "order_type", "limit_price", "reason"]
+        print(tabulate(printable_orders, headers=headers, tablefmt="double_outline"))
+        return printable_orders, headers
+
+
+    def get_positions_as_table(self):
         # self.logger.debug(f"{self.current_time} entered __refresh_positions")
         printable_positions = []
         for _, position in self.positions.items():
             money_spent = sum(quantity * price
                               for price, quantity in position.quantity_and_price_history)
-            cash_flow = sum(- quantity * price
+            cash_flow = sum(-quantity * price
                             for price, quantity in position.quantity_and_price_history)
             quantity_transacted = sum(abs(quantity)
                                       for _, quantity in position.quantity_and_price_history)
             net_quantity = sum(quantity
                                for _, quantity in position.quantity_and_price_history)
-            if quantity_transacted == 0:
-                position.average_price = 0
-            else:
-                position.average_price =  abs(money_spent) / abs(net_quantity)
+            position.average_price =  (abs(money_spent) / abs(net_quantity)) if abs(net_quantity) > 0 else 0
             key = self.get_key_from_scrip(position.scrip, position.exchange)
-            print(cash_flow, position.quantity_and_price_history)
+            #print(cash_flow, position.quantity_and_price_history)
             position.pnl = cash_flow + (net_quantity * self.data[key].iloc[self.idx[key]]["close"])
             printable_positions.append([self.current_time,
                                         position.scrip,
@@ -156,9 +190,12 @@ class PaperTradeManager(TradeManager):
                                         position.average_price,
                                         self.data[key].iloc[self.idx[key]]["close"],
                                         position.pnl])
-            #self.logger.info(f"{self.current_time} "
-            #                 f"Position: {position.scrip}/{position.exchange} | {net_quantity} | {position.pnl:.2f}")
-        print(tabulate(printable_positions, headers=["time", "scrip", "exchange", "qty", "avgP", "LTP", "PnL"]))
+            self.logger.info(f"{self.current_time} "
+                             f"Position: {position.scrip}/{position.exchange} | {net_quantity} | {position.pnl:.2f}")
+        headers = ["time", "scrip", "exchange", "qty", "avgP", "LTP", "PnL"]
+        print(tabulate(printable_positions, headers=headers, tablefmt="double_outline"))
+        return printable_positions, headers
+
     def __add_position(self,
                        order: Order,
                        last_price: float,
@@ -168,7 +205,7 @@ class PaperTradeManager(TradeManager):
             price = order.limit_price
         order.price = price
         self.logger.info(f"Order {order.transaction_type.value} {order.order_id[:4]}/{order.scrip}/"
-                         f"{order.exchange}/{order.order_type.value} [tags={order.tags}] @ {order.limit_price} executed.")
+                         f"{order.exchange}/{order.order_type.value} [tags={order.tags}] @ {order.price} x {order.quantity} executed.")
         self.events.append([self.current_time,
                             {"scrip": order.scrip,
                              "exchange": order.exchange,
@@ -176,7 +213,7 @@ class PaperTradeManager(TradeManager):
                              "quantity": order.quantity,
                              "price": price,
                              "event_type": ",".join(order.tags)}])
-
+        # self.logger.info(self.events)
         position = PaperPosition(timestamp=self.current_time,
                                  scrip_id=order.scrip_id,
                                  scrip=order.scrip,
@@ -188,8 +225,10 @@ class PaperTradeManager(TradeManager):
 
         # Position generates a hash if exchange, scrip, and product are the same
         # So updating position to all the latest values if it already exists..
+        # print(self.positions)
         self.positions[position] = self.positions.get(position, position)
         position = self.positions[position]
+        print(position)
         if order.transaction_type == TransactionType.SELL:
             position.quantity -= order.quantity
             position.quantity_and_price_history.append((price, -order.quantity))
@@ -209,40 +248,47 @@ class PaperTradeManager(TradeManager):
             key = self.get_key_from_scrip(order.scrip, order.exchange)
             candle = self.data[key].iloc[self.idx[key]]
             if order.state == OrderState.PENDING:
+                change = False
                 if order.order_type in [OrderType.SL_LIMIT, OrderType.SL_MARKET]:
                     if order.transaction_type == TransactionType.BUY:
-                        if (candle["low"] > order.trigger_price
-                            or (candle["low"] <= order.trigger_price and
-                                candle["high"] >= order.trigger_price)):
+                        if candle["high"] >= order.trigger_price:
                             if order.order_type == OrderType.SL_LIMIT:
                                 order.order_type = OrderType.LIMIT
                             else:
                                 order.order_type = OrderType.MARKET
                     else:
-                        if (candle["high"] < order.trigger_price
-                            or (candle["high"] <= order.trigger_price and
-                                candle["low"] >= order.trigger_price)):
+                        if candle["low"] <= order.trigger_price:
                             if order.order_type == OrderType.SL_LIMIT:
+                                self.logger.info(f"{order.order_id[:4]} Became LIMIT FROM SL_LIMIT")
+                                change = True
                                 order.order_type = OrderType.LIMIT
                             else:
                                 order.order_type = OrderType.MARKET
 
                 if order.order_type == OrderType.LIMIT:
                     if order.transaction_type == TransactionType.BUY:
-                        if order.limit_price >= candle["low"]:
+                        if candle["low"] <= order.limit_price:
                             self.__add_position(order,
                                                 last_price=candle["close"],
                                                 price=min(order.limit_price,
                                                           candle["high"]))
+                        self.cancel_invalid_child_orders()
                     elif order.transaction_type == TransactionType.SELL:
-                        if order.limit_price <= candle["high"]:
+                        if change:
+                            print(order, candle)
+                        if candle["high"] >= order.limit_price:
                              self.__add_position(order,
                                                  last_price=candle["close"],
                                                  price=max(order.limit_price,
                                                            candle["low"]))
-
+                        self.cancel_invalid_child_orders()
                 elif order.order_type == OrderType.MARKET:
                     self.__add_position(order, last_price=candle["close"], price=candle["close"])
+                    self.cancel_invalid_child_orders()
+
+                if order.state == OrderState.COMPLETED:
+                    self.cancel_invalid_child_orders()
+                    self.cancel_invalid_group_orders()
         new_gtt_orders = []
         gtt_state_changed = False
         for ii, (entry_order, other_order) in enumerate(self.gtt_orders):
@@ -256,52 +302,34 @@ class PaperTradeManager(TradeManager):
             new_gtt_orders.append((entry_order, other_order))
         self.gtt_orders = new_gtt_orders
 
-        for order in self.orders:
-            if (order.parent_order_id is not None and
-                order.state == OrderState.COMPLETED):
-                for other_order in self.orders:
-                    if (other_order.parent_order_id == order.parent_order_id and
-                        other_order.order_id != order.order_id and
-                        other_order.state == OrderState.PENDING):
-                        self.logger.info(f"Cancelling order {order.order_id}/"
-                                         f"{order.scrip}/{order.exchange}/"
-                                         f"{order.transaction_type}/{order.order_type}"
-                                         f"{','.join(order.tags)} due OCO")
-                        self.cancel_order(other_order)
         if gtt_state_changed and self.refresh_orders_immediately_on_gtt_state_change:
             self.logger.info(f"{self.current_time} gtt_state_changed")
             self.__process_orders(scrip=scrip,
                                   exchange=exchange,
                                   inside_a_recursion=True)
-        if not inside_a_recursion:
-            status = [[self.current_time,
-                       sum([1 for order in self.orders if order.state == OrderState.PENDING]),
-                       sum([1 for order in self.orders if order.state == OrderState.COMPLETED]),
-                       sum([1 for order in self.orders if order.state == OrderState.CANCELLED])]]
-            print(tabulate(status, headers=["Time", "Pending", "Completed", "Cancelled"]))
-            printable_orders = []
-            for order in self.orders:
-                if order.state == OrderState.PENDING:
-                    printable_orders.append([order.parent_order_id[:4] if order.parent_order_id is not None else "",
-                                             order.scrip,
-                                             order.exchange,
-                                             order.transaction_type,
-                                             order.quantity,
-                                             order.order_type,
-                                             order.limit_price,
-                                            ",".join(order.tags)])
-            print(tabulate(printable_orders, headers=["parent", "scrip", "exchange", "buy/sell", "qty", "order_type", "limit_price", "reason"]))
-
 
         for position in self.positions:
             key = self.get_key_from_scrip(position.scrip, position.exchange)
             position.last_price = candle = self.data[key].iloc[self.idx[key]]["close"]
             position.pnl = (position.last_price - position.average_price) * position.quantity
-        self.__refresh_positions()
+        self.order_callback(self.orders)
+
+    def order_callback(self, orders):
+        self.cancel_invalid_child_orders()
+        self.cancel_invalid_group_orders()
 
     # Order streaming / management
     def get_orders(self) -> list[Order]:
         return self.orders
+
+    def update_order(self, order: Order) -> Order:
+        found = False
+        for ii, other_order in enumerate(self.orders):
+            if other_order.order_id == order.order_id:
+                self.orders[ii] = order
+                found = True
+        if not found:
+            raise KeyError(f"Order {order} not found.")
 
     def cancel_pending_orders(self):
         new_orders = []
@@ -321,18 +349,10 @@ class PaperTradeManager(TradeManager):
             if other_order.order_id == order.order_id:
                 other_order.state = OrderState.CANCELLED
 
-    def order_callback(self, orders):
-        raise NotImplementedError("Order Callback not supported in paper trader")
-
     def get_positions(self) -> list[Position]:
         return self.positions
 
-    def place_another_order_on_entry(self,
-                                     entry_order: Order,
-                                     other_order: Order) -> (Order, Order):
-        self.gtt_orders.append((entry_order, other_order))
-        return entry_order, other_order
-
+    
     # Get Historical Data
     def download_historic_data(self,
                                scrip:str,

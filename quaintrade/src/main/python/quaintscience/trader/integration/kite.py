@@ -122,6 +122,9 @@ class KiteManager(TradeManager):
     def cancel_order(self, order: Order) -> Order:
         raise NotImplemented(f"Cancel order ({order})")
 
+    def update_order(self, order: Order) -> Order:
+        raise NotImplementedError(f"Update order {order}")
+
     def place_order(self, order: Order) -> Order:
         order_id = self.kite.place_order(tradingsymbol=order.scrip,
                                          exchange=order.exchange,

@@ -4,7 +4,7 @@ import datetime
 import configargparse
 
 from ..integration.kite import KiteManager
-from ..strategies.donchain_breakout import DonchainBreakoutStrategy
+from ..strategies.donchain_pullback import DonchainPullbackStrategy
 from .common import TradeManagerService
 
 
@@ -14,7 +14,7 @@ class BackTesterService(TradeManagerService):
                  *args,
                  from_date=None,
                  to_date=None,
-                 interval="10min",
+                 interval="3min",
                  **kwargs):
         kwargs["provider"] = "paper"
         kwargs["init"] = False
@@ -39,7 +39,7 @@ class BackTesterService(TradeManagerService):
         self.logger.info("Running backtest...")
         for instrument in self.instruments:
             print(instrument)
-            self.strategy_executer = DonchainBreakoutStrategy(signal_scrip=instrument["scrip"],
+            self.strategy_executer = DonchainPullbackStrategy(signal_scrip=instrument["scrip"],
                                                               long_scrip=instrument["scrip"],
                                                               short_scrip=instrument["scrip"],
                                                               exchange=instrument["exchange"],
@@ -64,7 +64,7 @@ class BackTesterService(TradeManagerService):
         p.add('--redis_server', help="Redis server host", env_var="REDIS_SERVER")
         p.add('--redis_port', help="Redis server port", env_var="REDIS_PORT")
         p.add('--cache_path', help="Data cache path", env_var="CACHE_PATH")
-        p.add('--provider', help="Provider", env_var="CACHE_PATH")
+        p.add('--provider', help="Provider", env_var="PROVIDER")
         p.add('--from_date', help="From date", env_var="FROM_DATE")
         p.add('--to_date', help="To date", env_var="TO_DATE")
         p.add('--instruments', help="Instruments in scrip:exchange,scrip:exchange format", env_var="INSTRUMENTS")

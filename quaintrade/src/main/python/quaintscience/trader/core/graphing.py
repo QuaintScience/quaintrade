@@ -84,8 +84,9 @@ def backtesting_results_plot(df,
     df.loc[buy_signal_timestamps, "buy_signals"] = buy_price
 
     event_plots = []
-    event_plots.append(mpf.make_addplot(df["sell_signals"], type='scatter', marker=r'$\downarrow$', color='k'))
-    event_plots.append(mpf.make_addplot(df["buy_signals"], type='scatter', marker=r'$\uparrow$', color='k'))
+    if len(events) > 0:
+        event_plots.append(mpf.make_addplot(df["sell_signals"], type='scatter', marker=r'$\downarrow$', color='k'))
+        event_plots.append(mpf.make_addplot(df["buy_signals"], type='scatter', marker=r'$\uparrow$', color='k'))
     num_panels = 1
     for field in indicator_fields:
         if isinstance(field, str):
@@ -94,8 +95,7 @@ def backtesting_results_plot(df,
             event_plots.append(mpf.make_addplot(df[field.get("field")],
                                                 panel=field.get("panel", 1)))
             num_panels = max(num_panels, field.get("panel", 0) + 1)
-            print(field)
-            print(df[field.get("field")])
+    
     fig, axes = mpf.plot(df,
                          returnfig=True,
                          type='candle',
