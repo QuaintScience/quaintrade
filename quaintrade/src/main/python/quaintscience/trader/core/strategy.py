@@ -27,7 +27,7 @@ class StrategyExecutor(ABC, LoggerMixin):
                                "to": {"hour": 9,
                                       "minute": 59}}]
     NON_TRADING_AFTERNOON = [{"from": {"hour": 14,
-                                       "minute": 30},
+                                       "minute": 00},
                               "to": {"hour": 15,
                                      "minute": 59}}]
 
@@ -253,23 +253,29 @@ class StrategyExecutor(ABC, LoggerMixin):
                 if not self.can_trade(window):
                     self.logger.info(f"Cannot trade at {ts}")
                 else:
-                    window_without_current = df.iloc[ii - 1: ii + self.moving_window_size - 1]  # Current tick is not available for backtesting...
-                    trade_type = self.strategy(window_without_current)
+                    # window_without_current = df.iloc[ii - 1: ii + self.moving_window_size - 1]  # Current tick is not available for backtesting...
+                    trade_type = self.strategy(window)
                     if trade_type is not None:
                         self.logger.info(f"Found trade {trade_type} at {ts} {window.iloc[-1]['close']}")
-                        self.take_position(window_without_current, trade_type)
+                        self.take_position(window, trade_type)
 
-                self.logger.info("--------------Tables After Strategy Computation-------------")
+                self.logger.info("--------------Tables After Strategy Computation Start-------------")
                 self.trade_manager.get_orders_as_table()
                 self.trade_manager.get_positions_as_table()
-                self.logger.info("--------------Tables After Strategy Computation-------------")
+                self.logger.info("--------------Tables After Strategy Computation End-------------")
                 
                 #self.trade_manager.positions = {}
             if self.execution_type == ExecutionType.BACKTESTING:
                 # Plot candlestick + strategy markers + PnL
                 if self.plot_results:
+                    pnl_history = self.trade_manager.get_pnl_history_as_table()
+                    pnl_history = pd.DataFrame(pnl_history)
+                    pnl_history = pnl_history.set_index(pnl_history.columns[0])
+                    df["pnl_history"] = pnl_history[pnl_history.columns[0]]
+                    print(df["pnl_history"])
+                    self.indicator_fields.append({"field": "pnl_history", "panel": 1})
                     backtesting_results_plot(df, events=self.trade_manager.events,
-                                             indicator_fields=self.indicator_fields)
+                                            indicator_fields=self.indicator_fields)
             print(pnls)
 
         else:

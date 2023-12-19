@@ -119,6 +119,12 @@ class KiteManager(TradeManager):
     def cancel_pending_orders(self):
         pass
 
+    def get_orders_as_table(self):
+        pass
+    
+    def get_positions_as_table(self):
+        pass
+
     def cancel_order(self, order: Order) -> Order:
         raise NotImplemented(f"Cancel order ({order})")
 

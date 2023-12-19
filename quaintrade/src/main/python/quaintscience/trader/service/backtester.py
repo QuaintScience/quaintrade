@@ -4,7 +4,8 @@ import datetime
 import configargparse
 
 from ..integration.kite import KiteManager
-from ..strategies.donchain_pullback import DonchainPullbackStrategy
+#from ..strategies.donchain_pullback import DonchainPullbackStrategy
+from ..strategies.wma_support import WMASupportStrategy
 from .common import TradeManagerService
 
 
@@ -39,11 +40,11 @@ class BackTesterService(TradeManagerService):
         self.logger.info("Running backtest...")
         for instrument in self.instruments:
             print(instrument)
-            self.strategy_executer = DonchainPullbackStrategy(signal_scrip=instrument["scrip"],
-                                                              long_scrip=instrument["scrip"],
-                                                              short_scrip=instrument["scrip"],
-                                                              exchange=instrument["exchange"],
-                                                              trade_manager=self.trade_manager)
+            self.strategy_executer = WMASupportStrategy(signal_scrip=instrument["scrip"],
+                                                        long_scrip=instrument["scrip"],
+                                                        short_scrip=instrument["scrip"],
+                                                        exchange=instrument["exchange"],
+                                                        trade_manager=self.trade_manager)
             df = self.trade_manager.get_historic_data(scrip=instrument["scrip"],
                                                       exchange=instrument["exchange"],
                                                       interval=self.interval,
@@ -67,5 +68,6 @@ class BackTesterService(TradeManagerService):
         p.add('--provider', help="Provider", env_var="PROVIDER")
         p.add('--from_date', help="From date", env_var="FROM_DATE")
         p.add('--to_date', help="To date", env_var="TO_DATE")
+        p.add('--interval', help="Interval", env_var="INTERVAL")
         p.add('--instruments', help="Instruments in scrip:exchange,scrip:exchange format", env_var="INSTRUMENTS")
         return p.parse_known_args()

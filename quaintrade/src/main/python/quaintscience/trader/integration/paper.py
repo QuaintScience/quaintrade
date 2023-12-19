@@ -67,6 +67,7 @@ class PaperTradeManager(TradeManager):
         self.idx = {}
         self.current_time = None
         self.events = []
+        self.pnl_history = []
         super().__init__(*args, **kwargs)
 
     # Login related
@@ -79,7 +80,6 @@ class PaperTradeManager(TradeManager):
         pass
 
     # Initialization
-
     def init(self):
         if self.load_from_redis:
             ohlc_data = self.get_redis_tick_data_as_ohlc(refresh=True,
@@ -103,6 +103,9 @@ class PaperTradeManager(TradeManager):
                     self.data[key] = pd.concat([self.data[key], data], axis=0).reset_index().drop_duplicates(subset='date', keep='first').set_index('date')
                 else:
                     self.data[key] = data
+
+    def current_datetime(self):
+        return self.current_time
 
     def set_current_time(self, dt: datetime.datetime, traverse: bool = False,
                          instrument: Optional[dict] = None):
@@ -129,6 +132,14 @@ class PaperTradeManager(TradeManager):
                 self.current_time = self.data[instrument].iloc[idx].name
                 self.__process_orders(scrip=scrip,
                                       exchange=exchange)
+                self.__update_positions()
+                self.__process_orders(scrip=scrip,
+                                      exchange=exchange)
+                self.__update_positions()
+                total_pnl = 0
+                for key, value in self.positions.items():
+                    total_pnl += value.pnl
+                self.pnl_history.append([self.current_datetime(), total_pnl])
 
     def get_orders_as_table(self):
         status = [[self.current_time,
@@ -166,10 +177,7 @@ class PaperTradeManager(TradeManager):
         print(tabulate(printable_orders, headers=headers, tablefmt="double_outline"))
         return printable_orders, headers
 
-
-    def get_positions_as_table(self):
-        # self.logger.debug(f"{self.current_time} entered __refresh_positions")
-        printable_positions = []
+    def __update_positions(self):
         for _, position in self.positions.items():
             money_spent = sum(quantity * price
                               for price, quantity in position.quantity_and_price_history)
@@ -183,6 +191,20 @@ class PaperTradeManager(TradeManager):
             key = self.get_key_from_scrip(position.scrip, position.exchange)
             #print(cash_flow, position.quantity_and_price_history)
             position.pnl = cash_flow + (net_quantity * self.data[key].iloc[self.idx[key]]["close"])
+
+    def get_pnl_history_as_table(self):
+        print(tabulate(self.pnl_history))
+        return self.pnl_history
+
+    def get_positions_as_table(self):
+        # self.logger.debug(f"{self.current_time} entered __refresh_positions")
+        self.__update_positions()
+        printable_positions = []
+        # print(self.positions)
+        for _, position in self.positions.items():
+            net_quantity = sum(quantity
+                               for _, quantity in position.quantity_and_price_history)
+            key = self.get_key_from_scrip(position.scrip, position.exchange)
             printable_positions.append([self.current_time,
                                         position.scrip,
                                         position.exchange,
@@ -228,7 +250,7 @@ class PaperTradeManager(TradeManager):
         # print(self.positions)
         self.positions[position] = self.positions.get(position, position)
         position = self.positions[position]
-        print(position)
+        # print(position)
         if order.transaction_type == TransactionType.SELL:
             position.quantity -= order.quantity
             position.quantity_and_price_history.append((price, -order.quantity))
@@ -274,8 +296,8 @@ class PaperTradeManager(TradeManager):
                                                           candle["high"]))
                         self.cancel_invalid_child_orders()
                     elif order.transaction_type == TransactionType.SELL:
-                        if change:
-                            print(order, candle)
+                        #if change:
+                        #    print(order, candle)
                         if candle["high"] >= order.limit_price:
                              self.__add_position(order,
                                                  last_price=candle["close"],
@@ -313,6 +335,12 @@ class PaperTradeManager(TradeManager):
             position.last_price = candle = self.data[key].iloc[self.idx[key]]["close"]
             position.pnl = (position.last_price - position.average_price) * position.quantity
         self.order_callback(self.orders)
+        orders = []
+        for order in self.orders:
+            if order.state == OrderState.COMPLETED:
+                continue
+            orders.append(order)
+        self.orders = orders
 
     def order_callback(self, orders):
         self.cancel_invalid_child_orders()

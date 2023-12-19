@@ -315,7 +315,8 @@ class TradeManager(ABC, LoggerMixin):
                         scrip, exchange, fdate, tdate = f_base.split("-")
                     fdate = datestring_to_datetime(fdate)
                     tdate = datestring_to_datetime(tdate)
-                    if ((fdate >= from_date and tdate <=to_date)
+                    # print(fdate, tdate, from_date, to_date, (fdate >= from_date and tdate <=to_date), (tdate >= from_date and tdate <= to_date), (fdate >= from_date and fdate <= to_date))
+                    if ((fdate <= from_date and tdate >= to_date)
                         or (tdate >= from_date and tdate <= to_date)
                         or (fdate >= from_date and fdate <= to_date)):
                         this_fpath = os.path.join(dirname, f)

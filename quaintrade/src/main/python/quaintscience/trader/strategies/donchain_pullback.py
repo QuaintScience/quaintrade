@@ -9,7 +9,8 @@ from ..core.util import new_id
 from ..core.strategy import (StrategyExecutor)
 from ..core.indicator import (IndicatorPipeline,
                               HeikinAshiIndicator,
-                              DonchainPullbackLocator)
+                              DonchainIndicator,
+                              PullbackDetector)
 
 
 
@@ -17,11 +18,18 @@ class DonchainPullbackStrategy(StrategyExecutor):
 
     def __init__(self,
                  *args,
-                 donchain_period: int = 200,
+                 donchain_period: int = 15,
                  **kwargs):
         indicators = indicators=[(HeikinAshiIndicator(), None, None),
-                                 (DonchainPullbackLocator(period=donchain_period,
-                                                          data_period="3min"), None, None)]
+                                 (DonchainIndicator(period=donchain_period), None, None),
+                                 (PullbackDetector(breakout_column=f"donchainUpper_{donchain_period}",
+                                                                     price_column="high",
+                                                                     pullback_direction=PullbackDetector.PULLBACK_DIRECTION_DOWN),
+                                                     None, None),
+                                 (PullbackDetector(breakout_column=f"donchainLower_{donchain_period}",
+                                                                     price_column="low",
+                                                                     pullback_direction=PullbackDetector.PULLBACK_DIRECTION_UP),
+                                                     None, None)]
         kwargs["indicator_pipeline"] = IndicatorPipeline(indicators=indicators)
         kwargs["long_entry_price_column"] = "high"
         kwargs["short_entry_price_column"] = "low"

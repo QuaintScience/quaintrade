@@ -3,32 +3,67 @@ from typing import Optional, Union
 import copy
 
 import pandas as pd
+import numpy as np
 import talib
 
 from .logging import LoggerMixin
-from .ds import Order, TradeType, OrderState
-from ..integration.common import TradeManager
 
 
 class Indicator(ABC, LoggerMixin):
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args,
+                 setting_attrs: Optional[list[str]] = None,
+                 **kwargs):
+        self.setting_attrs = setting_attrs if setting_attrs is not None else []
         super().__init__(*args, **kwargs)
+    
+    def add_setting(self, settings, name):
+        settings[name] = settings.get(name, getattr(self, name))
+
+    def is_red_candle(self, opn, close=None):
+        is_shooting_star = False
+        is_hanging_man = False
+        if close is None:
+            if "CDLSHOOTINGSTAR" in opn:
+                is_shooting_star = True if opn["CDLSHOOTINGSTAR"] != 0 else False
+            if "CDLHANGINGMAN" in opn:
+                is_hanging_man = True if opn["CDLHANGINGMAN"] != 0 else False
+            opn, close = opn["open"], opn["close"]
+        if opn > close or is_shooting_star or is_hanging_man:
+            return True
+        return False
+
+    def is_green_candle(self, opn, close=None):
+        return not self.is_red_candle(opn, close)
+
+    def is_doji(self, opn, high=None, low=None, close=None, settings=None):
+        is_cdl_doji = False
+        if settings is None:
+            wick_threshold = getattr(self, "wick_threshold", 2.0)
+        else:
+            wick_threshold = settings.get("wick_threshold", getattr(self, "wick_threshold", 2.0))
+        if high is None:
+            if "CDLDOJI" in opn:
+                is_cdl_doji = True if opn["CDLDOJI"] != 0 else False
+            opn, high, low, close = opn["open"], opn["high"], opn["low"], opn["close"]
+        return (not (abs(opn - close) / (high - max(close, opn)) >= wick_threshold or abs(opn - close) / (min(opn, close) - low) >= wick_threshold)) or  is_cdl_doji
 
     def preprocess(self, df: pd.DataFrame,
                 output_column_name: Optional[Union[str, list[str]]] = None,
                 settings: Optional[dict] = None) -> (pd.DataFrame, Optional[Union[str, list[str]]], Optional[dict]):
         if settings is None:
             settings = {}
+        for attr in self.setting_attrs:
+            self.add_setting(settings, attr)
         if output_column_name is None:
-            output_column_name = []
+            output_column_name = {}
         return df, output_column_name, settings
 
     def postprocess(self, df: pd.DataFrame,
-                output_column_name: Optional[Union[str, list[str]]] = None,
+                output_column_name: Optional[Union[str, dict[str, str]]] = None,
                 settings: Optional[dict] = None) -> (pd.DataFrame, Optional[Union[str, list[str]]], Optional[dict]):
-        for column in output_column_name:
-            df[column] = df[column].astype(float)
+        for _, column_name in output_column_name.items():
+            df[column_name] = df[column_name].astype(float)
         return df, output_column_name, settings
 
     def compute(self, df: pd.DataFrame,
@@ -74,117 +109,141 @@ class IndicatorPipeline(Indicator):
                                                                            indicator_settings)
         return df, output_column_name, settings
 
+
+class SlopeIndicator(Indicator):
+    def __init__(self, signal: str, *args, shift: int = 1,
+                 **kwargs):
+        self.signal = signal
+        self.shift = shift
+        kwargs["setting_attrs"] = ["signal", "shift"]
+        super().__init__(*args, **kwargs)
+    
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_name: str | dict[str, str] | None = None,
+                     settings: dict | None = None) -> pd.DataFrame:
+        if output_column_name is None or len(output_column_name) == 0:
+            output_column_name["slope"] = f"{settings['signal']}_slope"
+            output_column_name["acceleration"] = f"{settings['signal']}_acceleration"
+        df[output_column_name["slope"]] = df[settings['signal']].diff(periods=settings['shift'])
+        df[output_column_name["acceleration"]] = df[settings['signal']].diff(settings['shift']).diff()
+        return df, output_column_name, settings        
+
+
 class DonchainIndicator(Indicator):
 
     def __init__(self, *args, period: int = 15, **kwargs):
         self.period = period
+        kwargs["setting_attrs"] = ["period"]
         super().__init__(*args, **kwargs)
 
     def compute_impl(self, df: pd.DataFrame,
                 output_column_name: Optional[Union[str, dict[str, str]]] = None,
                 settings: Optional[dict] = None) -> pd.DataFrame:
         if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = ["donchainUpper", "donchainMiddle", "donchainLower"]
-        df[output_column_name[0]] = df["high"].rolling(self.period).apply(lambda x: max(x))
-        df[output_column_name[2]] = df["low"].rolling(self.period).apply(lambda x: min(x))
-        df[output_column_name[1]] = (df[output_column_name[2]] + df[output_column_name[0]]) /2
+            x = ["donchainUpper", "donchainMiddle", "donchainLower"]
+            y = [f"{val}_{settings['period']}" for val in x]
+            output_column_name = dict(zip(x, y))
+        df[output_column_name["donchainUpper"]] = df["high"].rolling(settings['period']).apply(lambda x: max(x))
+        df[output_column_name["donchainLower"]] = df["low"].rolling(settings['period']).apply(lambda x: min(x))
+        df[output_column_name["donchainMiddle"]] = (df[output_column_name["donchainUpper"]] + df[output_column_name["donchainLower"]]) /2
         return df, output_column_name, settings
 
 
-class DonchainPullbackLocator(DonchainIndicator):
-    def __init__(self, *args,
+class PullbackDetector(Indicator):
+
+    PULLBACK_DIRECTION_UP = "up"
+    PULLBACK_DIRECTION_DOWN = "down"
+
+    def __init__(self,
+                 breakout_column: str,
+                 price_column: str,
+                 pullback_direction: str,
+                 *args,
                  data_period: str = "10min",
-                 wick_threshold: float = 3.0,
-                 min_ticks_between_candle_and_donchain: float = 10,
-                 doji_threshold: float = 0.6,
+                 wick_threshold: float = 2.,
                  **kwargs):
-        self.data_period = data_period
+        self.price_column = price_column
+        self.breakout_column = breakout_column
+        self.pullback_direction = pullback_direction
         self.wick_threshold = wick_threshold
-        self.min_ticks_between_candle_and_donchain = min_ticks_between_candle_and_donchain
-        self.doji_threshold = doji_threshold
-        super().__init__(*args, **(kwargs))
-    
+        self.data_period = data_period
+        kwargs["setting_attrs"] = ["price_column",
+                                   "breakout_column",
+                                   "pullback_direction",
+                                   "wick_threshold",
+                                   "data_period"]
+        super().__init__(*args,
+                         **kwargs)
+
     def compute_impl(self, df: pd.DataFrame,
                      output_column_name: str | dict[str, str] | None = None,
                      settings: dict | None = None) -> pd.DataFrame:
-        df, output_column_name, settings = super().compute_impl(df, output_column_name, settings)
-        
+
+        if output_column_name is None or len(output_column_name) == 0:
+            x = ["pullback_start", "pullback_end"]
+            y = [f"{settings['breakout_column']}_{val}" for val in x]
+            output_column_name = dict(zip(x, y))
         after_breakout = False
         pull_back_in_progress = False
-        df["donchainUpperPrevious"] = df["donchainUpper"].shift(1, freq=self.data_period)
-        df["donchainLowerPrevious"] = df["donchainLower"].shift(1, freq=self.data_period)
-        df["UpperBreakouts"] = 0.0
-        df["LowerBreakouts"] = 0.0
-        df.loc[df["high"] >= df["donchainUpperPrevious"], "UpperBreakouts"] = 1.0
-        df.loc[df["low"] <= df["donchainLowerPrevious"], "LowerBreakouts"] = 1.0
-        df["upperPullback"] = 0.0
+
+        df["_breakouts"] = 0.0
+        if settings["pullback_direction"] == PullbackDetector.PULLBACK_DIRECTION_DOWN:
+            df.loc[df[settings["price_column"]] >= df[settings["breakout_column"]], "_breakouts"] = 1.0
+        else:
+            df.loc[df[settings["price_column"]] <= df[settings["breakout_column"]], "_breakouts"] = 1.0
+
         prev_row = None
-        for row_id, row in df.iterrows():
-            if (prev_row is not None
-                and row["UpperBreakouts"] != 1.0
-                and prev_row["UpperBreakouts"] == 1.0):
-                if row["close"] <= row["open"]:
-                    pull_back_in_progress = True
-                else:
-                    after_breakout = True
+        for v in output_column_name.values():
+            df[v] = 0.
+        for _, row in df.iterrows():
+            if settings["pullback_direction"] == PullbackDetector.PULLBACK_DIRECTION_DOWN:
+                if (prev_row is not None
+                    and row["_breakouts"] != 1.0
+                    and prev_row["_breakouts"] == 1.0):
+                        df.loc[row.name, output_column_name["pullback_start"]] = 1.0
+                        if self.is_red_candle(row):
+                            pull_back_in_progress = True
+                            after_breakout = False
+                        else:
+                            after_breakout = True
+                            pull_back_in_progress = False
+                        prev_row = row
+                        continue
+                if after_breakout:
+                    if (self.is_red_candle(row)
+                        and not self.is_doji(row, settings=settings)):
+                        pull_back_in_progress = True
+                        after_breakout = False
+                elif pull_back_in_progress:
+                    if self.is_green_candle(row):
+                        df.loc[row.name, output_column_name["pullback_end"]] = 1.0
+                        pull_back_in_progress = False
+                        after_breakout = False
                 prev_row = row
-                continue
-            if after_breakout:
-                if row["close"] > row["open"]:
-                    prev_row = row
-                    continue
-                elif (row["close"] <= row["open"]
-                      and (row["open"] - row["close"]) / (row["high"] - row["low"]) >= self.doji_threshold):
-                    pull_back_in_progress = True
-                    after_breakout = False
-            elif pull_back_in_progress:
-                if row["open"] <= row["close"]:
-                    df.loc[row.name, "upperPullback"] = 1.0
-                    pull_back_in_progress = False
-                elif (row["close"] < row["donchainMiddle"]
-                    and row["open"] > row["close"]
-                    and (row["high"] - row["open"]) <= self.wick_threshold
-                    and abs(row["low"] - row["donchainLower"]) > self.min_ticks_between_candle_and_donchain):
-                    print("Found pullback (upper)")
-                    df.loc[row.name, "upperPullback"] = 2.0
-                    pull_back_in_progress = False
-                elif row["close"] < row["donchainMiddle"]:
-                    pull_back_in_progress = False
-            prev_row = row
-
-        df["lowerPullback"] = 0.0
-
-        for row_id, row in df.iterrows():
-            if (prev_row is not None
-                and row["LowerBreakouts"] != 1.0
-                and prev_row["LowerBreakouts"] == 1.0):
-                if (row["close"] >= row["open"]
-                    and (row["close"] - row["open"]) / (row["high"] - row["low"]) >= self.doji_threshold):
-                    pull_back_in_progress = True
-                else:
-                    after_breakout = True
+            if settings["pullback_direction"] == PullbackDetector.PULLBACK_DIRECTION_UP:
+                if (prev_row is not None
+                    and row["_breakouts"] != 1.0
+                    and prev_row["_breakouts"] == 1.0):
+                        df.loc[row.name, output_column_name["pullback_start"]] = 1.0
+                        if self.is_green_candle(row):
+                            pull_back_in_progress = True
+                            after_breakout = False
+                        else:
+                            after_breakout = True
+                            pull_back_in_progress = False
+                        prev_row = row
+                        continue
+                if after_breakout:
+                    if (self.is_green_candle(row)
+                        and not self.is_doji(row, settings=settings)):
+                        pull_back_in_progress = True
+                        after_breakout = False
+                elif pull_back_in_progress:
+                    if self.is_red_candle(row):
+                        df.loc[row.name, output_column_name["pullback_end"]] = 1.0
+                        pull_back_in_progress = False
+                        after_breakout = False
                 prev_row = row
-                continue
-            if after_breakout:
-                if row["close"] < row["open"]:
-                    prev_row = row
-                    continue
-                elif row["close"] >= row["open"]:
-                    pull_back_in_progress = True
-                    after_breakout = False
-            elif pull_back_in_progress:
-                if row["close"] <= row["open"]:
-                    df.loc[row.name, "lowerPullback"] = 1.0
-                    pull_back_in_progress = False
-                elif (row["close"] > row["donchainMiddle"]
-                    and row["open"] < row["close"]
-                    and (row["low"] - row["open"]) <= self.wick_threshold
-                    and abs(row["high"] - row["donchainUpper"]) > self.min_ticks_between_candle_and_donchain):
-                    df.loc[row.name, "lowerPullback"] = 2.0
-                    pull_back_in_progress = False
-                elif row["close"] > row["donchainMiddle"]:
-                    pull_back_in_progress = False
-            prev_row = row
 
         return df, output_column_name, settings
 
@@ -199,6 +258,7 @@ class PastPeriodHighLowIndicator(Indicator):
         self.period_interval = period_interval
         self.data_interval = data_interval
         self.shift = shift
+        kwargs["setting_attrs"] = ["period_interval", "data_interval", "shift"]
         super().__init__(*args, **kwargs)
 
     def compute_impl(self, df: pd.DataFrame,
@@ -206,17 +266,16 @@ class PastPeriodHighLowIndicator(Indicator):
                 settings: Optional[dict] = None) -> pd.DataFrame:
 
         if output_column_name is None or len(output_column_name) == 0:
-            if self.shift == 1:
-                output_column_name = [f"p{self.period_interval}h", f"p{self.period_interval}l"]
-            elif self.shift == 0:
-                output_column_name = [f"c{self.period_interval}h", f"c{self.period_interval}l"]
-            else:
-                output_column_name = [f"p{self.shift}-{self.period_interval}h", f"p{self.shift}-{self.period_interval}l"]
-        
-        h = df["high"].resample(self.period_interval).apply("max").shift(self.shift, freq=self.period_interval)
-        df[output_column_name[0]] = h.resample(self.data_interval).ffill().ffill()
-        pwl = df["low"].resample(self.period_interval).apply("min").shift(self.shift, freq=self.period_interval)
-        df[output_column_name[1]] = pwl.resample(self.data_interval).ffill().ffill()
+            x = ["previous_high", "previous_low"]
+            y = [f"{val}_{settings['period_interval']}_{settings['shift']}" for val in x]
+            output_column_name = dict(zip(x, y))
+
+        pwh = df["high"].resample(settings["period_interval"]).apply("max").shift(settings["shift"],
+                                                                                  freq=settings["period_interval"])
+        df[output_column_name["previous_high"]] = pwh.resample(settings["data_interval"]).ffill().ffill()
+        pwl = df["low"].resample(settings["period_interval"]).apply("min").shift(settings["shift"],
+                                                                                 freq=settings["period_interval"])
+        df[output_column_name["previous_low"]] = pwl.resample(settings["data_interval"]).ffill().ffill()
         return df, output_column_name, settings
 
 
@@ -226,19 +285,38 @@ class SMAIndicator(Indicator):
                  period: int = 22,
                  **kwargs):
         self.period = period
+        kwargs["setting_attrs"] = ["period"]
         super().__init__(*args, **kwargs)
 
     def compute_impl(self, df: pd.DataFrame,
                 output_column_name: Optional[Union[str, dict[str, str]]] = None,
                 settings: Optional[dict] = None) -> pd.DataFrame:
         if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = f"SMA{self.period}"
-        
-        df[output_column_name] = talib.SMA(df[settings.get("input_column", "close")], timeperiod=22)
+            output_column_name = {"SMA": f"SMA_{self.period}"}
+        df[output_column_name["SMA"]] = talib.SMA(df[settings.get("input_column", "close")], timeperiod=self.period)
         return df, output_column_name, settings
 
-class ADXIndicator(Indicator):
+
+class WMAIndicator(Indicator):
         
+    def __init__(self, *args,
+                 period: int = 22,
+                 **kwargs):
+        self.period = period
+        kwargs["setting_attrs"] = ["period"]
+        super().__init__(*args, **kwargs)
+
+    def compute_impl(self, df: pd.DataFrame,
+                output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                settings: Optional[dict] = None) -> pd.DataFrame:
+        if output_column_name is None or len(output_column_name) == 0:
+            output_column_name = {"WMA": f"WMA_{self.period}"}
+        df[output_column_name["WMA"]] = talib.SMA(df[settings.get("input_column", "close")], timeperiod=self.period)
+        return df, output_column_name, settings
+
+
+class ADXIndicator(Indicator):
+
     def __init__(self, *args,
                  **kwargs):
         super().__init__(*args, **kwargs)
@@ -247,13 +325,14 @@ class ADXIndicator(Indicator):
                 output_column_name: Optional[Union[str, dict[str, str]]] = None,
                 settings: Optional[dict] = None) -> pd.DataFrame:
         if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = ["ADX"]
-        df[output_column_name[0]] = talib.ADX(df["high"], df["low"], df["close"])
+            output_column_name = {"ADX": "ADX"}
+        df[output_column_name["ADX"]] = talib.ADX(df["high"], df["low"], df["close"])
         return df, output_column_name, settings
 
 class RSIIndicator(Indicator):
         
-    def __init__(self, *args,
+    def __init__(self,
+                 *args,
                  **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -261,9 +340,9 @@ class RSIIndicator(Indicator):
                 output_column_name: Optional[Union[str, dict[str, str]]] = None,
                 settings: Optional[dict] = None) -> pd.DataFrame:
         if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = ["RSI"]
+            output_column_name = {"RSI": "RSI"}
         
-        df[output_column_name[0]] = talib.RSI(df["close"])
+        df[output_column_name["RSI"]] = talib.RSI(df["close"])
         return df, output_column_name, settings
 
 
@@ -277,25 +356,38 @@ class ATRIndicator(Indicator):
                 output_column_name: Optional[Union[str, dict[str, str]]] = None,
                 settings: Optional[dict] = None) -> pd.DataFrame:
         if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = f"ATR"
+            output_column_name = {"ATR": "ATR"}
         
-        df[output_column_name] = talib.ATR(df["high"], df["low"], df["close"])
+        df[output_column_name["ATR"]] = talib.ATR(df["high"], df["low"], df["close"])
         return df, output_column_name, settings
 
 
 class BBANDSIndicator(Indicator):
         
-    def __init__(self, *args,
+    def __init__(self,
+                 *args,
+                 period: int = 5,
+                 nbdevup: float = 2.0,
+                 nbdevdown: float = 2.0,
                  **kwargs):
+        self.period = period
+        self.nbdevup = nbdevup
+        self.nbdevdown = nbdevdown
+        kwargs["setting_attrs"] = ["period", "nbdevup", "nbdevdown"]
         super().__init__(*args, **kwargs)
 
     def compute_impl(self, df: pd.DataFrame,
-                output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                settings: Optional[dict] = None) -> pd.DataFrame:
+                     output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                     settings: Optional[dict] = None) -> pd.DataFrame:
         if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = ["BBandUpper", "BBandMiddle", "BBandLower"]
+            x = ["BBandUpper", "BBandMiddle", "BBandLower"]
+            y = [f"{val}_{settings['period']}" for val in x]
+            output_column_name = dict(zip(x, y))
         
-        df[output_column_name[0]], df[output_column_name[1]], df[output_column_name[2]] = talib.BBANDS(df["close"])
+        df[output_column_name["BBandUpper"]], df[output_column_name["BBandMiddle"]], df[output_column_name["BBandLower"]] = talib.BBANDS(df["close"],
+                                                                                                                                         timeperiod=settings['period'],
+                                                                                                                                         nbdevup=settings['nbdevup'],
+                                                                                                                                         nbdevdn=settings['nbdevdown'])
         return df, output_column_name, settings
 
 
@@ -309,15 +401,12 @@ class CDLPatternIndicator(Indicator):
                      output_column_name: Optional[Union[str, dict[str, str]]] = None,
                      settings: Optional[dict] = None) -> pd.DataFrame:
         if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = ""
-        
-        for item in dir(talib):
-            if item.startswith("CDL"):
-                df[f"{output_column_name}{item}"] = getattr(talib,
-                                                            item)(df["open"],
-                                                                  df["high"],
-                                                                  df["low"],
-                                                                  df["close"])
+            for item in dir(talib):
+                if item.startswith("CDL"):
+                    output_column_name[item] = item
+
+        for item in output_column_name.keys():
+            df[item] = getattr(talib, item)(df["open"], df["high"], df["low"], df["close"])
         return df, output_column_name, settings
 
 
@@ -326,38 +415,36 @@ class BreakoutIndicator(Indicator):
     def __init__(self,
                  upper_breakout_column: str,
                  lower_breakout_column: str,
-                 data_interval: str,
                  *args,
                  upper_price_column: str = "high",
                  lower_price_column: str = "low",
-                 candle_confirmation: bool = True,
                  **kwargs):
         self.upper_breakout_column = upper_breakout_column
         self.lower_breakout_column = lower_breakout_column
         self.upper_price_column = upper_price_column
         self.lower_price_column = lower_price_column
-        self.data_interval = data_interval
-        self.candle_confirmation = candle_confirmation
+        kwargs['setting_attrs'] = ["upper_breakout_column", "lower_breakout_column",
+                                   "upper_price_column", "lower_price_column"]
         super().__init__(*args, **kwargs)
 
     def compute_impl(self, df: pd.DataFrame,
                      output_column_name: Optional[Union[str, dict[str, str]]] = None,
                      settings: Optional[dict] = None) -> pd.DataFrame:
-        
-        if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = [f"{self.upper_breakout_column}_breakout",
-                                  f"{self.lower_breakout_column}_breakout"]
-        df[output_column_name[0]] = 0.
-        df[output_column_name[1]] = 0.
-        df.loc[((df[self.upper_price_column] > df[self.upper_breakout_column].shift()) &
-                (df[self.upper_price_column].shift() <= df[self.upper_breakout_column].shift(2)) &
-                (df["close"] >= df["open"])),
-                output_column_name[0]] = 1.0
 
-        df.loc[((df[self.lower_price_column] < df[self.lower_breakout_column].shift()) &
-                (df[self.lower_price_column].shift() >= df[self.lower_breakout_column].shift(2)) &
+        if output_column_name is None or len(output_column_name) == 0:
+            output_column_name = {"upperBreakout": f"{settings['upper_breakout_column']}_breakout",
+                                  "lowerBreakout": f"{settings['lower_breakout_column']}_breakout"}
+        df[output_column_name["upperBreakout"]] = 0.
+        df[output_column_name["lowerBreakout"]] = 0.
+        df.loc[((df[settings['upper_price_column']] > df[settings['upper_breakout_column']].shift()) &
+                (df[settings['upper_price_column']].shift() <= df[settings['upper_breakout_column']].shift(2)) &
+                (df["close"] >= df["open"])),
+                output_column_name["upperBreakout"]] = 1.0
+
+        df.loc[((df[settings['lower_price_column']] < df[settings['lower_breakout_column']].shift()) &
+                (df[settings['lower_price_column']].shift() >= df[settings['lower_breakout_column']].shift(2)) &
                 (df["close"] <= df["open"])),
-                output_column_name[1]] = 1.0
+                output_column_name["lowerBreakout"]] = 1.0
         return df, output_column_name, settings
 
 
@@ -369,7 +456,12 @@ class HeikinAshiIndicator(Indicator):
     def compute_impl(self, df: pd.DataFrame,
                      output_column_name: str | dict[str, str] | None = None,
                      settings: dict | None = None) -> pd.DataFrame:
-        heikin_ashi_df = pd.DataFrame(index=df.index.values, columns=['open', 'high', 'low', 'close'])
+
+        x = ["high", "low", "open", "close"]
+        output_column_name = dict(zip(x, x))
+
+        heikin_ashi_df = pd.DataFrame(index=df.index.values,
+                                      columns=['open', 'high', 'low', 'close'])
     
         heikin_ashi_df['close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
         
@@ -386,4 +478,73 @@ class HeikinAshiIndicator(Indicator):
         for col in ["open", "high", "low", "close"]:
             df[col] = heikin_ashi_df[col].astype(float)
 
+        return df, output_column_name, settings
+
+
+class SupportIndicator(Indicator):
+
+    SUPPORT_DIRECTION_UP = "up"
+    SUPPORT_DIRECTION_DOWN = "down"
+
+    def __init__(self,
+                 direction: str,
+                 signal: str,
+                 *args,
+                 factor: float = 0.04/100,
+                 max_candle_size: float = 20.,
+                 **kwargs):
+        self.direction = direction
+        self.signal = signal
+        self.factor = factor
+        self.max_candle_size = max_candle_size
+        kwargs['setting_attrs'] = ["direction", "signal", "factor", "max_candle_size"]
+        super().__init__(*args, **kwargs)
+
+    def compute_impl(self, df: pd.DataFrame, output_column_name: str | dict[str, str] | None = None,
+                     settings: dict | None = None) -> pd.DataFrame:
+
+        if output_column_name is None or len(output_column_name) == 0:
+            output_column_name = {"support": f"{settings['signal']}_{settings['direction']}_support"}
+
+        df[output_column_name["support"]] = 0.
+
+        df['_support_zone_upper'] = df[settings['signal']] * (1 + settings['factor'])
+        df['_support_zone_lower'] = df[settings['signal']] * (1 - settings['factor'])
+
+        df["_started_search"] = 0.
+        awaiting_approach = False
+
+        for _, row in df.iterrows():
+            # print(row["low"], row["_support_zone_upper"])
+            if settings['direction'] == SupportIndicator.SUPPORT_DIRECTION_UP:
+                if (not awaiting_approach
+                    and row["low"] >= row["_support_zone_upper"]):
+                    df["_started_search"] = 1.
+                    awaiting_approach = True
+                    continue
+                elif awaiting_approach:
+                    if row["high"] <= row["_support_zone_lower"] or abs(row["close"] - row["open"]) > settings["max_candle_size"]:
+                        awaiting_approach = False
+                        continue
+                    elif ((row["_support_zone_upper"] >= row["close"] >= row["_support_zone_lower"]
+                           or row["_support_zone_upper"] >= row["open"] >= row["_support_zone_lower"])
+                           #or (row["_support_zone_upper"] < row["close"] and row["_support_zone_lower"] > row["open"]))
+                          and self.is_green_candle(row)):
+                         df.loc[row.name, output_column_name["support"]] = 1.0
+                         awaiting_approach = False
+            elif settings["direction"] == SupportIndicator.SUPPORT_DIRECTION_DOWN:
+                if (not awaiting_approach
+                    and row["high"] <= row["_support_zone_lower"]):
+                    awaiting_approach = True
+                    continue
+                if awaiting_approach:
+                    if row["low"] >= row["_support_zone_upper"] or abs(row["close"] - row["open"]) > settings["max_candle_size"]:
+                        awaiting_approach = False
+                        continue
+                    elif ((row["_support_zone_upper"] >= row["close"] >= row["_support_zone_lower"]
+                           or row["_support_zone_upper"] >= row["open"] >= row["_support_zone_lower"])
+                           #or (row["_support_zone_upper"] < row["open"] and row["_support_zone_lower"] > row["close"]))
+                          and self.is_red_candle(row)):
+                         df.loc[row.name, output_column_name["support"]] = 1.0
+                         awaiting_approach = False
         return df, output_column_name, settings
