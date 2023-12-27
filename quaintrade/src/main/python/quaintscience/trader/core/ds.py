@@ -84,6 +84,7 @@ class Position:
     pnl: float = 0.
     day_change: float = 0.
     raw_dict: dict = default_dataclass_field({})
+    stats: dict = default_dataclass_field({})
 
     def __hash__(self):
         return hash(self.scrip, self.exchange, self.product.value)

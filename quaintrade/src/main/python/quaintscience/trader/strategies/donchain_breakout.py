@@ -84,7 +84,8 @@ class DonchainBreakoutStrategy(RelativeStopLossAndTargetMixin,
         else:
             return window.iloc[-1]["donchainLower"] - (self.rratio * self.max_sl)
 
-    def strategy(self, window: pd.DataFrame) -> Optional[TradeType]:
+    def strategy(self, window: pd.DataFrame,
+                 context: dict[str, pd.DataFrame]) -> Optional[TradeType]:
         colvals = []
         for col in window.columns:
             if col not in ["open", "high", "low", "close"]:

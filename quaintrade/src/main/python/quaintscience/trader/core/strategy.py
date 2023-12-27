@@ -15,7 +15,7 @@ from .ds import (Order,
                  TradingProduct)
 from .graphing import backtesting_results_plot
 from .indicator import IndicatorPipeline
-
+from .util import resample_candle_data
 from ..integration.common import TradeManager
 from ..integration.paper import PaperTradeManager
 
@@ -25,8 +25,8 @@ class StrategyExecutor(ABC, LoggerMixin):
     NON_TRADING_FIRST_HOUR = [{"from": {"hour": 9,
                                         "minute": 0},
                                "to": {"hour": 9,
-                                      "minute": 59}}]
-    NON_TRADING_AFTERNOON = [{"from": {"hour": 14,
+                                      "minute": 29}}]
+    NON_TRADING_AFTERNOON = [{"from": {"hour": 15,
                                        "minute": 00},
                               "to": {"hour": 15,
                                      "minute": 59}}]
@@ -84,31 +84,36 @@ class StrategyExecutor(ABC, LoggerMixin):
         self.use_sl_market = use_sl_market
         super().__init__(*args, **kwargs)
 
-    def perform_squareoff(self, window: pd.DataFrame):
+    def perform_squareoff(self):
+
+        self.trade_manager.cancel_pending_orders()
+        positions = self.trade_manager.get_positions()
+        #print(">>>> Positions")
+        #print(positions)
+        for position in positions:
+            if position.quantity > 0:
+                self.trade_manager.place_express_order(scrip=position.scrip,
+                                                        exchange=position.exchange,
+                                                        quantity=position.quantity,
+                                                        transaction_type=TransactionType.SELL,
+                                                        order_type=OrderType.MARKET,
+                                                        tags=["squareoff_order"])
+                self.logger.info(f"Squared off {position.quantity} in {position.scrip} with SELL")
+            elif position.quantity < 0:
+                self.trade_manager.place_express_order(scrip=position.scrip,
+                                                        exchange=position.exchange,
+                                                        quantity=-position.quantity,
+                                                        transaction_type=TransactionType.BUY,
+                                                        order_type=OrderType.MARKET,
+                                                        tags=["squareoff_order"])
+                self.logger.info(f"Squared off {position.quantity} in {position.scrip} with BUY")
+        self.trade_manager.clear_gtt_orders()
+
+    def perform_intraday_squareoff(self, window: pd.DataFrame):
         if (window.iloc[-1].name.hour >= self.squareoff_hour and
-            window.iloc[-1].name.minute >= self.squareoff_minute):
-            self.trade_manager.cancel_pending_orders()
-            positions = self.trade_manager.get_positions()
-            #print(">>>> Positions")
-            #print(positions)
-            for position in positions:
-                if position.quantity > 0:
-                    self.trade_manager.place_express_order(scrip=position.scrip,
-                                                           exchange=position.exchange,
-                                                           quantity=position.quantity,
-                                                           transaction_type=TransactionType.SELL,
-                                                           order_type=OrderType.MARKET,
-                                                           tags=["squareoff_order"])
-                    self.logger.info(f"Squared off {position.quantity} in {position.scrip} with SELL")
-                elif position.quantity < 0:
-                    self.trade_manager.place_express_order(scrip=position.scrip,
-                                                           exchange=position.exchange,
-                                                           quantity=-position.quantity,
-                                                           transaction_type=TransactionType.BUY,
-                                                           order_type=OrderType.MARKET,
-                                                           tags=["squareoff_order"])
-                    self.logger.info(f"Squared off {position.quantity} in {position.scrip} with BUY")
-            self.trade_manager.clear_gtt_orders()
+            window.iloc[-1].name.minute >= self.squareoff_minute
+            and self.intraday_squareoff):
+            self.perform_squareoff()
             return True
         return False
 
@@ -152,10 +157,6 @@ class StrategyExecutor(ABC, LoggerMixin):
             entry_price_func = self.get_entry
         if entry_trigger_price_func is None:
             entry_trigger_price_func = entry_price_func
-        if sl_price_func is None:
-            sl_price_func = self.get_stoploss
-        if target_price_func is None:
-            target_price_func = self.get_target
         if sl_trigger_price_func is None:
             sl_trigger_price_func = sl_price_func
         if tags is None:
@@ -194,26 +195,29 @@ class StrategyExecutor(ABC, LoggerMixin):
         entry_order = self.trade_manager.place_order(entry_order)
 
         stoploss_order = None
-        if trade_type == TradeType.LONG:
-            transaction_type = TransactionType.SELL
-        else:
-            transaction_type = TransactionType.BUY
-        sl_price = sl_price_func(window=window, trade_type=trade_type)
-        sl_trigger_price = sl_trigger_price_func(window=window, trade_type=trade_type)
-        stoploss_order = order_template(transaction_type=transaction_type,
-                                        order_type=limit_order_type,
-                                        limit_price=sl_price,
-                                        trigger_price=sl_trigger_price,
-                                        tags=sl_tags)
-        stoploss_order = self.trade_manager.place_gtt_order(entry_order, stoploss_order)
-        stoploss_order[1].parent_order_id = entry_order.order_id
-        target_order = order_template(transaction_type=transaction_type,
-                                      order_type=OrderType.LIMIT,
-                                      limit_price=target_price_func(window=window,
-                                                                    trade_type=trade_type),
-                                      tags=target_tags)
-        target_order = self.trade_manager.place_gtt_order(entry_order, target_order)
-        target_order[1].parent_order_id = entry_order.order_id
+        if sl_price_func is not None:
+            if trade_type == TradeType.LONG:
+                transaction_type = TransactionType.SELL
+            else:
+                transaction_type = TransactionType.BUY
+            sl_price = sl_price_func(window=window, trade_type=trade_type)
+            sl_trigger_price = sl_trigger_price_func(window=window, trade_type=trade_type)
+            stoploss_order = order_template(transaction_type=transaction_type,
+                                            order_type=limit_order_type,
+                                            limit_price=sl_price,
+                                            trigger_price=sl_trigger_price,
+                                            tags=sl_tags)
+            stoploss_order = self.trade_manager.place_gtt_order(entry_order, stoploss_order)
+            stoploss_order[1].parent_order_id = entry_order.order_id
+        target_order = None
+        if target_price_func is not None:
+            target_order = order_template(transaction_type=transaction_type,
+                                        order_type=OrderType.LIMIT,
+                                        limit_price=target_price_func(window=window,
+                                                                        trade_type=trade_type),
+                                        tags=target_tags)
+            target_order = self.trade_manager.place_gtt_order(entry_order, target_order)
+            target_order[1].parent_order_id = entry_order.order_id
         self.order_journal.append({"entry": entry_order,
                                    "sl": stoploss_order,
                                    "target": target_order,
@@ -221,16 +225,35 @@ class StrategyExecutor(ABC, LoggerMixin):
         # print(self.order_journal[-1])
 
     @abstractmethod
-    def strategy(self, window: pd.DataFrame) -> Optional[TradeType]:
+    def strategy(self, window: pd.DataFrame,
+                 context: dict[str, pd.DataFrame]) -> Optional[TradeType]:
         pass
 
     def trade(self,
               df: pd.DataFrame,
+              context_df: Optional[pd.DataFrame] = None,
+              context_sampling_interval: Optional[str] = None,
               stream: bool = False) -> list[Order]:
         did_squareoff = False
 
         df, _, _ = self.indicator_pipeline.compute(df)
         pnls = defaultdict(list)
+
+        daily_context = resample_candle_data(context_df, "1d")
+        daily_context = self.indicator_pipeline.compute(daily_context)[0]
+        
+        weekly_context = resample_candle_data(context_df, "1w")
+        weekly_context = self.indicator_pipeline.compute(weekly_context)[0]
+        
+        hourly_context = resample_candle_data(context_df, "1h")
+        hourly_context = self.indicator_pipeline.compute(hourly_context)[0]
+
+        bihourly_context = resample_candle_data(context_df, "2h")
+        bihourly_context = self.indicator_pipeline.compute(bihourly_context)[0]
+
+        trihourly_context = resample_candle_data(context_df, "3h")
+        trihourly_context = self.indicator_pipeline.compute(trihourly_context)[0]
+
         if not stream:
             ts = None
             for ii in range(1, len(df) - self.moving_window_size + 1, 1):
@@ -247,17 +270,20 @@ class StrategyExecutor(ABC, LoggerMixin):
                     if self.execution_type == ExecutionType.BACKTESTING:        
                         for k, v in self.trade_manager.positions.items():
                             pnls[f"{v.scrip}:{v.exchange}"].append(v.pnl)
-                did_squareoff = self.perform_squareoff(window)
+                did_squareoff = self.perform_intraday_squareoff(window)
 
                 ts = window.iloc[-1].name
-                if not self.can_trade(window):
-                    self.logger.info(f"Cannot trade at {ts}")
-                else:
-                    # window_without_current = df.iloc[ii - 1: ii + self.moving_window_size - 1]  # Current tick is not available for backtesting...
-                    trade_type = self.strategy(window)
-                    if trade_type is not None:
-                        self.logger.info(f"Found trade {trade_type} at {ts} {window.iloc[-1]['close']}")
-                        self.take_position(window, trade_type)
+                context = {"1d": daily_context[daily_context.index < now_tick],
+                           "1w": weekly_context[weekly_context.index < now_tick],
+                           "1h": hourly_context[hourly_context.index < now_tick],
+                           "2h": bihourly_context[bihourly_context.index < now_tick],
+                           "3h": trihourly_context[trihourly_context.index < now_tick]}
+                trade_type = self.strategy(window, context=context)
+                if trade_type is not None:
+                    self.logger.info(f"Found trade {trade_type} at {ts} {window.iloc[-1]['close']}")
+                    if not self.can_trade(window):
+                        self.logger.info(f"Cannot trade at {ts}")
+                    self.take_position(window, trade_type)
 
                 self.logger.info("--------------Tables After Strategy Computation Start-------------")
                 self.trade_manager.get_orders_as_table()

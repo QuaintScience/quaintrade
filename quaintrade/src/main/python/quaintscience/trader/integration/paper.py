@@ -68,6 +68,9 @@ class PaperTradeManager(TradeManager):
         self.current_time = None
         self.events = []
         self.pnl_history = []
+        self.order_stats = {"completed": 0,
+                            "cancelled": 0,
+                            "pending": 0}
         super().__init__(*args, **kwargs)
 
     # Login related
@@ -143,9 +146,9 @@ class PaperTradeManager(TradeManager):
 
     def get_orders_as_table(self):
         status = [[self.current_time,
-                       sum([1 for order in self.orders if order.state == OrderState.PENDING]),
-                       sum([1 for order in self.orders if order.state == OrderState.COMPLETED]),
-                       sum([1 for order in self.orders if order.state == OrderState.CANCELLED])]]
+                       self.order_stats["pending"],
+                       self.order_stats["completed"],
+                       self.order_stats["cancelled"]]]
         print(tabulate(status, headers=["Time", "Pending", "Completed", "Cancelled"], tablefmt="double_outline"))
         
         printable_orders = []
@@ -179,18 +182,34 @@ class PaperTradeManager(TradeManager):
 
     def __update_positions(self):
         for _, position in self.positions.items():
-            money_spent = sum(quantity * price
-                              for price, quantity in position.quantity_and_price_history)
-            cash_flow = sum(-quantity * price
-                            for price, quantity in position.quantity_and_price_history)
-            quantity_transacted = sum(abs(quantity)
-                                      for _, quantity in position.quantity_and_price_history)
-            net_quantity = sum(quantity
-                               for _, quantity in position.quantity_and_price_history)
+            money_spent = position.stats.get("money_spent", 0.)
+            cash_flow = position.stats.get("cash_flow", 0.)
+            net_quantity = position.stats.get("net_quantity", 0.)
+
             position.average_price =  (abs(money_spent) / abs(net_quantity)) if abs(net_quantity) > 0 else 0
             key = self.get_key_from_scrip(position.scrip, position.exchange)
             #print(cash_flow, position.quantity_and_price_history)
             position.pnl = cash_flow + (net_quantity * self.data[key].iloc[self.idx[key]]["close"])
+
+    def __update_position_stats(self, position, price, quantity, transaction_type):
+        if transaction_type == TransactionType.SELL:
+            quantity = -quantity
+        money_spent = position.stats.get("money_spent", 0.)
+        cash_flow = position.stats.get("cash_flow", 0.)
+        net_quantity = position.stats.get("net_quantity", 0.)
+        
+        money_spent += quantity * price
+        cash_flow += (-quantity * price)
+        net_quantity += quantity
+        
+        position.stats["money_spent"] = money_spent
+        position.stats["cash_flow"] = cash_flow
+        position.stats["net_quantity"] = net_quantity
+
+        position.average_price =  (abs(money_spent) / abs(net_quantity)) if abs(net_quantity) > 0 else 0
+        key = self.get_key_from_scrip(position.scrip, position.exchange)
+        #print(cash_flow, position.quantity_and_price_history)
+        position.pnl = cash_flow + (net_quantity * self.data[key].iloc[self.idx[key]]["close"])
 
     def get_pnl_history_as_table(self):
         print(tabulate(self.pnl_history))
@@ -198,22 +217,20 @@ class PaperTradeManager(TradeManager):
 
     def get_positions_as_table(self):
         # self.logger.debug(f"{self.current_time} entered __refresh_positions")
-        self.__update_positions()
+        #self.__update_positions()
         printable_positions = []
         # print(self.positions)
         for _, position in self.positions.items():
-            net_quantity = sum(quantity
-                               for _, quantity in position.quantity_and_price_history)
             key = self.get_key_from_scrip(position.scrip, position.exchange)
             printable_positions.append([self.current_time,
                                         position.scrip,
                                         position.exchange,
-                                        net_quantity,
+                                        position.stats["net_quantity"],
                                         position.average_price,
                                         self.data[key].iloc[self.idx[key]]["close"],
                                         position.pnl])
             self.logger.info(f"{self.current_time} "
-                             f"Position: {position.scrip}/{position.exchange} | {net_quantity} | {position.pnl:.2f}")
+                             f"Position: {position.scrip}/{position.exchange} | {position.stats['net_quantity']} | {position.pnl:.2f}")
         headers = ["time", "scrip", "exchange", "qty", "avgP", "LTP", "PnL"]
         print(tabulate(printable_positions, headers=headers, tablefmt="double_outline"))
         return printable_positions, headers
@@ -223,6 +240,7 @@ class PaperTradeManager(TradeManager):
                        last_price: float,
                        price: Optional[float] = None):
         order.state = OrderState.COMPLETED
+        self.order_stats["completed"] += 1
         if price is None:
             price = order.limit_price
         order.price = price
@@ -253,10 +271,12 @@ class PaperTradeManager(TradeManager):
         # print(position)
         if order.transaction_type == TransactionType.SELL:
             position.quantity -= order.quantity
-            position.quantity_and_price_history.append((price, -order.quantity))
+            self.__update_position_stats(position, price, order.quantity, order.transaction_type)
+            #position.quantity_and_price_history.append((price, -order.quantity))
         else:
             position.quantity += order.quantity
-            position.quantity_and_price_history.append((price, order.quantity))
+            self.__update_position_stats(position, price, order.quantity, order.transaction_type)
+            #position.quantity_and_price_history.append((price, order.quantity))
 
     def __process_orders(self,
                          scrip=None,
@@ -269,6 +289,7 @@ class PaperTradeManager(TradeManager):
                     continue
             key = self.get_key_from_scrip(order.scrip, order.exchange)
             candle = self.data[key].iloc[self.idx[key]]
+            self.order_stats["pending"] = 0
             if order.state == OrderState.PENDING:
                 change = False
                 if order.order_type in [OrderType.SL_LIMIT, OrderType.SL_MARKET]:
@@ -311,6 +332,8 @@ class PaperTradeManager(TradeManager):
                 if order.state == OrderState.COMPLETED:
                     self.cancel_invalid_child_orders()
                     self.cancel_invalid_group_orders()
+                else:
+                    self.order_stats["pending"] += 1
         new_gtt_orders = []
         gtt_state_changed = False
         for ii, (entry_order, other_order) in enumerate(self.gtt_orders):
@@ -376,6 +399,7 @@ class PaperTradeManager(TradeManager):
         for other_order in self.orders:
             if other_order.order_id == order.order_id:
                 other_order.state = OrderState.CANCELLED
+                self.order_stats["cancelled"] += 1
 
     def get_positions(self) -> list[Position]:
         return self.positions

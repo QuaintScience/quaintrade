@@ -1,11 +1,12 @@
 import time
-
+import copy
 import datetime
 import configargparse
 
 from ..integration.kite import KiteManager
 #from ..strategies.donchain_pullback import DonchainPullbackStrategy
-from ..strategies.wma_support import WMASupportStrategy
+#from ..strategies.wma_support import WMASupportStrategy
+from ..strategies.hiekinashi import HiekinAshiStrategy
 from .common import TradeManagerService
 
 
@@ -40,7 +41,7 @@ class BackTesterService(TradeManagerService):
         self.logger.info("Running backtest...")
         for instrument in self.instruments:
             print(instrument)
-            self.strategy_executer = WMASupportStrategy(signal_scrip=instrument["scrip"],
+            self.strategy_executer = HiekinAshiStrategy(signal_scrip=instrument["scrip"],
                                                         long_scrip=instrument["scrip"],
                                                         short_scrip=instrument["scrip"],
                                                         exchange=instrument["exchange"],
@@ -52,6 +53,8 @@ class BackTesterService(TradeManagerService):
                                                       to_date=self.to_date,
                                                       download=False)
             self.strategy_executer.trade(df=df,
+                                         context_df=df,
+                                         context_sampling_interval=self.interval,
                                          stream=False)
 
     @staticmethod

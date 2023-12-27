@@ -92,7 +92,8 @@ class DonchainPullbackStrategy(StrategyExecutor):
         else:
             return window.iloc[-1]["donchainLower"] - self.max_sl * self.rratio
 
-    def strategy(self, window: pd.DataFrame) -> Optional[TradeType]:
+    def strategy(self, window: pd.DataFrame,
+                 context: dict[str, pd.DataFrame]) -> Optional[TradeType]:
         colvals = []
         for col in window.columns:
             if col not in ["open", "high", "low", "close"]:

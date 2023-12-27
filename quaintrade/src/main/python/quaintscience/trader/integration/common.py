@@ -18,7 +18,7 @@ from ..core.ds import (Order,
                        TradingProduct,
                        OrderType,
                        OrderState)
-from ..core.util import today_timestamp, datestring_to_datetime
+from ..core.util import today_timestamp, datestring_to_datetime, resample_candle_data
 
 
 def CallbackHandleFactory(context):
@@ -368,11 +368,7 @@ class TradeManager(ABC, LoggerMixin):
             data.index = data["timestamp"]
         data.dropna(inplace=True)
         data.index = pd.to_datetime(data.index)
-        data = data.resample(interval).apply({'open': 'first',
-                                              'high': 'max',
-                                              'low': 'min',
-                                              'close': 'last'})
-        data.dropna(inplace=True)
+        data = resample_candle_data(data, interval)
         return data
 
     # Streaming data

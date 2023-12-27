@@ -72,3 +72,12 @@ def current_datetime_field():
 def new_id_field():
     """Create a default field"""
     return field(default_factory=lambda: new_id())
+
+
+def resample_candle_data(data, interval):
+    data = data.resample(interval).apply({'open': 'first',
+                                            'high': 'max',
+                                            'low': 'min',
+                                            'close': 'last'})
+    data.dropna(inplace=True)
+    return data

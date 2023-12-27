@@ -3,7 +3,7 @@ from typing import Optional, Union
 import copy
 
 import pandas as pd
-import numpy as np
+import pandas_ta as pd_ta
 import talib
 
 from .logging import LoggerMixin
@@ -283,17 +283,21 @@ class SMAIndicator(Indicator):
         
     def __init__(self, *args,
                  period: int = 22,
+                 signal: str = "close",
                  **kwargs):
         self.period = period
-        kwargs["setting_attrs"] = ["period"]
+        self.signal = signal
+        kwargs["setting_attrs"] = ["period", "signal"]
         super().__init__(*args, **kwargs)
 
     def compute_impl(self, df: pd.DataFrame,
                 output_column_name: Optional[Union[str, dict[str, str]]] = None,
                 settings: Optional[dict] = None) -> pd.DataFrame:
         if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"SMA": f"SMA_{self.period}"}
-        df[output_column_name["SMA"]] = talib.SMA(df[settings.get("input_column", "close")], timeperiod=self.period)
+            output_column_name = {"SMA": f"SMA_{settings['period']}"}
+            if settings['signal'] != 'close':
+                output_column_name = {"SMA": f"{output_column_name['SMA']}_{settings['signal']}"}
+        df[output_column_name["SMA"]] = talib.SMA(df[settings['signal']], timeperiod=self.period)
         return df, output_column_name, settings
 
 
@@ -318,48 +322,107 @@ class WMAIndicator(Indicator):
 class ADXIndicator(Indicator):
 
     def __init__(self, *args,
+                 period: int = 14,
                  **kwargs):
+        self.period = period
+        kwargs["setting_attrs"] = ["period"]
         super().__init__(*args, **kwargs)
 
     def compute_impl(self, df: pd.DataFrame,
                 output_column_name: Optional[Union[str, dict[str, str]]] = None,
                 settings: Optional[dict] = None) -> pd.DataFrame:
         if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"ADX": "ADX"}
-        df[output_column_name["ADX"]] = talib.ADX(df["high"], df["low"], df["close"])
+            output_column_name = {"ADX": f"ADX_{settings['period']}"}
+        df[output_column_name["ADX"]] = talib.ADX(df["high"], df["low"], df["close"], timeperiod=settings['period'])
         return df, output_column_name, settings
+    
+
+class ATRIndicator(Indicator):
+
+    def __init__(self, *args,
+                 period: int = 14,
+                 **kwargs):
+        self.period = period
+        kwargs["setting_attrs"] = ["period"]
+        super().__init__(*args, **kwargs)
+
+    def compute_impl(self, df: pd.DataFrame,
+                output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                settings: Optional[dict] = None) -> pd.DataFrame:
+        if output_column_name is None or len(output_column_name) == 0:
+            output_column_name = {"ATR": f"ATR_{settings['period']}"}
+        df[output_column_name["ATR"]] = talib.ADX(df["high"], df["low"], df["close"], timeperiod=settings['period'])
+        return df, output_column_name, settings
+
 
 class RSIIndicator(Indicator):
         
     def __init__(self,
                  *args,
+                 period: int = 14,
                  **kwargs):
+        self.period = period
+        kwargs["setting_attrs"] = ["period"]
         super().__init__(*args, **kwargs)
 
     def compute_impl(self, df: pd.DataFrame,
                 output_column_name: Optional[Union[str, dict[str, str]]] = None,
                 settings: Optional[dict] = None) -> pd.DataFrame:
         if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"RSI": "RSI"}
+            output_column_name = {"RSI": f"RSI_{settings['period']}"}
         
-        df[output_column_name["RSI"]] = talib.RSI(df["close"])
+        df[output_column_name["RSI"]] = talib.RSI(df["close"], timeperiod=settings['period'])
         return df, output_column_name, settings
 
 
-class ATRIndicator(Indicator):
+class ChoppinessIndicator(Indicator):
         
-    def __init__(self, *args,
+    def __init__(self,
+                 *args,
+                 period: int = 14,
                  **kwargs):
+        self.period = period
+        kwargs["setting_attrs"] = ["period"]
         super().__init__(*args, **kwargs)
 
     def compute_impl(self, df: pd.DataFrame,
                 output_column_name: Optional[Union[str, dict[str, str]]] = None,
                 settings: Optional[dict] = None) -> pd.DataFrame:
         if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"ATR": "ATR"}
-        
-        df[output_column_name["ATR"]] = talib.ATR(df["high"], df["low"], df["close"])
+            output_column_name = {"choppiness": f"choppiness_{settings['period']}"}
+        print(pd_ta.choppiness(df["high"], df["low"], df["close"], length=settings['period'], multiplier=settings['multiplier']))
+        df[output_column_name["supertrend"]] = pd_ta.supertrend(high=df["high"], low=df["low"], close=df["close"],
+                                                                length=settings['period'],
+                                                                multiplier=settings['multiplier'])[f"SUPERT_{settings['period']}_{settings['multiplier']:.1f}"]
+        df[output_column_name["supertrend"]].fillna(df["close"].mean(), inplace=True)
+        df.loc[df[output_column_name["supertrend"]] < 1e-3, output_column_name["supertrend"]] = df["close"].mean()
         return df, output_column_name, settings
+    
+
+class SupertrendIndicator(Indicator):
+        
+    def __init__(self,
+                 *args,
+                 period: int = 7,
+                 multiplier: float = 3.0,
+                 **kwargs):
+        self.period = period
+        self.multiplier = multiplier
+        kwargs["setting_attrs"] = ["period", "multiplier"]
+        super().__init__(*args, **kwargs)
+
+    def compute_impl(self, df: pd.DataFrame,
+                output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                settings: Optional[dict] = None) -> pd.DataFrame:
+        if output_column_name is None or len(output_column_name) == 0:
+            output_column_name = {"supertrend": f"supertrend_{settings['period']}_{settings['multiplier']:.1f}"}
+        df[output_column_name["supertrend"]] = pd_ta.supertrend(high=df["high"], low=df["low"], close=df["close"],
+                                                                length=settings['period'],
+                                                                multiplier=settings['multiplier'])[f"SUPERT_{settings['period']}_{settings['multiplier']:.1f}"]
+        df[output_column_name["supertrend"]].fillna(df["close"].mean(), inplace=True)
+        df.loc[df[output_column_name["supertrend"]] < 1e-3, output_column_name["supertrend"]] = df["close"].mean()
+        return df, output_column_name, settings
+    
 
 
 class BBANDSIndicator(Indicator):
@@ -453,6 +516,25 @@ class HeikinAshiIndicator(Indicator):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
     
+    def smooth(self, df, field):
+        prev_row = None
+        prev_prev_row = None
+        prev_row_id = None
+        for row_id, row in df.iterrows():
+            if prev_row is None:
+                prev_row = row
+                prev_row_id = row_id
+                continue
+            if prev_prev_row is None:
+                prev_prev_row = prev_row
+                continue
+            if prev_prev_row[field] == 1. and prev_row[field] == 0. and row[field] == 1.:
+                df.loc[prev_row_id, field] = 1.0
+            prev_prev_row = prev_row
+            prev_row = row
+            prev_row_id = row_id
+
+
     def compute_impl(self, df: pd.DataFrame,
                      output_column_name: str | dict[str, str] | None = None,
                      settings: dict | None = None) -> pd.DataFrame:
@@ -478,7 +560,72 @@ class HeikinAshiIndicator(Indicator):
         for col in ["open", "high", "low", "close"]:
             df[col] = heikin_ashi_df[col].astype(float)
 
+        df["ha_trending_green"] = 0.
+        df["ha_trending_red"] = 0.
+        df["ha_non_trending"] = 0.
+        df["ha_long_trend"] = 0.
+        df["ha_short_trend"] = 0.
+
+        for row_id, row in df.iterrows():
+            if self.green_trending_candle(row):
+                df.loc[row_id, "ha_trending_green"] = 1.
+            elif self.red_trending_candle(row):
+                df.loc[row_id, "ha_trending_red"] = 1.
+            if self.doji_candle(row):
+                df.loc[row_id, "ha_non_trending"] = 1.
+
+        #self.smooth(df, "ha_trending_green")
+        #self.smooth(df, "ha_trending_green")
+        #self.smooth(df, "ha_trending_red")
+        #self.smooth(df, "ha_trending_red")
+        #self.smooth(df, "ha_non_trending")
+        #self.smooth(df, "ha_non_trending")
+
+        prev_row = None
+        short_trend_in_progress = False
+        long_trend_in_progress = False
+        for row_id, row in df.iterrows():
+            if prev_row is None:
+                prev_row = row
+                continue
+            if ((prev_row["ha_trending_green"] == 1.0
+                or prev_row["ha_non_trending"] == 1.0)
+                and row["ha_trending_red"] == 1.0):
+                short_trend_in_progress = True
+                long_trend_in_progress = False
+            elif ((prev_row["ha_trending_red"] == 1.0
+                or prev_row["ha_non_trending"] == 1.0)
+                and row["ha_trending_green"] == 1.0):
+                short_trend_in_progress = False
+                long_trend_in_progress = True
+            elif row["ha_non_trending"] == 1.0:
+                short_trend_in_progress = False
+                long_trend_in_progress = False
+
+            if short_trend_in_progress:
+                df.loc[row_id, "ha_short_trend"] = 1.0
+            elif long_trend_in_progress:
+                df.loc[row_id, "ha_long_trend"] = 1.0
+            prev_row = row
         return df, output_column_name, settings
+
+    def green_trending_candle(self, row):
+        if (row["close"] > row["open"]):
+            #and ((row["low"] - row["open"]) < 0.1 * (row["close"] - row["open"]))):
+            return True
+        return False
+
+    def red_trending_candle(self, row):
+        if (row["close"] < row["open"]):
+            #and ((row["high"] - row["open"]) < 0.1 * (row["open"] - row["close"]))):
+            return True
+        return False
+
+    def doji_candle(self, row):
+        if ((row["high"] - max(row["open"], row["close"])) > 0.2 * abs(row["open"] - row["close"])
+            and ((min(row["open"], row["close"]) - row["low"]) > 0.2 * abs(row["close"] - row["open"]))):
+            return True
+        return False
 
 
 class SupportIndicator(Indicator):
@@ -548,3 +695,5 @@ class SupportIndicator(Indicator):
                          df.loc[row.name, output_column_name["support"]] = 1.0
                          awaiting_approach = False
         return df, output_column_name, settings
+
+
