@@ -23,7 +23,7 @@ class OHLCRealtimeGrapher(TradeManagerService):
     @staticmethod
     def get_args():
 
-        p = configargparse.ArgParser(default_config_files=['.kite.env'])
+        p = configargparse.ArgParser(default_config_files=['.trader.env'])
         p.add('--redis_server', help="Redis server host", env_var="REDIS_SERVER")
         p.add('--redis_port', help="Redis server port", env_var="REDIS_PORT")
         p.add('--cache_path', help="Kite data cache path", env_var="CACHE_PATH")

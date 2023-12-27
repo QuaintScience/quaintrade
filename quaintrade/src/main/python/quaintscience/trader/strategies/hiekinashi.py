@@ -49,7 +49,7 @@ class HiekinAshiStrategy(StrategyExecutor):
         non_trading_timeslots.extend(StrategyExecutor.NON_TRADING_AFTERNOON)
         kwargs["non_trading_timeslots"] = non_trading_timeslots
         self.current_run = None
-        kwargs["plot_results"] = False
+        # kwargs["plot_results"] = False
         self.target_amt = 400
         #self.entry_threshold = 2
         self.entry_threshold = 0.1
@@ -107,20 +107,31 @@ class HiekinAshiStrategy(StrategyExecutor):
                          f" {window.iloc[-1]['close']}"
                          f"{' '.join(colvals)}")
 
-        if window.iloc[-1]["ha_non_trending"] == 1.0:
+        #if window.iloc[-1]["ha_non_trending"] == 1.0:
+        #    self.cancel_active_orders()
+        if self.current_run == TradeType.LONG and window.iloc[-1]["ha_short_trend"] == 1.0:
             self.cancel_active_orders()
+            self.current_run = None
+        elif self.current_run == TradeType.SHORT and window.iloc[-1]["ha_long_trend"] == 1.0:
+            self.cancel_active_orders()
+            self.current_run = None
+
         if self.can_trade(window):
             #if (window.iloc[-1]["ha_non_trending"] == 1.0 and window.iloc[-2]["ha_non_trending"] == 1.0):
             #    return
             if (window.iloc[-1]["ha_long_trend"] == 1.0 and window.iloc[-2]["ha_long_trend"] != 1.0
-                and context["1d"].iloc[-1]["ha_long_trend"] == 1.0):
+                and context["1d"].iloc[-1]["ha_long_trend"] == 1.0
+                and context["1h"].iloc[-1]["ha_long_trend"] == 1.0
+                and self.current_run != TradeType.LONG):
                 #and window.iloc[-1][f"supertrend_{self.st_period}_{self.st_multiplier:.1f}"] < window.iloc[-1].close):
                 self.cancel_active_orders()
                 self.take_position(window,
                                 trade_type=TradeType.LONG, tags=[f"hiekinashi_long"])
                 self.current_run = TradeType.LONG
             if (window.iloc[-1]["ha_short_trend"] == 1.0 and window.iloc[-2]["ha_short_trend"] != 1.0
-                and context["1d"].iloc[-1]["ha_short_trend"] == 1.0):
+                and context["1d"].iloc[-1]["ha_short_trend"] == 1.0
+                and context["1h"].iloc[-1]["ha_short_trend"] == 1.0
+                and self.current_run != TradeType.SHORT):
                 #and window.iloc[-1][f"supertrend_{self.st_period}_{self.st_multiplier:.1f}"] > window.iloc[-1].open):
                 self.cancel_active_orders()
                 self.current_run = TradeType.SHORT

@@ -3,6 +3,7 @@ import copy
 import datetime
 import configargparse
 
+from ..core.reflection import dynamically_load_class
 from ..integration.kite import KiteManager
 #from ..strategies.donchain_pullback import DonchainPullbackStrategy
 #from ..strategies.wma_support import WMASupportStrategy
@@ -13,6 +14,7 @@ from .common import TradeManagerService
 class BackTesterService(TradeManagerService):
 
     def __init__(self,
+                 strategy,
                  *args,
                  from_date=None,
                  to_date=None,
@@ -24,9 +26,11 @@ class BackTesterService(TradeManagerService):
         self.from_date = self.__correct(from_date)
         self.to_date = self.__correct(to_date)
         self.interval = interval
+        self.strategy = strategy
         self.trade_manager.interval = interval
         self.trade_manager.historic_context_from = self.from_date
         self.trade_manager.historic_context_to = self.to_date
+        self.StrategyClass = dynamically_load_class(self.strategy)
         self.trade_manager.init()
 
     def __correct(self, dt):
@@ -40,8 +44,7 @@ class BackTesterService(TradeManagerService):
     def start(self):
         self.logger.info("Running backtest...")
         for instrument in self.instruments:
-            print(instrument)
-            self.strategy_executer = HiekinAshiStrategy(signal_scrip=instrument["scrip"],
+            self.strategy_executer = self.StrategyClass(signal_scrip=instrument["scrip"],
                                                         long_scrip=instrument["scrip"],
                                                         short_scrip=instrument["scrip"],
                                                         exchange=instrument["exchange"],
@@ -60,7 +63,7 @@ class BackTesterService(TradeManagerService):
     @staticmethod
     def get_args():
 
-        p = configargparse.ArgParser(default_config_files=['.kite.env'])
+        p = configargparse.ArgParser(default_config_files=['.trader.env'])
         p.add('--api_key', help="API key", env_var="API_KEY")
         p.add('--api_secret', help="API secret", env_var="API_SECRET")
         p.add('--request_token', help="Request token (if first time login)", env_var="REQUEST_TOKEN")
@@ -72,5 +75,6 @@ class BackTesterService(TradeManagerService):
         p.add('--from_date', help="From date", env_var="FROM_DATE")
         p.add('--to_date', help="To date", env_var="TO_DATE")
         p.add('--interval', help="Interval", env_var="INTERVAL")
+        p.add('--strategy', help="Strategy class", env_var="STRATEGY")
         p.add('--instruments', help="Instruments in scrip:exchange,scrip:exchange format", env_var="INSTRUMENTS")
         return p.parse_known_args()

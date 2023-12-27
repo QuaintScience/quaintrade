@@ -21,7 +21,7 @@ class RealtimeListener(TradeManagerService):
     @staticmethod
     def get_args():
 
-        p = configargparse.ArgParser(default_config_files=['.kite.env'])
+        p = configargparse.ArgParser(default_config_files=['.trader.env'])
         p.add('--api_key', help="API key", env_var="API_KEY")
         p.add('--api_secret', help="API secret", env_var="API_SECRET")
         p.add('--request_token', help="Request token (if first time login)", env_var="REQUEST_TOKEN")
