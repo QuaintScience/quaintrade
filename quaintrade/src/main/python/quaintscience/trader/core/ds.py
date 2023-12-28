@@ -103,3 +103,9 @@ class CandleType(Enum):
 
     OHLC = "ohlc"
     HEIKIN_ASHI = "heikin_ashi"
+
+
+class OHLCStorageType(Enum):
+
+    LIVE = "live"
+    PERM = "perm"

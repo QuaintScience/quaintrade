@@ -4,6 +4,7 @@ services:
     image: "redis/redis-stack:latest"
     ports:
       - 6379:6379
+    network_mode: host
   quaintrade_kite_listener:
     build:
       dockerfile: services/kite-listener/Dockerfile

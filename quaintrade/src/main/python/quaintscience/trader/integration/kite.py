@@ -14,37 +14,32 @@ import datetime
 import time
 import traceback
 
-from ..core.ds import Order, OrderType, TradingProduct, TransactionType, Position
-from .common import TradeManager
+from ..core.ds import Order, OrderType, TradingProduct, TransactionType, Position, OHLCStorageType
+from .common import HistoricDataProvider, AuthenticatorMixin, Broker, StreamingDataProvider
 from ..core.util import today_timestamp, hash_dict, datestring_to_datetime
 
 
-class KiteManager(TradeManager):
 
-    RATE_LIMIT_TIME=0.33
-    BATCH_SIZE = 60
 
-    def __init__(self,
-                 *args,
+class KiteBaseMixin(AuthenticatorMixin):
+
+    def __init__(self, *args,
                  **kwargs):
-        self.kite = None
-        self.kws = None
-        self.ticker_thread = None
         super().__init__(*args, **kwargs)
 
-    # Login related methods go here
-
     @property
-    @cache
     def access_token_filepath(self):
-        return os.path.join(self.cache_path, "access_token.cache")
+        return os.path.join(self.auth_cache_filepath, "access_token.json")
 
-    def start_login(self) -> str:
-        self.kite = KiteConnect(api_key=self.user_credentials["API_KEY"])
+    def login(self):
+        self.kite = KiteConnect(api_key=self.auth_credentials["API_KEY"])
         self.auth_state = {"state": "Start Login"}
-        
+        if self.reset_auth_cache:
+            if os.path.exists(self.access_token_filepath):
+                os.remove(self.access_token_filepath)
+
         if os.path.exists(self.access_token_filepath):
-            print(self.access_token_filepath)
+            self.logger.info(f"Loading access token from {self.access_token_filepath}")
             with open(self.access_token_filepath, 'r', encoding='utf-8') as fid:
                 try:
                     self.auth_state = json.load(fid)
@@ -61,40 +56,36 @@ class KiteManager(TradeManager):
         response = self.listen_to_login_callback()
         self.finish_login(response["query_params"]["request_token"][0])
 
-    def finish_login(self, request_token, *args, **kwargs):
+    def finish_login(self, request_token,):
         try:
-            self.auth_state = self.kite.generate_session(request_token, self.user_credentials["API_SECRET"])
+            self.auth_state = self.kite.generate_session(request_token, self.auth_credentials["API_SECRET"])
             self.kite.set_access_token(self.auth_state["access_token"])
             self.auth_state["state"] = "Logged in"
             self.auth_state["login_time"] = self.auth_state["login_time"].strftime("%Y-%m-%d %H:%M:%S")
             with open(self.access_token_filepath, 'w', encoding='utf-8') as fid:
                 json.dump(self.auth_state, fid)
+            self.init()
         except Exception:
             self.auth_state["state"] = "Login Error"
-            self.auth_state["trace_back"] = traceback.format_exc()
-        self.init()
+            self.auth_state["traceback"] = traceback.format_exc()
 
-    # Initialization
     def init(self):
         self.__load_instrument_token_mapper()
 
     def __load_instrument_token_mapper(self, force_refresh: bool = False):
         today = today_timestamp()
-        filepath = os.path.join(f"{self.cache_path}", f"instruments-{today}.csv")
+        filepath = os.path.join(f"{self.auth_cache_filepath}", f"instruments-{today}.csv")
         if not os.path.exists(filepath) or force_refresh:
             instruments = pd.DataFrame(self.kite.instruments())
             instruments.to_csv(filepath, index=False)
-        
         self.instruments = pd.read_csv(filepath)
 
-    # Kite specific help utils
-
-    def __kite_timestamp_to_datetime(self, d):
+    def kite_timestamp_to_datetime(self, d):
         return datetime.datetime.strptime(d, "%Y-%m-%d %H:%M:%S")
 
     @hash_dict
     @cache
-    def __get_instrument_object(self, instruments):
+    def get_instrument_object(self, instruments):
         result = []
         instruments_lst = instruments
         if isinstance(instruments, dict):
@@ -114,6 +105,91 @@ class KiteManager(TradeManager):
             return result[0]
         return result
 
+
+class KiteHistoricDataProvider(HistoricDataProvider, KiteBaseMixin):
+
+    def __init__(self,
+                 *args,
+                 rate_limit_time: float = 0.33,
+                 batch_size: int = 60,
+                 **kwargs):
+        super().__init__(self, *args, **kwargs)
+        self.rate_limit_time = rate_limit_time
+        self.batch_size = batch_size
+
+    def download_data_in_batches(self,
+                                 scrip: str,
+                                 exchange: str,
+                                 from_date: Union[datetime.datetime, str],
+                                 to_date: Union[datetime.datetime, str]) -> bool:
+        subtracting_func = {"days": self.batch_size}
+        batch_to_date = to_date
+        batch_from_date = batch_to_date - datetime.timedelta(**subtracting_func)
+        batch_from_date = max(from_date, batch_from_date)
+        exit_condition = False
+        self.logger.info(f"Downloading missing data for {scrip}/{exchange}; instrument token: {instrument['instrument_token']}")
+        while ((batch_from_date >= from_date or
+            (batch_to_date <= to_date and
+                batch_to_date >= from_date))):
+            self.logger.info(f"Batch {batch_from_date} -- {batch_to_date}")
+            data = self.get_data_as_df(scrip=scrip,
+                                       exchange=exchange,
+                                       interval="1m",
+                                       storage_type=OHLCStorageType.PERM,
+                                       download_missing_data=True)
+            if len(data) == 0:
+                break
+        return True
+
+    def download_historic_data(self,
+                               scrip:str,
+                               exchange: str,
+                               interval: str,
+                               from_date: Union[datetime.datetime, str],
+                               to_date: Union[datetime.datetime, str]) -> bool:
+        if interval == "1m":
+            interval = "minute"
+
+        if isinstance(from_date, str):
+            from_date = datestring_to_datetime(from_date)
+        if isinstance(to_date, str):
+            to_date = datestring_to_datetime(to_date)
+
+        instrument = self.get_instrument_object({"scrip": scrip, "exchange": exchange})
+        req_start_time = time.time()
+        data = self.kite.historical_data(instrument["instrument_token"],
+                                        interval=interval,
+                                        from_date=batch_from_date.strftime("%Y-%m-%d"),
+                                        to_date=batch_to_date.strftime("%Y-%m-%d"),
+                                        oi=True)
+        if len(data) == 0:
+            return False
+        data = pd.DataFrame(data)
+        try:
+            data["date"] = data["date"].dt.tz_localize(None)
+        except Exception:
+            return False
+        data.index = data["date"]
+        data.drop(["date"], axis=1, inplace=True)
+
+        storage = self.get_storage(scrip, exchange, storage_type=OHLCStorageType.PERM)
+        storage.put(scrip, exchange, data)
+        batch_to_date = batch_from_date - datetime.timedelta(days=1)
+        batch_from_date = batch_from_date - datetime.timedelta(**subtracting_func)
+        time_elapsed = time.time() - req_start_time
+        self.logger.info(f"Fetching data for batch {batch_from_date}-{batch_to_date} took {time_elapsed:.2f} seconds")
+        if time_elapsed < self.rate_limit_time:
+            time.sleep(self.rate_limit_time - time_elapsed)
+        return True
+
+
+class KiteBroker(Broker, KiteBaseMixin):
+
+    def __init__(self,
+                 *args,
+                 **kwargs):
+        super().__init__(*args, **kwargs)
+
     # Order management
 
     def cancel_pending_orders(self):
@@ -132,15 +208,16 @@ class KiteManager(TradeManager):
         raise NotImplementedError(f"Update order {order}")
 
     def place_order(self, order: Order) -> Order:
-        order_id = self.kite.place_order(tradingsymbol=order.scrip,
-                                         exchange=order.exchange,
-                                         transaction_type=order.transaction_type.value,
-                                         quantity=order.quantity,
-                                         variety=self.kite.VARIETY_REGULAR,
-                                         order_type=order.order_type.value,
-                                         product=order.product.value,
-                                         validity=order.validity)
-        order.order_id = order_id
+        if not self.dry_mode:
+            order_id = self.kite.place_order(tradingsymbol=order.scrip,
+                                            exchange=order.exchange,
+                                            transaction_type=order.transaction_type.value,
+                                            quantity=order.quantity,
+                                            variety=self.kite.VARIETY_REGULAR,
+                                            order_type=order.order_type.value,
+                                            product=order.product.value,
+                                            validity=order.validity)
+            order.order_id = order_id
         return order
 
     def order_callback(self, orders):
@@ -176,93 +253,36 @@ class KiteManager(TradeManager):
                                 cancelled_quantity = order["cancelled_quantity"]))
         return result
 
-    # Historic data download
 
-    def download_historic_data(self,
-                               scrip:str,
-                               exchange: str,
-                               interval: str,
-                               from_date: Union[datetime.datetime, str],
-                               to_date: Union[datetime.datetime, str]) -> bool:
-        if isinstance(from_date, str):
-            from_date = datestring_to_datetime(from_date)
-        if isinstance(to_date, str):
-            to_date = datestring_to_datetime(to_date)
+class KiteStreamingDataProvider(StreamingDataProvider, KiteBaseMixin):
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
-        instrument = self.__get_instrument_object({"scrip": scrip, "exchange": exchange})
-        subtracting_func = {"days": KiteManager.BATCH_SIZE}
 
-        batch_to_date = to_date
-        batch_from_date = batch_to_date - datetime.timedelta(**subtracting_func)
-        batch_from_date = max(from_date, batch_from_date)
-        exit_condition = False
-        self.logger.info(f"Instrument token {instrument['instrument_token']}")
-        while ((batch_from_date >= from_date or
-                (batch_to_date <= to_date and
-                 batch_to_date >= from_date)) and
-                 not exit_condition):
-            filepath = self.get_filepath_for_data(scrip, exchange, batch_from_date, batch_to_date)
-            req_start_time = time.time()
-            self.logger.info(f"Started {filepath}")
-            if not os.path.exists(filepath):
-                data = self.kite.historical_data(instrument["instrument_token"],
-                                                interval=interval,
-                                                from_date=batch_from_date.strftime("%Y-%m-%d"),
-                                                to_date=batch_to_date.strftime("%Y-%m-%d"),
-                                                oi=True)
-                if len(data) == 0:
-                    exit_condition = True
-                    continue
-                data = pd.DataFrame(data)
-                try:
-                    data["date"] = data["date"].dt.tz_localize(None)
-                except Exception:
-                    exit_condition = True
-                data.index = data["date"]
-                data.drop(["date"], axis=1, inplace=True)
-                os.makedirs(os.path.dirname(filepath), exist_ok=True)
-                data.to_csv(filepath, index=True)
-            else:
-                self.logger.info(f"Skipped fetching {filepath} as it already exists...")
-                try:
-                    data = self.read_data_file(filepath, on_bad_lines='error')
-                except Exception:
-                    self.logger.info("CSV {filepath} is corrupt.")
-                    os.remove(filepath)
-                    continue
-                if len(data) == 0:
-                    break
-            batch_to_date = batch_from_date - datetime.timedelta(days=1)
-            batch_from_date = batch_from_date - datetime.timedelta(**subtracting_func)
-            time_elapsed = time.time() - req_start_time
-            self.logger.info(f"Fetching data to {filepath} took {time_elapsed} seconds")
-            if time_elapsed < KiteManager.RATE_LIMIT_TIME:
-                time.sleep(KiteManager.RATE_LIMIT_TIME - time_elapsed)
-
-    # Streaming
-
-    def start_realtime_ticks_impl(self, instruments, *args, **kwargs):
-        instruments = self.__get_instrument_object(instruments)
+    def start(self, instruments: list[str], *args, **kwargs):
+        instruments = self.get_instrument_object(instruments)
         if isinstance(instruments, dict):
             instruments = [instruments]
         self.ticker_instruments = instruments
-        self.kws = KiteTicker(self.user_credentials["API_KEY"], self.auth_state["access_token"])
-        self.kws.on_ticks = self.__on_ticks
-        self.kws.on_connect = self.on_connect_realtime_ticks
-        self.kws.on_close = self.on_close_realtime_ticks
+
+        self.kws = KiteTicker(self.auth_credentials["API_KEY"], self.auth_credentials["access_token"])
+
+        self.kws.on_ticks = self.on_message
+        self.kws.on_connect = self.on_connect
+        self.kws.on_close = self.on_close
         self.logger.info("Starting ticker....")
-        #self.kws.connect()
         self.ticker_thread = Thread(target=self.kws.connect, kwargs={"threaded": True})
         self.ticker_thread.start()
 
-    def on_connect_realtime_ticks(self, ws, response, *args, **kwargs):
+    def on_connect(self, ws, response, *args, **kwargs):
         self.logger.info(f"Ticker Websock connected {response}.")
         self.logger.info(f"Subscribing to {self.ticker_instruments}")
         tokens = [instrument["instrument_token"] for instrument in self.ticker_instruments]
         self.kws.subscribe(tokens)
         self.kws.set_mode(KiteTicker.MODE_QUOTE, tokens)
 
-    def on_close_realtime_ticks(self, ws, code, reason, *args, **kwargs):
+    def on_close(self, ws, code, reason, *args, **kwargs):
         self.logger.info(f"Ticker Websock closed {code} / {reason}.")
 
 
@@ -276,7 +296,7 @@ class KiteManager(TradeManager):
         return self.get_key_from_scrip(data.iloc[0]["tradingsymbol"],
                                        data.iloc[0]["exchange"])
 
-    def __on_ticks(self, ws, ticks, *args, **kwargs):
+    def on_message(self, ws, ticks, *args, **kwargs):
         if self.kill_tick_thread:
             self.kill_tick_thread = False
             raise KeyError("Killed Tick Thread!")

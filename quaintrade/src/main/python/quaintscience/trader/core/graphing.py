@@ -116,14 +116,5 @@ def backtesting_results_plot(df,
     kwargs.update(mpf_custom_kwargs)
     fig, axes = mpf.plot(df,
                          **kwargs)
-    #multi = MultiCursor(fig.canvas,
-    #                    axes,
-    #                    horizOn=True,
-    #                    vertOn=True,
-    #                    color='r', lw=1.2)
-
-
-
-
     mpf.show()
 

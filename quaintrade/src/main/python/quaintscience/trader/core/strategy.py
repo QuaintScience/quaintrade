@@ -306,7 +306,12 @@ class StrategyExecutor(ABC, LoggerMixin):
 
         else:
             if self.can_trade(df):
-                trade_type = self.strategy(df)
+                context = {"1d": daily_context,
+                           "1w": weekly_context,
+                           "1h": hourly_context,
+                           "2h": bihourly_context,
+                           "3h": trihourly_context}
+                trade_type = self.strategy(df, context)
                 if trade_type is not None:
                     self.logger.info(f"Found trade {trade_type} at {ts}")
                     self.take_position(df, trade_type)

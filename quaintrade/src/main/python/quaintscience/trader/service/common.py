@@ -1,9 +1,12 @@
 from abc import abstractmethod
-from typing import Union
+from typing import Union, Optional, Type
+
+import configargparse
 
 from ..core.logging import LoggerMixin
-from ..integration.kite import KiteManager
-from ..integration.paper import PaperTradeManager
+from ..integration.common import DataProvider, AuthenticatorMixin
+from ..core.reflection import dynamically_load_class
+from ..core.persistence import OHLCStorage
 
 
 class Service(LoggerMixin):
@@ -15,62 +18,67 @@ class Service(LoggerMixin):
     def start(self):
         pass
 
-    @staticmethod
-    def get_args():
+    @classmethod
+    def get_arg_parser(cls) -> configargparse.ArgParser:
         raise NotImplementedError("get_args not implemented; needs to return options")
+
+    @classmethod
+    def get_args(cls):
+        parser = cls.get_arg_parser()
+        return parser.parse_known_args()
 
     @classmethod
     def create_service(cls):
         p = cls.get_args()
         if isinstance(p, tuple):
             p = p[0]
-        return cls(**p.__dict__)
+        kwargs = p.__dict__
+        return cls(**kwargs)
 
 
-class TradeManagerService(Service):
+class DataProviderService(Service):
 
     def __init__(self,
                  *args,
-                 redis_server: str,
-                 redis_port: int,
-                 cache_path: str,
-                 api_key: str=None,
-                 api_secret: str=None,
-                 request_token: str=None,
-                 access_token: str=None,
-                 instruments: Union[str, list]=None,
-                 provider: str = "kite",
+                 data_path: str,
+                 ProviderClass: Union[str, Type[DataProvider]],
                  login_needed: bool = True,
                  init: bool = True,
+                 StorageClass: Optional[Union[str, Type[OHLCStorage]]] == None,
+                 auth_credentials: Optional[dict] = None,
                  **kwargs):
 
         super().__init__(*args, **kwargs)
-        if isinstance(instruments, str):
-            instruments = [{"scrip": value.split(":")[0], "exchange": value.split(":")[1]}
-                           for value in instruments.split(",")]
-        self.instruments = instruments
 
-        if provider == "kite":
-            self.trade_manager = KiteManager(user_credentials={"API_KEY": api_key,
-                                                               "API_SECRET": api_secret},
-                                             cache_path=cache_path,
-                                             redis_server=redis_server,
-                                             redis_port=redis_port)
-            if login_needed:
-                res = self.trade_manager.start_login()
-                self.logger.info(f"Start Login Result {res}")
-                if res is not None:
-                    if request_token is not None:
-                        self.trade_manager.finish_login(request_token)
-                    elif access_token is not None:
-                        self.trade_manager.kite.set_access_token(access_token)
-                        self.trade_manager.auth_state["access_token"] = access_token
-        elif provider == "paper":
-            self.trade_manager = PaperTradeManager(cache_path=cache_path,
-                                                   redis_server=redis_server,
-                                                   redis_port=redis_port,
-                                                   instruments=instruments)
-        else:
-            raise ValueError(f"Provider {provider} not found.")
-        if self.trade_manager is not None and init:
-            self.trade_manager.init()
+        if isinstance(ProviderClass, str):
+            ProviderClass = dynamically_load_class(ProviderClass)
+
+        provider_kwargs = {"data_path": data_path}
+        if StorageClass is not None:
+            provider_kwargs["storage_class"] = StorageClass
+        
+        if issubclass(ProviderClass, AuthenticatorMixin):
+            provider_kwargs["auth_credentials"] = auth_credentials
+        
+        self.data_provider = ProviderClass(**provider_kwargs)
+
+        if login_needed and isinstance(self.data_provider, AuthenticatorMixin):
+            self.data_provider.login()
+            
+        if init:
+            self.data_provider.init()
+
+    @classmethod
+    def get_arg_parser(cls) -> configargparse.ArgParser:
+
+        p = configargparse.ArgParser(default_config_files=['.trader.env'])
+        p.add('--data_path', help="Data cache path", env_var="DATA_PATH")
+        p.add('--provider_class', help="Provider", env_var="PROVIDER_CLASS")
+        p.add('--from_date', help="From date", env_var="FROM_DATE")
+        p.add('--to_date', help="To date", env_var="TO_DATE")
+        p.add('--instruments', help="Instruments", env_var="INSTRUMENTS")
+        p.add('--login_needed', help="Login needed", env_var="LOGIN_NEEDED")
+        p.add('--init', help="Do init", env_var="INIT")
+        p.add('--storage_class', help="Storage class", env_var="STORAGE_CLASS")
+        p.add('--auth_credentials_file', help="API key", env_var="AUTH_CREDENTIALS")
+        return p

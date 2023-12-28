@@ -8,10 +8,10 @@ from tabulate import tabulate
 from ..core.ds import (Order,
                        Position,
                        OrderType,
-                       TradingProduct,
+                       OHLCStorageType,
                        OrderState,
                        TransactionType)
-from .common import TradeManager
+from .common import Broker, HistoricDataProvider
 from ..core.util import default_dataclass_field
 
 
@@ -32,86 +32,74 @@ class PaperPosition(Position):
         return False
 
 
-class PaperTradeManager(TradeManager):
+class PaperBroker(Broker):
 
     def __init__(self,
                  *args,
+                 data_provider: HistoricDataProvider,
                  instruments: list = None,
-                 load_from_files: bool = True,
-                 load_from_redis: bool = False,
-                 redis_load_frequency: float = 0.5,
                  historic_context_from: datetime.datetime = None,
                  historic_context_to: datetime.datetime = None,
                  interval: str = "10min",
                  refresh_orders_immediately_on_gtt_state_change: bool = False,
                  **kwargs):
-        self.orders = []
-        self.positions = {}
-        self.gtt_orders = []
+
+        self.data_provider = data_provider
+
         if instruments is None:
             instruments = []
+
         self.instruments = instruments
-        self.load_from_files = load_from_files
-        self.load_from_redis = load_from_redis
-        self.redis_load_frequency = redis_load_frequency
+
         if historic_context_from is None:
             historic_context_from = datetime.datetime.now() - datetime.timedelta(days=60)
         if historic_context_to is None:
             historic_context_to = datetime.datetime.now()
+        
         self.historic_context_from = historic_context_from
         self.historic_context_to = historic_context_to
+        
         self.interval = interval
         self.refresh_orders_immediately_on_gtt_state_change = refresh_orders_immediately_on_gtt_state_change
-        kwargs["user_credentials"] = None
+
+        self.orders = []
+        self.positions = {}
+        self.gtt_orders = []
+
         self.data = {}
         self.idx = {}
+
         self.current_time = None
+
         self.events = []
+
         self.pnl_history = []
+
         self.order_stats = {"completed": 0,
                             "cancelled": 0,
                             "pending": 0}
+
         super().__init__(*args, **kwargs)
 
-    # Login related
-
-    def start_login(self) -> str:
-        self.auth_state = {"state": "Logged in"}
-        return None
-
-    def finish_login(self, *args, **kwargs) -> bool:
-        pass
-
-    # Initialization
     def init(self):
-        if self.load_from_redis:
-            ohlc_data = self.get_redis_tick_data_as_ohlc(refresh=True,
-                                                         interval=self.interval)
-            if isinstance(self.data, pd.Dataframe):
-                self.data = pd.concat([self.data, ohlc_data],
-                                      axis=0)
-            else:
-                self.data = ohlc_data
-        if self.load_from_files:
-            for instrument in self.instruments:
-                data = self.get_historic_data(scrip=instrument["scrip"],
-                                              exchange=instrument["exchange"],
-                                              interval=self.interval,
-                                              from_date=self.historic_context_from,
-                                              to_date=self.historic_context_to,
-                                              download=False)
-                key = self.get_key_from_scrip(instrument["scrip"],
-                                              instrument["exchange"])
-                if key in self.data:
-                    self.data[key] = pd.concat([self.data[key], data], axis=0).reset_index().drop_duplicates(subset='date', keep='first').set_index('date')
-                else:
-                    self.data[key] = data
+
+        for instrument in self.instruments:
+            scrip = instrument["scrip"],
+            exchange = instrument["exchange"]
+            instrument_data = self.data_provider.get_data_as_df(scrip=scrip,
+                                                                exchange=exchange,
+                                                                interval=self.interval,
+                                                                from_date=self.historic_context_from,
+                                                                to_date=self.historic_context_to,
+                                                                storage_type=OHLCStorageType.PERM,
+                                                                download_missing_data=False)
+            self.data[self.get_key_from_scrip(scrip, exchange)] = instrument_data
 
     def current_datetime(self):
         return self.current_time
 
-    def set_current_time(self, dt: datetime.datetime, traverse: bool = False,
-                         instrument: Optional[dict] = None):
+    def set_current_time(self, dt: datetime.datetime,
+                         traverse: bool = False):
         for instrument in self.data.keys():
             to_idx = self.data[instrument].index.get_indexer([dt], method="nearest")[0]
             if self.data[instrument].iloc[to_idx].name < dt:
@@ -123,32 +111,39 @@ class PaperTradeManager(TradeManager):
             if not traverse:
                 self.current_time = dt
                 self.idx[instrument] = to_idx
+
             for idx in range(self.idx.get(instrument, 0) + 1, to_idx + 1):
                 scrip, exchange = self.get_scrip_and_exchange_from_key(instrument)
                 self.idx[instrument] = idx
-                self.logger.debug(f"Incrementing time from {self.current_time} to {self.data[instrument].iloc[idx].name} for {instrument} idx={idx}")
-                self.logger.debug(f"{self.current_time} OHLC "
-                                  f" {self.data[instrument].iloc[idx]['open']}"
-                                  f" {self.data[instrument].iloc[idx]['high']}"
-                                  f" {self.data[instrument].iloc[idx]['low']}"
-                                  f" {self.data[instrument].iloc[idx]['close']}")
+                self.logger.debug(f"INC TIME {self.current_time} >>>> {self.data[instrument].iloc[idx].name} FOR {instrument} [idx={idx}]")
+                self.logger.debug(f"{self.current_time} >>>> "
+                                  f"O {self.data[instrument].iloc[idx]['open']}"
+                                  f"H {self.data[instrument].iloc[idx]['high']}"
+                                  f"L {self.data[instrument].iloc[idx]['low']}"
+                                  f"C {self.data[instrument].iloc[idx]['close']}")
+
                 self.current_time = self.data[instrument].iloc[idx].name
+
                 self.__process_orders(scrip=scrip,
                                       exchange=exchange)
+
                 self.__update_positions()
+
                 self.__process_orders(scrip=scrip,
                                       exchange=exchange)
+
                 self.__update_positions()
+
                 total_pnl = 0
-                for key, value in self.positions.items():
+                for value in self.positions.values():
                     total_pnl += value.pnl
                 self.pnl_history.append([self.current_datetime(), total_pnl])
 
     def get_orders_as_table(self):
         status = [[self.current_time,
-                       self.order_stats["pending"],
-                       self.order_stats["completed"],
-                       self.order_stats["cancelled"]]]
+                   self.order_stats["pending"],
+                   self.order_stats["completed"],
+                   self.order_stats["cancelled"]]]
         print(tabulate(status, headers=["Time", "Pending", "Completed", "Cancelled"], tablefmt="double_outline"))
         
         printable_orders = []
@@ -403,24 +398,3 @@ class PaperTradeManager(TradeManager):
 
     def get_positions(self) -> list[Position]:
         return self.positions
-
-    
-    # Get Historical Data
-    def download_historic_data(self,
-                               scrip:str,
-                               exchange: str,
-                               interval: str,
-                               from_date: datetime.datetime,
-                               to_date: datetime.datetime) -> bool:
-        raise NotImplementedError("paper trade manager cannot get any data")
-
-    # Streaming data
-    def start_realtime_ticks_impl(self, instruments: list, *args, **kwargs):
-        raise NotImplementedError("paper trade manager cannot stream data")
-
-
-    def on_connect_realtime_ticks(self, *args, **kwargs):
-        raise NotImplementedError("paper trade manager cannot respond to streaming ticks")
-
-    def on_close_realtime_ticks(self, *args, **kwargs):
-        raise NotImplementedError("paper trade manager cannot respond to streaming ticks")
