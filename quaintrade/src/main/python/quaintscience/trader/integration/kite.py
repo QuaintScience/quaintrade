@@ -15,13 +15,13 @@ import time
 import traceback
 
 from ..core.ds import Order, OrderType, TradingProduct, TransactionType, Position, OHLCStorageType
-from .common import HistoricDataProvider, AuthenticatorMixin, Broker, StreamingDataProvider
-from ..core.util import today_timestamp, hash_dict, datestring_to_datetime
-
-
+from ..core.roles import HistoricDataProvider, AuthenticatorMixin, Broker, StreamingDataProvider
+from ..core.util import today_timestamp, hash_dict, datestring_to_datetime, get_key_from_scrip_and_exchange
 
 
 class KiteBaseMixin(AuthenticatorMixin):
+
+    ProviderName = "kite"
 
     def __init__(self, *args,
                  **kwargs):
@@ -29,7 +29,8 @@ class KiteBaseMixin(AuthenticatorMixin):
 
     @property
     def access_token_filepath(self):
-        return os.path.join(self.auth_cache_filepath, "access_token.json")
+        os.makedirs(os.path.join(self.auth_cache_filepath, self.ProviderName), exist_ok=True)
+        return os.path.join(self.auth_cache_filepath, self.ProviderName, "access_token.json")
 
     def login(self):
         self.kite = KiteConnect(api_key=self.auth_credentials["API_KEY"])
@@ -74,7 +75,7 @@ class KiteBaseMixin(AuthenticatorMixin):
 
     def __load_instrument_token_mapper(self, force_refresh: bool = False):
         today = today_timestamp()
-        filepath = os.path.join(f"{self.auth_cache_filepath}", f"instruments-{today}.csv")
+        filepath = os.path.join(f"{self.auth_cache_filepath}", self.ProviderName, f"instruments-{today}.csv")
         if not os.path.exists(filepath) or force_refresh:
             instruments = pd.DataFrame(self.kite.instruments())
             instruments.to_csv(filepath, index=False)
@@ -106,40 +107,19 @@ class KiteBaseMixin(AuthenticatorMixin):
         return result
 
 
-class KiteHistoricDataProvider(HistoricDataProvider, KiteBaseMixin):
+class KiteHistoricDataProvider(KiteBaseMixin, HistoricDataProvider):
+
+    ProviderName = "kite"
 
     def __init__(self,
                  *args,
                  rate_limit_time: float = 0.33,
-                 batch_size: int = 60,
+                 batch_size: int = 59,
                  **kwargs):
-        super().__init__(self, *args, **kwargs)
+        HistoricDataProvider.__init__(self, *args, **kwargs)
+        KiteBaseMixin.__init__(self, *args, **kwargs)
         self.rate_limit_time = rate_limit_time
         self.batch_size = batch_size
-
-    def download_data_in_batches(self,
-                                 scrip: str,
-                                 exchange: str,
-                                 from_date: Union[datetime.datetime, str],
-                                 to_date: Union[datetime.datetime, str]) -> bool:
-        subtracting_func = {"days": self.batch_size}
-        batch_to_date = to_date
-        batch_from_date = batch_to_date - datetime.timedelta(**subtracting_func)
-        batch_from_date = max(from_date, batch_from_date)
-        exit_condition = False
-        self.logger.info(f"Downloading missing data for {scrip}/{exchange}; instrument token: {instrument['instrument_token']}")
-        while ((batch_from_date >= from_date or
-            (batch_to_date <= to_date and
-                batch_to_date >= from_date))):
-            self.logger.info(f"Batch {batch_from_date} -- {batch_to_date}")
-            data = self.get_data_as_df(scrip=scrip,
-                                       exchange=exchange,
-                                       interval="1m",
-                                       storage_type=OHLCStorageType.PERM,
-                                       download_missing_data=True)
-            if len(data) == 0:
-                break
-        return True
 
     def download_historic_data(self,
                                scrip:str,
@@ -147,7 +127,7 @@ class KiteHistoricDataProvider(HistoricDataProvider, KiteBaseMixin):
                                interval: str,
                                from_date: Union[datetime.datetime, str],
                                to_date: Union[datetime.datetime, str]) -> bool:
-        if interval == "1m":
+        if interval == "1min":
             interval = "minute"
 
         if isinstance(from_date, str):
@@ -155,12 +135,13 @@ class KiteHistoricDataProvider(HistoricDataProvider, KiteBaseMixin):
         if isinstance(to_date, str):
             to_date = datestring_to_datetime(to_date)
 
-        instrument = self.get_instrument_object({"scrip": scrip, "exchange": exchange})
         req_start_time = time.time()
+        instrument = self.get_instrument_object({"scrip": scrip, "exchange": exchange})
+        self.logger.info(f"Start fetch data from kite {from_date} to {to_date}")
         data = self.kite.historical_data(instrument["instrument_token"],
                                         interval=interval,
-                                        from_date=batch_from_date.strftime("%Y-%m-%d"),
-                                        to_date=batch_to_date.strftime("%Y-%m-%d"),
+                                        from_date=from_date,
+                                        to_date=to_date,
                                         oi=True)
         if len(data) == 0:
             return False
@@ -174,16 +155,14 @@ class KiteHistoricDataProvider(HistoricDataProvider, KiteBaseMixin):
 
         storage = self.get_storage(scrip, exchange, storage_type=OHLCStorageType.PERM)
         storage.put(scrip, exchange, data)
-        batch_to_date = batch_from_date - datetime.timedelta(days=1)
-        batch_from_date = batch_from_date - datetime.timedelta(**subtracting_func)
         time_elapsed = time.time() - req_start_time
-        self.logger.info(f"Fetching data for batch {batch_from_date}-{batch_to_date} took {time_elapsed:.2f} seconds")
+        self.logger.info(f"Fetching {len(data)} rows of data from kite {from_date} to {to_date} took {time_elapsed:.2f} seconds")
         if time_elapsed < self.rate_limit_time:
             time.sleep(self.rate_limit_time - time_elapsed)
         return True
 
 
-class KiteBroker(Broker, KiteBaseMixin):
+class KiteBroker(KiteBaseMixin, Broker):
 
     def __init__(self,
                  *args,
@@ -254,11 +233,11 @@ class KiteBroker(Broker, KiteBaseMixin):
         return result
 
 
-class KiteStreamingDataProvider(StreamingDataProvider, KiteBaseMixin):
+class KiteStreamingDataProvider(KiteBaseMixin, StreamingDataProvider):
     
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
+        StreamingDataProvider.__init__(self, *args, **kwargs)
+        KiteBaseMixin.__init__(self, *args, **kwargs)
 
     def start(self, instruments: list[str], *args, **kwargs):
         instruments = self.get_instrument_object(instruments)
@@ -266,7 +245,7 @@ class KiteStreamingDataProvider(StreamingDataProvider, KiteBaseMixin):
             instruments = [instruments]
         self.ticker_instruments = instruments
 
-        self.kws = KiteTicker(self.auth_credentials["API_KEY"], self.auth_credentials["access_token"])
+        self.kws = KiteTicker(self.auth_credentials["API_KEY"], self.auth_state["access_token"])
 
         self.kws.on_ticks = self.on_message
         self.kws.on_connect = self.on_connect
@@ -293,7 +272,7 @@ class KiteStreamingDataProvider(StreamingDataProvider, KiteBaseMixin):
             raise ValueError(f"Could not find details of instrument token {instrument_token}")
         if len(data) > 1:
             raise ValueError(f"Unambiguous instrument token {instrument_token} = {data}")
-        return self.get_key_from_scrip(data.iloc[0]["tradingsymbol"],
+        return get_key_from_scrip_and_exchange(data.iloc[0]["tradingsymbol"],
                                        data.iloc[0]["exchange"])
 
     def on_message(self, ws, ticks, *args, **kwargs):

@@ -91,58 +91,15 @@ def resample_candle_data(data, interval):
     return data
 
 
-def upsert_df(df: pd.DataFrame, table_name: str, engine: sqlalchemy.engine.Engine):
-    """Implements the equivalent of pd.DataFrame.to_sql(..., if_exists='update')
-    (which does not exist). Creates or updates the db records based on the
-    dataframe records.
-    Conflicts to determine update are based on the dataframes index.
-    This will set primary keys on the table equal to the index names
-    1. Create a temp table from the dataframe
-    2. Insert/update from temp table into table_name
-    Returns: True if successful
-    """
+def get_key_from_scrip_and_exchange(scrip: str,
+                                    exchange: str):
+        return f'{scrip.replace(":", " _").replace(" ", "_")}__{exchange.replace(":", "_").replace(" ", "_")}'
 
-    # If the table does not exist, we should just use to_sql to create it
-    res = engine.execute(f"""SELECT name FROM sqlite_master WHERE type='table' and name=?;""", (table_name, ))
-    exists = bool(res.fetchone())
-    if not exists:
-        df.to_sql(table_name, engine)
-        return True
-
-    # If it already exists...
-    temp_table_name = f"temp_{uuid.uuid4().hex[:6]}"
-    df.to_sql(temp_table_name, engine, index=True)
-
-    index = list(df.index.names)
-    index_sql_txt = ", ".join([f'"{i}"' for i in index])
-    columns = list(df.columns)
-    headers = index + columns
-    headers_sql_txt = ", ".join(
-        [f'"{i}"' for i in headers]
-    )  # index1, index2, ..., column 1, col2, ...
-
-    # col1 = exluded.col1, col2=excluded.col2
-    update_column_stmt = ", ".join([f'"{col}" = EXCLUDED."{col}"' for col in columns])
-
-    # For the ON CONFLICT clause, postgres requires that the columns have unique constraint
-    query_pk = f"""
-    ALTER TABLE "{table_name}" ADD CONSTRAINT {table_name}_unique_constraint_for_upsert UNIQUE ({index_sql_txt});
-    """
-    try:
-        engine.execute(query_pk)
-    except Exception as e:
-        # relation "unique_constraint_for_upsert" already exists
-        if not 'unique_constraint_for_upsert" already exists' in e.args[0]:
-            raise e
-
-    # Compose and execute upsert query
-    query_upsert = f"""
-    INSERT INTO "{table_name}" ({headers_sql_txt}) 
-    SELECT {headers_sql_txt} FROM "{temp_table_name}"
-    ON CONFLICT ({index_sql_txt}) DO UPDATE 
-    SET {update_column_stmt};
-    """
-    engine.execute(query_upsert)
-    engine.execute(f'DROP TABLE "{temp_table_name}"')
-
-    return True
+def get_scrip_and_exchange_from_key(key: str):
+    if ":" in key:
+        parts = key.split(":")
+    elif "__" in key:
+        parts = key.split("__")
+    else:
+        raise ValueError(f"No delimiter found in {key} to split it into scrip and exchange")
+    return parts

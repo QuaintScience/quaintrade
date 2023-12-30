@@ -1,8 +1,9 @@
 from functools import partial
-from typing import Optional
+from typing import Optional, Union
 import copy
 
 import numpy as np
+import pandas as pd
 
 import mplfinance as mpf
 import matplotlib
@@ -54,16 +55,16 @@ def live_ohlc_plot(get_live_ohlc_func: callable,
     mpf.show()
 
 
-def backtesting_results_plot(df,
-                             events,
-                             hlines_dct=None,
-                             indicator_fields=None,
-                             title="Backtesting Results",
-                             make_mpf_style_kwargs=None,
-                             mpf_custom_kwargs=None,
-                             custom_addplots=None):
-    if hlines_dct is None:
-        hlines_dct = {}
+def plot_backtesting_results(df: pd.DataFrame,
+                             events: list[tuple],
+                             indicator_fields: list[Union[dict, str]],
+                             title: str = "Backtesting Results",
+                             make_mpf_style_kwargs: Optional[dict] = None,
+                             mpf_custom_kwargs: Optional[dict] = None,
+                             custom_addplots: Optional[list] = None,
+                             hlines: Optional[dict] = None):
+    if hlines is None:
+        hlines = {}
     if indicator_fields is None:
         indicator_fields = []
     if make_mpf_style_kwargs is None:
@@ -97,6 +98,7 @@ def backtesting_results_plot(df,
         event_plots.append(mpf.make_addplot(df["sell_signals"], type='scatter', marker=r'$\downarrow$', color='k'))
         event_plots.append(mpf.make_addplot(df["buy_signals"], type='scatter', marker=r'$\uparrow$', color='k'))
     event_plots.extend(custom_addplots)
+
     num_panels = 1
     for field in indicator_fields:
         if isinstance(field, str):
@@ -105,14 +107,17 @@ def backtesting_results_plot(df,
             event_plots.append(mpf.make_addplot(df[field.get("field")],
                                                 panel=field.get("panel", 1)))
             num_panels = max(num_panels, field.get("panel", 0) + 1)
+
     kwargs = {"returnfig": True,
               "type": "candle",
               "title": title,
               "style": style,
               "addplot": event_plots,
               "num_panels": num_panels}
-    if hlines_dct is not None and len(hlines_dct) > 0:
+
+    if hlines is not None and len(hlines) > 0:
         kwargs["hlines"] = hlines_dct
+
     kwargs.update(mpf_custom_kwargs)
     fig, axes = mpf.plot(df,
                          **kwargs)

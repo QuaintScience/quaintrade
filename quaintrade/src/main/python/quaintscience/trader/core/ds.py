@@ -38,11 +38,6 @@ class OrderState(Enum):
     COMPLETED = "completed"
 
 
-class ExecutionType(Enum):
-    BACKTESTING = "backtesting"
-    LIVE = "live"
-
-
 @dataclass
 class Order:
     scrip_id: str
@@ -109,3 +104,11 @@ class OHLCStorageType(Enum):
 
     LIVE = "live"
     PERM = "perm"
+
+
+class PositionType(Enum):
+
+    ENTRY = "entry"
+    STOPLOSS = "stoploss"
+    TARGET = "target"
+    SQUAREOFF = "squareoff"

@@ -13,16 +13,16 @@ from typing import Optional
 import pandas as pd
 import redis
 
-from ..core.logging import LoggerMixin
-from ..core.ds import (Order,
+from .logging import LoggerMixin
+from .ds import (Order,
                        Position,
                        TransactionType,
                        TradingProduct,
                        OrderType,
                        OrderState,
                        OHLCStorageType)
-from ..core.util import today_timestamp, datestring_to_datetime, resample_candle_data
-from ..core.persistence import SqliteOHLCStorage, OHLCStorage
+from .util import today_timestamp, datestring_to_datetime, resample_candle_data
+from .persistence import SqliteOHLCStorage, OHLCStorage
 
 
 def CallbackHandleFactory(context):
@@ -71,7 +71,6 @@ class AuthenticatorMixin():
         self.auth_cache_filepath = auth_cache_filepath
         self.reset_auth_cache = reset_auth_cache
         self.auth_state = {"state": "Not Logged In."}
-        super().__init__(*args, **kwargs)
 
 
     def listen_to_login_callback(self):
@@ -87,18 +86,9 @@ class TradingServiceProvider(ABC, LoggerMixin):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+    @abstractmethod
     def init(self):
         pass
-
-    # Utils
-    def get_key_from_scrip(self,
-                           scrip: str,
-                           exchange: str):
-        return f'{scrip.replace(":", " _")}:{exchange.replace(":", "_")}'
-
-    def get_scrip_and_exchange_from_key(self, key: str):
-        parts = key.split(":")
-        return parts
 
     def current_datetime(self):
         return datetime.datetime.now()
@@ -120,17 +110,18 @@ class DataProvider(TradingServiceProvider):
 
     def get_db_path(self, scrip: str, exchange: str,
                     storage_type: OHLCStorageType):
-        exchange = exchange.replace("-", "_")
-        scrip = scrip.replace("-", "_")
+        exchange = exchange.replace("-", "_").replace(":", "_").replace(" ", "_")
+        scrip = scrip.replace("-", "_").replace(":", "_").replace(" ", "_")
+        root = os.path.join(self.data_path, self.ProviderName,
+                            "historical_data", exchange, scrip)
+        os.makedirs(root, exist_ok=True)
         if self.StorageClass == SqliteOHLCStorage:
-            if storage_type == OHLCStorage.PERM:
-                return os.path.join(self.data_path, self.ProviderName,
-                                "historical_data", exchange, scrip, "{scrip}__{exchange}_perm.sqlite")
+            if storage_type == OHLCStorageType.PERM:
+                return os.path.join(root, f"{scrip}__{exchange}_perm.sqlite")
             elif storage_type == OHLCStorageType.LIVE:
-                return os.path.join(self.data_path, self.ProviderName,
-                                "historical_data", exchange, scrip, "{scrip}__{exchange}_live.sqlite")
+                return os.path.join(root, f"{scrip}__{exchange}_live.sqlite")
             else:
-                raise ValueError(f"Cannot find DB for type {typ}")
+                raise ValueError(f"Cannot find DB for type {storage_type}")
         else:
             raise ValueError(f"Cannot handle storage type {self.StorageClass}")
 
@@ -179,21 +170,43 @@ class HistoricDataProvider(DataProvider):
         super().__init__(*args, **kwargs)
     
     @abstractmethod
+    def download_historic_data(self,
+                               scrip:str,
+                               exchange: str,
+                               interval: str,
+                               from_date: Union[datetime.datetime, str],
+                               to_date: Union[datetime.datetime, str]) -> bool:
+        pass
+
     def download_data_in_batches(self,
                                  scrip: str,
                                  exchange: str,
                                  from_date: Union[datetime.datetime, str],
                                  to_date: Union[datetime.datetime, str]) -> bool:
-        pass
-
-    @abstractmethod
-    def download_historic_data_as_df(self,
-                                     scrip:str,
-                                     exchange: str,
-                                     interval: str,
-                                     from_date: datetime.datetime,
-                                     to_date: datetime.datetime) -> pd.DataFrame:
-        pass
+        subtracting_func = {"days": self.batch_size}
+        batch_to_date = to_date
+        batch_from_date = batch_to_date - datetime.timedelta(**subtracting_func)
+        batch_from_date = max(from_date, batch_from_date)
+        self.logger.info(f"Beginning downloading of data in batches for {scrip}/{exchange} between {from_date} and {to_date}...")
+        while ((batch_from_date >= from_date or
+            (batch_to_date <= to_date and
+                batch_to_date >= from_date))):
+            self.logger.info(f"Batch {batch_from_date} -- {batch_to_date}")
+            data = self.get_data_as_df(scrip=scrip,
+                                       exchange=exchange,
+                                       interval="1min",
+                                       storage_type=OHLCStorageType.PERM,
+                                       download_missing_data=True,
+                                       from_date=batch_from_date,
+                                       to_date=batch_to_date)
+            if len(data) == 0:
+                break
+            if batch_from_date == from_date:
+                break
+            batch_to_date = batch_from_date
+            batch_from_date = batch_from_date - datetime.timedelta(**subtracting_func)
+            batch_from_date = max(from_date, batch_from_date)
+        return True
 
     def get_data_as_df(self,
                        scrip:str,
@@ -210,20 +223,25 @@ class HistoricDataProvider(DataProvider):
                                       from_date=from_date,
                                       to_date=to_date,
                                       storage_type=storage_type)
-
+        self.logger.info(data)
         if download_missing_data and storage_type == OHLCStorageType.PERM:
-            if data.index[0].to_pydatetime() < to_date:
+            if len(data) > 0:
+                days = set(data.index.to_series().apply(lambda x: x.to_pydatetime().replace(hour=0, minute=0, second=0, microsecond=0)))
+                start_datetime = from_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                while start_datetime < to_date:
+                    if start_datetime not in days and not start_datetime.weekday() in [5,6]:
+                        self.download_historic_data(scrip=scrip,
+                                                exchange=exchange,
+                                                interval="1min",
+                                                from_date=start_datetime,
+                                                to_date=start_datetime + datetime.timedelta(days=1))
+                    start_datetime = start_datetime + datetime.timedelta(days=1)
+            else:
                 self.download_historic_data(scrip=scrip,
                                             exchange=exchange,
-                                            interval="1m",
-                                            from_date=data.index[-1].to_pydatetime(),
+                                            interval="1min",
+                                            from_date=from_date,
                                             to_date=to_date)
-            if data.index[0].to_pydatetime() > from_date:
-                self.download_historic_data(scrip=scrip,
-                                            exchange=exchange,
-                                            interval="1m",
-                                            from_date=data.index[0].to_pydatetime(),
-                                           to_date=from_date)
         data = super().get_data_as_df(scrip=scrip,
                                       exchange=exchange,
                                       interval=interval,
@@ -234,10 +252,13 @@ class HistoricDataProvider(DataProvider):
 
 class StreamingDataProvider(TradingServiceProvider):
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args,
+                 save_frequency: int = 5,
+                 **kwargs):
         self.kill_tick_thread = False
-        self.tick_counter = defaultdict(int)
         self.cache = defaultdict(dict)
+        self.tick_counter = defaultdict(int)
+        self.save_frequency = save_frequency
         super().__init__(*args, **kwargs)
 
     @abstractmethod
@@ -259,6 +280,16 @@ class StreamingDataProvider(TradingServiceProvider):
     def kill(self):
         self.kill_tick_thread = True
 
+    def __save_ticks(self, token):
+        df = pd.DataFrame.from_dict(self.cache[token], orient='index')
+        df.index = df["date"]
+        df.drop(["date"], axis=1, inplace=True)
+        df.index = pd.to_datetime(df.index)
+
+        scrip, exchange = self.get_scrip_and_exchange_from_key(token)
+        storage = self.get_storage(scrip, exchange, OHLCStorageType.LIVE)
+        storage.put(scrip, exchange, df)
+
     def on_tick(self, token, ltp, ltq, ltt, key, *args, **kwargs):
 
         token = str(token)
@@ -268,15 +299,6 @@ class StreamingDataProvider(TradingServiceProvider):
             self.cache[token] = {}
 
         if key not in self.cache[token]:
-
-            scrip, exchange = self.get_scrip_and_exchange_from_key(token)
-            storage = self.get_storage(scrip, exchange, OHLCStorageType.LIVE)
-            df = pd.DataFrame.from_dict(self.cache[token], orient='index')
-            df.index = df["date"]
-            df.drop(["date"], axis=1, inplace=True)
-            df.index = pd.to_datetime(df.index)
-            storage.put(scrip, exchange, df)
-
             self.cache[token][key] = {"date": key,
                                       "open": ltp,
                                       "high": ltp,
@@ -292,6 +314,9 @@ class StreamingDataProvider(TradingServiceProvider):
             self.cache[token][key]["low"] = ltp
         self.cache[token][key]["close"] = ltp
         self.cache[token][key]["volume"] += ltq
+        self.tick_counter[token] += 1
+        if self.tick_counter[token] % self.save_frequency == 0:
+            self.__save_ticks(token)
 
 
 class Broker(TradingServiceProvider):

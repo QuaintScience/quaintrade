@@ -11,7 +11,7 @@ from ..core.ds import (Order,
                        OHLCStorageType,
                        OrderState,
                        TransactionType)
-from .common import Broker, HistoricDataProvider
+from ..core.roles import Broker, HistoricDataProvider
 from ..core.util import default_dataclass_field
 
 
