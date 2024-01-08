@@ -19,7 +19,7 @@ matplotlib.use('TkAgg')
 DEFAULT_MPF_STYLE_KWARGS = {"base_mpf_style": 'yahoo', "rc": {'font.size': 6}}
 
 
-def __animate_live_ohlc_plot(ax, style, get_live_ohlc_func,
+def __animate_live_ohlc_plot(*fargs, ax=None, style=None, get_live_ohlc_func=None,
                              args=None, kwargs=None):
     ax.clear()
     mpf.plot(get_live_ohlc_func(*args, **kwargs),
@@ -51,7 +51,7 @@ def live_ohlc_plot(get_live_ohlc_func: callable,
                       style=style,
                       get_live_ohlc_func=get_live_ohlc_func,
                       args=args, kwargs=kwargs)
-    animation.FuncAnimation(fig, animate, interval=interval)
+    anim = animation.FuncAnimation(fig, animate, interval=interval)
     mpf.show()
 
 

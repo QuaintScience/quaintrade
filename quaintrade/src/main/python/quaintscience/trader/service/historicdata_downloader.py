@@ -1,11 +1,18 @@
+from typing import Union
+import datetime
+from configargparse import ArgParser
 from .common import DataProviderService
 from ..core.util import get_datetime
 
 
 class HistoricDataDownloader(DataProviderService):
 
+    default_config_file = ".historic.trader.env"
+
     def __init__(self,
-                 *args, from_date=None, to_date=None,
+                 *args,
+                 from_date: Union[str, datetime.datetime] = None,
+                 to_date: Union[str, datetime.datetime] = None,
                  **kwargs):
         super().__init__(*args, **kwargs)
         self.from_date = get_datetime(from_date)
@@ -21,9 +28,7 @@ class HistoricDataDownloader(DataProviderService):
                                                         to_date=self.to_date)
 
     @classmethod
-    def get_arg_parser(cls):
-        p = DataProviderService.get_arg_parser()
-        p._default_config_files = [".historic.trader.env"]
+    def enrich_arg_parser(cls, p: ArgParser):
+        DataProviderService.enrich_arg_parser(p)
         p.add('--from_date', help="From date", env_var="FROM_DATE")
         p.add('--to_date', help="To date", env_var="TO_DATE")
-        return p

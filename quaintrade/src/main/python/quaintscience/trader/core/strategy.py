@@ -37,6 +37,7 @@ class Strategy(ABC, LoggerMixin):
                  squareoff_minute: int = 00,
                  plottables: Optional[dict] = None,
                  default_tags: Optional[list] = None,
+                 context_required: Optional[list[str]] = None,
                  **kwargs):
         
         self.indicator_pipeline = indicator_pipeline
@@ -51,9 +52,11 @@ class Strategy(ABC, LoggerMixin):
             plottables = {"indicator_fields": []}
         if default_tags is None:
             default_tags = []
-        
+        if context_required is None:
+            context_required = []
         self.plottables = plottables
         self.default_tags = default_tags
+        self.context_required = context_required
 
         super().__init__(*args, **kwargs)
 
@@ -90,7 +93,16 @@ class Strategy(ABC, LoggerMixin):
             return True
         return False
 
-    def can_trade(self, window: pd.DataFrame):
+    def can_trade(self, window: pd.DataFrame, context: dict[str, pd.DataFrame]):
+        return self.__can_trade_in_given_timeslot(window) and self.__can_trade_with_context(context)
+
+    def __can_trade_with_context(self, context: dict[str, pd.DataFrame]):
+        for key in self.context_required:
+            if key not in context or len(context[key]) == 0:
+                return False
+        return True
+
+    def __can_trade_in_given_timeslot(self, window: pd.DataFrame):
         row = window.iloc[-1]
         for non_trading_timeslot in self.non_trading_timeslots:
             if (row.name.hour > non_trading_timeslot["from"]["hour"]
@@ -141,7 +153,7 @@ class Strategy(ABC, LoggerMixin):
                                      quantity=quantity,
                                      product=product,
                                      group_id=group_id,
-                                     parent_id=parent_id)
+                                     parent_order_id=parent_id)
             limit_order_type = OrderType.SL_LIMIT if not use_sl_market_order else OrderType.SL_MARKET
             order = order_template(transaction_type=transaction_type,
                                    order_type=limit_order_type,
@@ -217,15 +229,21 @@ class Strategy(ABC, LoggerMixin):
         return df
 
     def apply(self, broker: Broker,
+              scrip: str,
+              exchange: str,
               window: pd.DataFrame,
               context: dict[str, pd.DataFrame]) -> None:
         self.apply_impl(broker=broker,
+                        scrip=scrip,
+                        exchange=exchange,
                         window=window,
                         context=context)
-        self.perform_intraday_squareoff()
+        self.perform_intraday_squareoff(broker=broker, window=window)
 
     @abstractmethod
     def apply_impl(self, broker: Broker,
+                   scrip: str,
+                   exchange: str,
                    window: pd.DataFrame,
                    context: dict[str, pd.DataFrame]) -> None:
         pass

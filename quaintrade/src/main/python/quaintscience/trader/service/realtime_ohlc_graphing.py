@@ -1,5 +1,6 @@
 import datetime
 from functools import partial
+from configargparse import ArgParser
 
 import pandas as pd
 
@@ -9,6 +10,9 @@ from .common import DataProviderService
 
 
 class OHLCRealtimeGrapher(DataProviderService):
+
+    default_config_file = ".historic.trader.env"
+
     def __init__(self,
                  *args,
                  interval: str = "1min",
@@ -34,9 +38,10 @@ class OHLCRealtimeGrapher(DataProviderService):
                                                           to_date=self.to_date,
                                                           storage_type=OHLCStorageType.PERM)
         if len(historic_data) == 0:
-            data = pd.DataFrame(columns=["open", "high", "low", "close"], index=pd.DatetimeIndex([datetime.datetime.now()]), data=[{"open": 0., "high": 0., "low": 0., "close": 0.}])
-        else:
-            data = pd.concat([live_data, historic_data], axis=0) if len(live_data) > 0 else historic_data
+            data = pd.DataFrame(columns=["open", "high", "low", "close"], index=pd.DatetimeIndex([datetime.datetime.now()]), data=[{"open": 0., "high": 0., "low": 0., "close": 0., "volume": 0}])
+        
+        data = pd.concat([live_data, historic_data], axis=0) if len(live_data) > 0 else historic_data
+
         return data
 
     def start(self):
@@ -44,8 +49,6 @@ class OHLCRealtimeGrapher(DataProviderService):
                                                   instrument=self.instruments[0]))
 
     @classmethod
-    def get_arg_parser(cls):
-        p = DataProviderService.get_arg_parser()
-        p._default_config_files = [".historic.trader.env"]
+    def enrich_arg_parser(cls, p: ArgParser):
+        DataProviderService.enrich_arg_parser(p)
         p.add('--plotting_interval', help="Plotting Interval", env_var="PLOTTING_INTERVAL")
-        return p

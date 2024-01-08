@@ -35,7 +35,9 @@ class OHLCStorage(ABC, LoggerMixin):
 
 class SqliteOHLCStorage(OHLCStorage):
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self,
+                 *args,
+                 **kwargs):
         super().__init__(*args, **kwargs)
     
 
@@ -43,7 +45,7 @@ class SqliteOHLCStorage(OHLCStorage):
         self.logger.info(f"Connecting to {self.path}")
         self.connection = sqlite3.connect(self.path)
     
-    def create_ohlc_table(self, table_name):
+    def create_ohlc_table(self, table_name, conflict_resolution_type):
         self.connection.execute(f"""CREATE TABLE IF NOT EXISTS {table_name} (date VARCHART(255) NOT NULL,
                                                                              open REAL NOT NULL,
                                                                              high REAL NOT NULL,
@@ -51,26 +53,32 @@ class SqliteOHLCStorage(OHLCStorage):
                                                                              close REAL NOT NULL,
                                                                              volume INTEGER NOT NULL,
                                                                              oi INTEGER NOT NULL,
-                                                                             PRIMARY KEY (date) ON CONFLICT IGNORE);""")
+                                                                             PRIMARY KEY (date) ON CONFLICT {conflict_resolution_type});""")
 
-    def __table_name(self, scrip: str, exchange: str):
+    def __table_name(self, scrip: str,
+                     exchange: str):
         return get_key_from_scrip_and_exchange(scrip, exchange)
 
-    def put(self, scrip: str, exchange: str, df: pd.DataFrame):
+    def put(self,
+            scrip: str,
+            exchange: str,
+            df: pd.DataFrame,
+            conflict_resolution_type: str = "IGNORE"):
         table_name = self.__table_name(scrip, exchange)
-        self.create_ohlc_table(table_name)
+        self.create_ohlc_table(table_name, conflict_resolution_type)
         df.to_sql(table_name, con=self.connection, if_exists="append")
 
     def get(self, scrip: str, exchange: str,
             fromdate: Union[str, datetime.datetime],
-            todate: Union[str, datetime.datetime]) -> pd.DataFrame:
+            todate: Union[str, datetime.datetime],
+            conflict_resolution_type: str) -> pd.DataFrame:
 
         table_name = self.__table_name(scrip, exchange)
-        self.create_ohlc_table(table_name)
+        self.create_ohlc_table(table_name, conflict_resolution_type)
 
         fromdate = get_datetime(fromdate).strftime("%Y-%m-%d %H:%M:%S")
         todate = get_datetime(todate).strftime("%Y-%m-%d %H:%M:%S")
-
+        self.logger.debug(f"Reading data from {fromdate} to {todate} from {table_name}...")
         data = self.connection.execute(f"SELECT date, open, high, low, close, volume, oi FROM {table_name} WHERE datetime(date) BETWEEN '{fromdate}' AND '{todate}';").fetchall()
         data = pd.DataFrame(data, columns=["date", "open", "high", "low", "close", "volume", "oi"])
         data.index = data["date"]

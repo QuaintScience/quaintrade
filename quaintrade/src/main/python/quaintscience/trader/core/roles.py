@@ -21,7 +21,7 @@ from .ds import (Order,
                        OrderType,
                        OrderState,
                        OHLCStorageType)
-from .util import today_timestamp, datestring_to_datetime, resample_candle_data
+from .util import resample_candle_data, get_scrip_and_exchange_from_key
 from .persistence import SqliteOHLCStorage, OHLCStorage
 
 
@@ -140,8 +140,11 @@ class DataProvider(TradingServiceProvider):
                        storage_type: OHLCStorageType = OHLCStorageType.PERM) -> pd.DataFrame:
         
         storage = self.get_storage(scrip, exchange, storage_type)
-
-        data = storage.get(scrip, exchange, from_date, to_date)
+        if storage_type == OHLCStorageType.LIVE:
+            conflict_resolution_type = "REPLACE"
+        else:
+            conflict_resolution_type = "IGNORE"
+        data = storage.get(scrip, exchange, from_date, to_date, conflict_resolution_type=conflict_resolution_type)
 
         data = self.postprocess_data(data, interval)
         self.logger.info(f"Read {len(data)} rows.")
@@ -177,6 +180,12 @@ class HistoricDataProvider(DataProvider):
                                from_date: Union[datetime.datetime, str],
                                to_date: Union[datetime.datetime, str]) -> bool:
         pass
+
+    def store_perm_data(self, scrip: str,
+                        exchange: str,
+                        data: pd.DataFrame):
+        storage = self.get_storage(scrip, exchange, storage_type=OHLCStorageType.PERM)
+        storage.put(scrip, exchange, data, conflict_resolution_type="IGNORE")
 
     def download_data_in_batches(self,
                                  scrip: str,
@@ -223,7 +232,7 @@ class HistoricDataProvider(DataProvider):
                                       from_date=from_date,
                                       to_date=to_date,
                                       storage_type=storage_type)
-        self.logger.info(data)
+        # self.logger.info(data)
         if download_missing_data and storage_type == OHLCStorageType.PERM:
             if len(data) > 0:
                 days = set(data.index.to_series().apply(lambda x: x.to_pydatetime().replace(hour=0, minute=0, second=0, microsecond=0)))
@@ -250,7 +259,7 @@ class HistoricDataProvider(DataProvider):
                                       storage_type=storage_type)
         return data
 
-class StreamingDataProvider(TradingServiceProvider):
+class StreamingDataProvider(DataProvider):
 
     def __init__(self, *args,
                  save_frequency: int = 5,
@@ -277,6 +286,9 @@ class StreamingDataProvider(TradingServiceProvider):
     def on_close(self, *args, **kwargs):
         pass
 
+    def on_error(self, *args, **kwargs):
+        pass
+
     def kill(self):
         self.kill_tick_thread = True
 
@@ -286,13 +298,19 @@ class StreamingDataProvider(TradingServiceProvider):
         df.drop(["date"], axis=1, inplace=True)
         df.index = pd.to_datetime(df.index)
 
-        scrip, exchange = self.get_scrip_and_exchange_from_key(token)
+        scrip, exchange = get_scrip_and_exchange_from_key(token)
         storage = self.get_storage(scrip, exchange, OHLCStorageType.LIVE)
-        storage.put(scrip, exchange, df)
+        storage.put(scrip, exchange, df, conflict_resolution_type="REPLACE")
 
-    def on_tick(self, token, ltp, ltq, ltt, key, *args, **kwargs):
-
+    def on_tick(self,
+                token: str,
+                ltp: float,
+                ltq: float,
+                ltt: datetime.datetime,
+                *args,
+                **kwargs):
         token = str(token)
+        key = ltt.strftime("%Y%m%d %H:%M")
         key = str(key)
         
         if token not in self.cache:

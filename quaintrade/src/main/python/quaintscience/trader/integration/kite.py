@@ -153,8 +153,7 @@ class KiteHistoricDataProvider(KiteBaseMixin, HistoricDataProvider):
         data.index = data["date"]
         data.drop(["date"], axis=1, inplace=True)
 
-        storage = self.get_storage(scrip, exchange, storage_type=OHLCStorageType.PERM)
-        storage.put(scrip, exchange, data)
+        self.store_perm_data(scrip, exchange, data)
         time_elapsed = time.time() - req_start_time
         self.logger.info(f"Fetching {len(data)} rows of data from kite {from_date} to {to_date} took {time_elapsed:.2f} seconds")
         if time_elapsed < self.rate_limit_time:
@@ -284,7 +283,6 @@ class KiteStreamingDataProvider(KiteBaseMixin, StreamingDataProvider):
             ltp = tick["last_price"]
             ltq = tick.get("last_quantity", 0)
             ltt = tick.get("last_trade_time", datetime.datetime.now(pytz.timezone('Asia/Kolkata')))
-            key = ltt.strftime("%Y%m%d %H:%M")
             token = tick["instrument_token"]
             token = self.__get_readable_string(tick["instrument_token"])
-            self.on_tick(token, ltp, ltq, ltt, key, *args, **kwargs)
+            self.on_tick(token, ltp, ltq, ltt, *args, **kwargs)

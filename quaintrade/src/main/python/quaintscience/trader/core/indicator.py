@@ -390,12 +390,9 @@ class ChoppinessIndicator(Indicator):
                 settings: Optional[dict] = None) -> pd.DataFrame:
         if output_column_name is None or len(output_column_name) == 0:
             output_column_name = {"choppiness": f"choppiness_{settings['period']}"}
-        print(pd_ta.choppiness(df["high"], df["low"], df["close"], length=settings['period'], multiplier=settings['multiplier']))
-        df[output_column_name["supertrend"]] = pd_ta.supertrend(high=df["high"], low=df["low"], close=df["close"],
+        df[output_column_name["choppiness"]] = pd_ta.choppiness(high=df["high"], low=df["low"], close=df["close"],
                                                                 length=settings['period'],
-                                                                multiplier=settings['multiplier'])[f"SUPERT_{settings['period']}_{settings['multiplier']:.1f}"]
-        df[output_column_name["supertrend"]].fillna(df["close"].mean(), inplace=True)
-        df.loc[df[output_column_name["supertrend"]] < 1e-3, output_column_name["supertrend"]] = df["close"].mean()
+                                                                multiplier=settings['multiplier'])[f"CHOPPINESS_{settings['period']}"]
         return df, output_column_name, settings
     
 
@@ -416,9 +413,14 @@ class SupertrendIndicator(Indicator):
                 settings: Optional[dict] = None) -> pd.DataFrame:
         if output_column_name is None or len(output_column_name) == 0:
             output_column_name = {"supertrend": f"supertrend_{settings['period']}_{settings['multiplier']:.1f}"}
-        df[output_column_name["supertrend"]] = pd_ta.supertrend(high=df["high"], low=df["low"], close=df["close"],
-                                                                length=settings['period'],
-                                                                multiplier=settings['multiplier'])[f"SUPERT_{settings['period']}_{settings['multiplier']:.1f}"]
+        result = pd_ta.supertrend(high=df["high"],
+                                  low=df["low"],
+                                  close=df["close"],
+                                  length=settings['period'],
+                                  multiplier=settings['multiplier'])
+        df[output_column_name["supertrend"]] = pd.NA
+        if result is not None:
+            df[output_column_name["supertrend"]] = result[f"SUPERT_{settings['period']}_{settings['multiplier']:.1f}"]
         df[output_column_name["supertrend"]].fillna(df["close"].mean(), inplace=True)
         df.loc[df[output_column_name["supertrend"]] < 1e-3, output_column_name["supertrend"]] = df["close"].mean()
         return df, output_column_name, settings

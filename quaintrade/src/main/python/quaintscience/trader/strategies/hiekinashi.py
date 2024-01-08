@@ -1,22 +1,20 @@
 from typing import Optional
-#import datetime
 
 import pandas as pd
 
-from ..core.ds import (TradeType, OrderState)
+from ..core.ds import (TradeType, OrderState, PositionType)
 
-from ..core.strategy import (StrategyExecutor)
+from ..core.strategy import Strategy
 from ..core.indicator import (IndicatorPipeline,
                               HeikinAshiIndicator,
                               SupertrendIndicator,
                               SMAIndicator,
                               SlopeIndicator,
                               DonchainIndicator)
-from ..core.util import resample_candle_data
+from ..core.roles import Broker
 
 
-
-class HiekinAshiStrategy(StrategyExecutor):
+class HiekinAshiStrategy(Strategy):
 
     def __init__(self,
                  *args,
@@ -36,22 +34,23 @@ class HiekinAshiStrategy(StrategyExecutor):
                                  (SlopeIndicator(signal=f"SMA_{self.ma_period}"), None, None),
                                  (DonchainIndicator(period=self.donchain_period), None, None)]
         kwargs["indicator_pipeline"] = IndicatorPipeline(indicators=indicators)
-        kwargs["indicator_fields"] = [{"field": "ha_long_trend", "panel": 2},
-                                      {"field": "ha_short_trend", "panel": 3},
-                                      {"field": "ha_non_trending", "panel": 4},
-                                      {"field": f"SMA_{self.ma_period}_slope", "panel": 5},
-                                      f"supertrend_{self.st_period}_{self.st_multiplier:.1f}",
-                                      f"SMA_{self.ma_period}",
-                                      f"donchainUpper_{self.donchain_period}",
-                                      f"donchainLower_{self.donchain_period}",]
+        kwargs["plottables"] = {"indicator_fields": [{"field": "ha_long_trend", "panel": 2},
+                                                     {"field": "ha_short_trend", "panel": 3},
+                                                     {"field": "ha_non_trending", "panel": 4},
+                                                     {"field": f"SMA_{self.ma_period}_slope", "panel": 5},
+                                                     f"supertrend_{self.st_period}_{self.st_multiplier:.1f}",
+                                                     f"SMA_{self.ma_period}",
+                                                     f"donchainUpper_{self.donchain_period}",
+                                                     f"donchainLower_{self.donchain_period}",]}
         non_trading_timeslots = []
-        non_trading_timeslots.extend(StrategyExecutor.NON_TRADING_FIRST_HOUR)
-        non_trading_timeslots.extend(StrategyExecutor.NON_TRADING_AFTERNOON)
+        non_trading_timeslots.extend(Strategy.NON_TRADING_FIRST_HOUR)
+        non_trading_timeslots.extend(Strategy.NON_TRADING_AFTERNOON)
         kwargs["non_trading_timeslots"] = non_trading_timeslots
+        kwargs["context_required"] = ["1d", "1h"]
         self.current_run = None
-        # kwargs["plot_results"] = False
+
         self.target_amt = 400
-        #self.entry_threshold = 2
+
         self.entry_threshold = 0.1
         print(args, kwargs)
         super().__init__(*args, **kwargs)
@@ -83,59 +82,64 @@ class HiekinAshiStrategy(StrategyExecutor):
                self.trigger_price = window.iloc[-1]["high"] + self.stoploss_threshold
                self.trade_manager.update_order(order)
 
-    def cancel_active_orders(self):
-        for order in self.trade_manager.get_orders():
+    def cancel_active_orders(self, broker: Broker):
+        for order in broker.get_orders():
             if (order.state == OrderState.PENDING
                 and ("hiekinashi_long" in order.tags
                      or "hiekinashi_short" in order.tags)):
-                self.trade_manager.cancel_order(order)
-        self.perform_squareoff()
+                broker.cancel_order(order)
+        self.perform_squareoff(broker=broker)
 
-    def strategy(self, window: pd.DataFrame,
-                 context: dict[str, pd.DataFrame]) -> Optional[TradeType]:
-        #weekly_context = resample_candle_data(context_df, "1w")
-        #weekly_context = self.indicator_pipeline.compute(weekly_context)
+    def apply_impl(self,
+                   broker: Broker,
+                   scrip: str,
+                   exchange: str,
+                   window: pd.DataFrame,
+                   context: dict[str, pd.DataFrame]) -> Optional[TradeType]:
+
         colvals = []
         for col in window.columns:
             if col not in ["open", "high", "low", "close"]:
-                colvals.append(col)
-                colvals.append(str(window.iloc[-1][col]))
-        self.logger.info(f"Strategy: timestamp {window.iloc[-1].index.name}; OHLC"
-                         f" {window.iloc[-1]['open']}"
-                         f" {window.iloc[-1]['high']}"
-                         f" {window.iloc[-1]['low']}"
-                         f" {window.iloc[-1]['close']}"
-                         f"{' '.join(colvals)}")
-
-        #if window.iloc[-1]["ha_non_trending"] == 1.0:
-        #    self.cancel_active_orders()
+                colvals.append(f"{col}={window.iloc[-1][col]}")
+        self.logger.info(f"{self.__class__.__name__} [{window.iloc[-1].name}]:"
+                         f" O={window.iloc[-1]['open']}"
+                         f" H={window.iloc[-1]['high']}"
+                         f" L={window.iloc[-1]['low']}"
+                         f" C={window.iloc[-1]['close']}"
+                         f" {' '.join(colvals)}")
+        print(window.iloc[-1].name, self.current_run, window.iloc[-1]["ha_long_trend"], window.iloc[-1]["ha_short_trend"])
         if self.current_run == TradeType.LONG and window.iloc[-1]["ha_short_trend"] == 1.0:
-            self.cancel_active_orders()
+            self.cancel_active_orders(broker=broker)
             self.current_run = None
         elif self.current_run == TradeType.SHORT and window.iloc[-1]["ha_long_trend"] == 1.0:
-            self.cancel_active_orders()
+            self.cancel_active_orders(broker=broker)
             self.current_run = None
-
-        if self.can_trade(window):
-            #if (window.iloc[-1]["ha_non_trending"] == 1.0 and window.iloc[-2]["ha_non_trending"] == 1.0):
-            #    return
+        if self.can_trade(window, context):
+            make_entry = False
+            print("1", window.iloc[-1]["ha_long_trend"] == 1.0 and window.iloc[-2]["ha_long_trend"] != 1.0)
+            print("2", context["1d"].iloc[-1].name, context["1d"].iloc[-1]["ha_long_trend"])
+            print("3", context["1h"].iloc[-1].name, context["1h"].iloc[-1]["ha_long_trend"])
             if (window.iloc[-1]["ha_long_trend"] == 1.0 and window.iloc[-2]["ha_long_trend"] != 1.0
                 and context["1d"].iloc[-1]["ha_long_trend"] == 1.0
                 and context["1h"].iloc[-1]["ha_long_trend"] == 1.0
                 and self.current_run != TradeType.LONG):
-                #and window.iloc[-1][f"supertrend_{self.st_period}_{self.st_multiplier:.1f}"] < window.iloc[-1].close):
-                self.cancel_active_orders()
-                self.take_position(window,
-                                trade_type=TradeType.LONG, tags=[f"hiekinashi_long"])
                 self.current_run = TradeType.LONG
+                make_entry = True
+                print("HEREEE>>>> MAKING LONG TRADE")
             if (window.iloc[-1]["ha_short_trend"] == 1.0 and window.iloc[-2]["ha_short_trend"] != 1.0
                 and context["1d"].iloc[-1]["ha_short_trend"] == 1.0
                 and context["1h"].iloc[-1]["ha_short_trend"] == 1.0
                 and self.current_run != TradeType.SHORT):
-                #and window.iloc[-1][f"supertrend_{self.st_period}_{self.st_multiplier:.1f}"] > window.iloc[-1].open):
-                self.cancel_active_orders()
                 self.current_run = TradeType.SHORT
-                self.take_position(window,
-                                   trade_type=TradeType.SHORT, tags=[f"hiekinashi_short"])
-
-        return None
+                make_entry = True
+                print("HEREEE>>>> MAKING SHORT TRADE")
+            if make_entry:
+                self.cancel_active_orders(broker=broker)
+                self.take_position(scrip=scrip,
+                                   exchange=exchange,
+                                   broker=broker,
+                                   position_type=PositionType.ENTRY,
+                                   trade_type=self.current_run,
+                                   price=self.get_entry(window, self.current_run),
+                                   quantity=1,
+                                   tags=[f"hiekinashi_{self.current_run.value}"])

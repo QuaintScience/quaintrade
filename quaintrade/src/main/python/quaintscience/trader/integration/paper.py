@@ -12,7 +12,9 @@ from ..core.ds import (Order,
                        OrderState,
                        TransactionType)
 from ..core.roles import Broker, HistoricDataProvider
-from ..core.util import default_dataclass_field
+from ..core.util import (default_dataclass_field,
+                         get_key_from_scrip_and_exchange,
+                         get_scrip_and_exchange_from_key)
 
 
 @dataclass(kw_only=True)
@@ -82,9 +84,9 @@ class PaperBroker(Broker):
         super().__init__(*args, **kwargs)
 
     def init(self):
-
         for instrument in self.instruments:
-            scrip = instrument["scrip"],
+            self.logger.info(f"Paper Trader: Loading data for {instrument}")
+            scrip = instrument["scrip"]
             exchange = instrument["exchange"]
             instrument_data = self.data_provider.get_data_as_df(scrip=scrip,
                                                                 exchange=exchange,
@@ -93,7 +95,7 @@ class PaperBroker(Broker):
                                                                 to_date=self.historic_context_to,
                                                                 storage_type=OHLCStorageType.PERM,
                                                                 download_missing_data=False)
-            self.data[self.get_key_from_scrip(scrip, exchange)] = instrument_data
+            self.data[get_key_from_scrip_and_exchange(scrip, exchange)] = instrument_data
 
     def current_datetime(self):
         return self.current_time
@@ -113,16 +115,16 @@ class PaperBroker(Broker):
                 self.idx[instrument] = to_idx
 
             for idx in range(self.idx.get(instrument, 0) + 1, to_idx + 1):
-                scrip, exchange = self.get_scrip_and_exchange_from_key(instrument)
+                scrip, exchange = get_scrip_and_exchange_from_key(instrument)
                 self.idx[instrument] = idx
                 self.logger.debug(f"INC TIME {self.current_time} >>>> {self.data[instrument].iloc[idx].name} FOR {instrument} [idx={idx}]")
-                self.logger.debug(f"{self.current_time} >>>> "
-                                  f"O {self.data[instrument].iloc[idx]['open']}"
-                                  f"H {self.data[instrument].iloc[idx]['high']}"
-                                  f"L {self.data[instrument].iloc[idx]['low']}"
-                                  f"C {self.data[instrument].iloc[idx]['close']}")
-
                 self.current_time = self.data[instrument].iloc[idx].name
+                self.logger.debug(f"{self.current_time} >>>> "
+                                  f" O {self.data[instrument].iloc[idx]['open']}"
+                                  f" H {self.data[instrument].iloc[idx]['high']}"
+                                  f" L {self.data[instrument].iloc[idx]['low']}"
+                                  f" C {self.data[instrument].iloc[idx]['close']}")
+
 
                 self.__process_orders(scrip=scrip,
                                       exchange=exchange)
@@ -182,7 +184,7 @@ class PaperBroker(Broker):
             net_quantity = position.stats.get("net_quantity", 0.)
 
             position.average_price =  (abs(money_spent) / abs(net_quantity)) if abs(net_quantity) > 0 else 0
-            key = self.get_key_from_scrip(position.scrip, position.exchange)
+            key = get_key_from_scrip_and_exchange(position.scrip, position.exchange)
             #print(cash_flow, position.quantity_and_price_history)
             position.pnl = cash_flow + (net_quantity * self.data[key].iloc[self.idx[key]]["close"])
 
@@ -202,7 +204,7 @@ class PaperBroker(Broker):
         position.stats["net_quantity"] = net_quantity
 
         position.average_price =  (abs(money_spent) / abs(net_quantity)) if abs(net_quantity) > 0 else 0
-        key = self.get_key_from_scrip(position.scrip, position.exchange)
+        key = get_key_from_scrip_and_exchange(position.scrip, position.exchange)
         #print(cash_flow, position.quantity_and_price_history)
         position.pnl = cash_flow + (net_quantity * self.data[key].iloc[self.idx[key]]["close"])
 
@@ -216,7 +218,7 @@ class PaperBroker(Broker):
         printable_positions = []
         # print(self.positions)
         for _, position in self.positions.items():
-            key = self.get_key_from_scrip(position.scrip, position.exchange)
+            key = get_key_from_scrip_and_exchange(position.scrip, position.exchange)
             printable_positions.append([self.current_time,
                                         position.scrip,
                                         position.exchange,
@@ -279,10 +281,11 @@ class PaperBroker(Broker):
                          inside_a_recursion=False):
         # self.logger.debug(f"{self.current_time} entered __process_orders scrip={scrip} exchange={exchange}")
         for order in self.orders:
+            key = get_key_from_scrip_and_exchange(order.scrip, order.exchange)
+            order_scrip, order_exchange = get_scrip_and_exchange_from_key(key)
             if scrip is not None and exchange is not None:
-                if order.scrip != scrip or order.exchange != exchange:
+                if order_scrip != scrip or order_exchange != exchange:
                     continue
-            key = self.get_key_from_scrip(order.scrip, order.exchange)
             candle = self.data[key].iloc[self.idx[key]]
             self.order_stats["pending"] = 0
             if order.state == OrderState.PENDING:
@@ -295,6 +298,7 @@ class PaperBroker(Broker):
                             else:
                                 order.order_type = OrderType.MARKET
                     else:
+                        print(candle["low"], order.trigger_price, order.limit_price)
                         if candle["low"] <= order.trigger_price:
                             if order.order_type == OrderType.SL_LIMIT:
                                 self.logger.info(f"{order.order_id[:4]} Became LIMIT FROM SL_LIMIT")
@@ -349,7 +353,7 @@ class PaperBroker(Broker):
                                   inside_a_recursion=True)
 
         for position in self.positions:
-            key = self.get_key_from_scrip(position.scrip, position.exchange)
+            key = get_key_from_scrip_and_exchange(position.scrip, position.exchange)
             position.last_price = candle = self.data[key].iloc[self.idx[key]]["close"]
             position.pnl = (position.last_price - position.average_price) * position.quantity
         self.order_callback(self.orders)

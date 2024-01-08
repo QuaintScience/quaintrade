@@ -1,16 +1,20 @@
-from abc import abstractmethod
+from abc import abstractmethod, abstractclassmethod
 from typing import Union, Optional, Type
 
 import yaml
 import configargparse
 
 from ..core.logging import LoggerMixin
-from ..core.roles import DataProvider, AuthenticatorMixin
+from ..core.roles import DataProvider, AuthenticatorMixin, Broker
 from ..core.reflection import dynamically_load_class
 from ..core.persistence import OHLCStorage
+from ..core.bot import Bot
+from ..core.strategy import Strategy
 
 
 class Service(LoggerMixin):
+
+    default_config_file = ".trader.env"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -20,13 +24,27 @@ class Service(LoggerMixin):
         pass
 
     @classmethod
-    def get_arg_parser(cls) -> configargparse.ArgParser:
-        raise NotImplementedError("get_args not implemented; needs to return options")
+    def create_config_arg_parser(cls, default_config_file: Optional[str] = None) -> configargparse.ArgParser:
+        if default_config_file is None:
+            default_config_file = ".trader.env"
+        p = configargparse.ArgParser(default_config_files=[default_config_file],
+                                     config_file_parser_class=configargparse.YAMLConfigFileParser)
+        return p
+
+
+    def enrich_arg_parser(cls, p: configargparse.ArgParser) -> None:
+        pass
 
     @classmethod
     def get_args(cls):
         parser = cls.get_arg_parser()
         return parser.parse_known_args()
+
+    @classmethod
+    def get_arg_parser(cls):
+        p = DataProviderService.create_config_arg_parser(default_config_file=cls.default_config_file)
+        cls.enrich_arg_parser(p)
+        return p
 
     @classmethod
     def create_service(cls):
@@ -42,34 +60,40 @@ class DataProviderService(Service):
     def __init__(self,
                  *args,
                  data_path: str,
-                 ProviderClass: Union[str, Type[DataProvider]],
-                 login: bool = False,
-                 init: bool = False,
+                 DataProviderClass: Union[str, Type[DataProvider]],
+                 data_provider_login: bool = False,
+                 data_provider_init: bool = False,
                  instruments: Union[str, list]=None,
                  StorageClass: Optional[Union[str, Type[OHLCStorage]]] == None,
-                 auth_credentials: Optional[dict] = None,
-                 auth_cache_filepath: Optional[str] = None,
-                 reset_auth_cache: Optional[bool] = False,
+                 data_provider_auth_credentials: Optional[dict] = None,
+                 data_provider_auth_cache_filepath: Optional[str] = None,
+                 data_provider_reset_auth_cache: Optional[bool] = False,
+                 data_provider_custom_kwargs: Optional[dict] = None,
                  **kwargs):
 
-        super().__init__(*args, **kwargs)
+        Service.__init__(self, *args, **kwargs)
 
-        if isinstance(ProviderClass, str):
-            ProviderClass = dynamically_load_class(ProviderClass)
+        if isinstance(DataProviderClass, str):
+            DataProviderClass = dynamically_load_class(DataProviderClass)
         provider_kwargs = {"data_path": data_path}
         if StorageClass is not None:
             provider_kwargs["storage_class"] = StorageClass
 
-        if issubclass(ProviderClass, AuthenticatorMixin):
-            provider_kwargs["auth_credentials"] = auth_credentials
-            provider_kwargs["auth_cache_filepath"] = auth_cache_filepath
-            provider_kwargs["reset_auth_cache"] = reset_auth_cache
-        self.data_provider = ProviderClass(**provider_kwargs)
+        if issubclass(DataProviderClass, AuthenticatorMixin):
+            provider_kwargs["auth_credentials"] = data_provider_auth_credentials
+            provider_kwargs["auth_cache_filepath"] = data_provider_auth_cache_filepath
+            provider_kwargs["reset_auth_cache"] = data_provider_reset_auth_cache
+        if data_provider_custom_kwargs is None:
+            data_provider_custom_kwargs = {}
+        provider_kwargs.update(data_provider_custom_kwargs)
+        self.data_provider = DataProviderClass(**provider_kwargs)
 
-        if login and isinstance(self.data_provider, AuthenticatorMixin):
+        if data_provider_login and isinstance(self.data_provider, AuthenticatorMixin):
+            self.logger.info(f"Logging into data provider...")
             self.data_provider.login()
             
-        if init:
+        if data_provider_init:
+            self.logger.info(f"Initing data provider...")
             self.data_provider.init()
 
         if isinstance(instruments, str):
@@ -78,17 +102,95 @@ class DataProviderService(Service):
         self.instruments = instruments
 
     @classmethod
-    def get_arg_parser(cls) -> configargparse.ArgParser:
-
-        p = configargparse.ArgParser(default_config_files=['.trader.env'],
-                                     config_file_parser_class=configargparse.YAMLConfigFileParser)
+    def enrich_arg_parser(cls, p: configargparse.ArgParser):
         p.add('--data_path', help="Data cache path", env_var="DATA_PATH")
-        p.add('--provider_class', dest="ProviderClass", help="Provider Class", env_var="PROVIDER_CLASS")
-        p.add('--login_needed', help="Login needed", env_var="LOGIN_NEEDED", action="store_true")
-        p.add('--init', help="Do init", env_var="INIT", action="store_true")
-        p.add('--reset_auth_cache', help="Reset auth cache", env_var="RESET_AUTH_CACHE", action="store_true")
+        p.add('--data_provider_class', dest="DataProviderClass", help="Provider Class", env_var="DATA_PROVIDER_CLASS")
+        p.add('--data_provider_login', help="Data provider login needed", env_var="DATA_PROVIDER_LOGIN_NEEDED", action="store_true")
+        p.add('--data_provider_init', help="Do data provider init", env_var="DATA_PROVIDER_INIT_NEEDED", action="store_true")
+        p.add('--data_provider_reset_auth_cache', help="Reset data provider auth cache", env_var="DATA_PROVIDER_RESET_AUTH_CACHE", action="store_true")
         p.add('--storage_class', dest="StorageClass", help="Storage class", env_var="STORAGE_CLASS")
-        p.add('--auth_credentials', help="Auth Credentials", env_var="AUTH_CREDENTIALS", type=yaml.safe_load)
-        p.add('--auth_cache_filepath', help="Auth Credentials", env_var="AUTH_CACHE_FILEPATH")
+        p.add('--data_provider_auth_credentials', help="Data provider auth Credentials", env_var="DATA_PROVIDER_AUTH_CREDENTIALS", type=yaml.safe_load)
+        p.add('--data_provider_auth_cache_filepath', help="Data provider auth cache filepath", env_var="DATA_PROVIDER_AUTH_CACHE_FILEPATH")
         p.add('--instruments', help="Instruments", env_var="INSTRUMENTS")
-        return p
+
+
+class BrokerService(Service):
+
+    def __init__(self,
+                 BrokerClass: Union[Type[Broker], str],
+                 *args,
+                 broker_login: bool = False,
+                 broker_init: bool = False,
+                 broker_auth_credentials: Optional[dict] = None,
+                 broker_auth_cache_filepath: Optional[str] = None,
+                 broker_reset_auth_cache: Optional[bool] = False,
+                 broker_custom_kwargs: Optional[dict] = None,
+                 **kwargs):
+        Service.__init__(self, *args, **kwargs)
+        
+        if isinstance(BrokerClass, str):
+            BrokerClass = dynamically_load_class(BrokerClass)
+        broker_kwargs = {}
+
+        if issubclass(BrokerClass, AuthenticatorMixin):
+            broker_kwargs["auth_credentials"] = broker_auth_credentials
+            broker_kwargs["auth_cache_filepath"] = broker_auth_cache_filepath
+            broker_kwargs["reset_auth_cache"] = broker_reset_auth_cache
+        if broker_custom_kwargs is None:
+            broker_custom_kwargs = {}
+        broker_kwargs.update(broker_custom_kwargs)
+        self.broker = BrokerClass(**broker_kwargs)
+
+        if broker_login and isinstance(self.broker, AuthenticatorMixin):
+            self.broker.login()
+            
+        if broker_init:
+            print("HEREEEEEEEEEEEEEEEEEEEE:broker:init")
+            self.broker.init()
+    
+    @classmethod
+    def enrich_arg_parser(cls, p: configargparse.ArgParser):
+        p.add('--broker_class', dest="BrokerClass", help="Broker Class", env_var="BROKER_CLASS")
+        p.add('--broker_login', help="Broker Login needed", env_var="BROKER_LOGIN_NEEDED", action="store_true")
+        p.add('--broker_init', help="Do broker init", env_var="BROKER_INIT_NEEDED", action="store_true")
+        p.add('--broker_reset_auth_cache', help="Reset broker auth cache", env_var="BROKER_RESET_AUTH_CACHE", action="store_true")
+        p.add('--broker_auth_credentials', help="Broker auth Credentials", env_var="BROKER_AUTH_CREDENTIALS", type=yaml.safe_load)
+        p.add('--broker_auth_cache_filepath', help="Broker auth credentials cache filepath", env_var="BROKER_AUTH_CACHE_FILEPATH")
+
+
+class BotService(DataProviderService, BrokerService):
+
+    def __init__(self,
+                 StrategyClass: Union[str, Type[Strategy]],
+                 *args,
+                 strategy_kwargs: Optional[dict] = None,
+                 bot_custom_kwargs: Optional[dict] = None,
+                 **kwargs):
+        
+        if not hasattr(self, "data_provider"):
+            DataProviderService.__init__(self, *args, **kwargs)
+        if not hasattr(self, "broker"):
+            BrokerService.__init__(self, *args, **kwargs)
+
+        if isinstance(StrategyClass, str):
+            StrategyClass = dynamically_load_class(StrategyClass)
+        if strategy_kwargs is None:
+            strategy_kwargs = {}
+        if bot_custom_kwargs is None:
+            bot_custom_kwargs = {}
+        self.strategy = StrategyClass(**strategy_kwargs)
+        bot_kwargs ={"broker": self.broker,
+                     "strategy": self.strategy,
+                     "data_provider": self.data_provider}
+        if bot_custom_kwargs is None:
+            bot_custom_kwargs = {}
+        bot_kwargs.update(bot_custom_kwargs)
+        self.bot = Bot(**bot_kwargs)
+
+    @classmethod
+    def enrich_arg_parser(cls, p: configargparse.ArgParser):
+        BrokerService.enrich_arg_parser(p)
+        DataProviderService.enrich_arg_parser(p)
+        p.add("--strategy_class", help="strategy to use", env_var="STRATEGY_CLASS", dest="StrategyClass")
+        p.add('--strategy_kwargs', help="kwargs to instantiate the strategy", env_var="STRATEGY_KWARGS", type=yaml.safe_load)
+        p.add('--bot_kwargs', help="kwargs to instantiate the bot", env_var="BOT_KWARGS", type=yaml.safe_load)
