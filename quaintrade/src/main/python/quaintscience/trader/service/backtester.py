@@ -3,7 +3,7 @@ from configargparse import ArgParser
 from typing import Union
 
 from ..core.util import get_datetime
-from .common import BotService, DataProviderService, BrokerService
+from .common import BotService, DataProviderService
 from ..integration.paper import PaperBroker
 from ..core.util import get_datetime
 
@@ -20,14 +20,20 @@ class BackTesterService(BotService):
                  refresh_orders_immediately_on_gtt_state_change: bool = False,
                  plot_results: bool = False,
                  window_size: int = 5,
+                 live_trading_mode: bool = False,
                  **kwargs):
         self.from_date = get_datetime(from_date)
         self.to_date = get_datetime(to_date)
         self.interval = interval
         self.plot_results = plot_results
         self.window_size = window_size
-        kwargs["data_provider_login"] = False
-        kwargs["data_provider_init"] = False
+        self.live_trading_mode = live_trading_mode
+        if self.live_trading_mode:
+            kwargs["data_provider_login"] = True
+            kwargs["data_provider_init"] = True
+        else:
+            kwargs["data_provider_login"] = False
+            kwargs["data_provider_init"] = False
         DataProviderService.__init__(self, *args, **kwargs)
         kwargs["BrokerClass"] = PaperBroker
         kwargs["broker_login"] = False
@@ -37,22 +43,25 @@ class BackTesterService(BotService):
                                           "historic_context_from": self.from_date,
                                           "historic_context_to": self.to_date,
                                           "interval": self.interval,
-                                          "refresh_orders_immediately_on_gtt_state_change": refresh_orders_immediately_on_gtt_state_change}
+                                          "refresh_orders_immediately_on_gtt_state_change": refresh_orders_immediately_on_gtt_state_change,
+                                          "refresh_data_on_every_time_change": True}
         BotService.__init__(self,
                             *args,
                             **kwargs)
-        
 
     def start(self):
         self.logger.info("Running backtest...")
-        for instrument in self.instruments:
-            self.bot.backtest(scrip=instrument["scrip"],
-                              exchange=instrument["exchange"],
-                              from_date=self.from_date,
-                              to_date=self.to_date,
-                              interval=self.interval,
-                              window_size=self.window_size,
-                              plot_results=self.plot_results)
+        if self.live_trading_mode:
+            self.bot.live(self.instruments, self.interval)
+        else:
+            for instrument in self.instruments:
+                self.bot.backtest(scrip=instrument["scrip"],
+                                exchange=instrument["exchange"],
+                                from_date=self.from_date,
+                                to_date=self.to_date,
+                                interval=self.interval,
+                                window_size=self.window_size,
+                                plot_results=self.plot_results)
 
     @classmethod
     def enrich_arg_parser(cls, p: ArgParser):
@@ -65,3 +74,4 @@ class BackTesterService(BotService):
               env_var="REFRESH_UPON_GTT_ORDERS")
         p.add('--plot_results', action="store_true", help="Plot backtesting results", env_var="PLOT_RESULTS")
         p.add('--window_size', type=int, help="Window size to be passed into backtesting function", env_var="WINDOW_SIZE")
+        p.add('--live_trading_mode', action="store_true", help="Run bot in live mode with paper broker", env_var="LIVE_TRADING_MODE")

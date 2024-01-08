@@ -27,11 +27,6 @@ class KiteBaseMixin(AuthenticatorMixin):
                  **kwargs):
         super().__init__(*args, **kwargs)
 
-    @property
-    def access_token_filepath(self):
-        os.makedirs(os.path.join(self.auth_cache_filepath, self.ProviderName), exist_ok=True)
-        return os.path.join(self.auth_cache_filepath, self.ProviderName, "access_token.json")
-
     def login(self):
         self.kite = KiteConnect(api_key=self.auth_credentials["API_KEY"])
         self.auth_state = {"state": "Start Login"}

@@ -44,6 +44,7 @@ class PaperBroker(Broker):
                  historic_context_to: datetime.datetime = None,
                  interval: str = "10min",
                  refresh_orders_immediately_on_gtt_state_change: bool = False,
+                 refresh_data_on_every_time_change: bool = False,
                  **kwargs):
 
         self.data_provider = data_provider
@@ -63,6 +64,8 @@ class PaperBroker(Broker):
         
         self.interval = interval
         self.refresh_orders_immediately_on_gtt_state_change = refresh_orders_immediately_on_gtt_state_change
+
+        self.refresh_data_on_every_time_change = refresh_data_on_every_time_change
 
         self.orders = []
         self.positions = {}
@@ -84,6 +87,8 @@ class PaperBroker(Broker):
         super().__init__(*args, **kwargs)
 
     def init(self):
+        del self.data
+        self.data = {}
         for instrument in self.instruments:
             self.logger.info(f"Paper Trader: Loading data for {instrument}")
             scrip = instrument["scrip"]
@@ -102,6 +107,10 @@ class PaperBroker(Broker):
 
     def set_current_time(self, dt: datetime.datetime,
                          traverse: bool = False):
+
+        if self.refresh_data_on_every_time_change:
+            self.init()
+
         for instrument in self.data.keys():
             to_idx = self.data[instrument].index.get_indexer([dt], method="nearest")[0]
             if self.data[instrument].iloc[to_idx].name < dt:

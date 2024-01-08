@@ -142,10 +142,11 @@ class BrokerService(Service):
         self.broker = BrokerClass(**broker_kwargs)
 
         if broker_login and isinstance(self.broker, AuthenticatorMixin):
+            self.logger.info("Performing broker login...")
             self.broker.login()
             
         if broker_init:
-            print("HEREEEEEEEEEEEEEEEEEEEE:broker:init")
+            self.logger.info("Initializing Broker...")
             self.broker.init()
     
     @classmethod
@@ -163,6 +164,8 @@ class BotService(DataProviderService, BrokerService):
     def __init__(self,
                  StrategyClass: Union[str, Type[Strategy]],
                  *args,
+                 bot_live_data_context_size: int = 60,
+                 bot_online_mode: bool = False,
                  strategy_kwargs: Optional[dict] = None,
                  bot_custom_kwargs: Optional[dict] = None,
                  **kwargs):
@@ -181,7 +184,9 @@ class BotService(DataProviderService, BrokerService):
         self.strategy = StrategyClass(**strategy_kwargs)
         bot_kwargs ={"broker": self.broker,
                      "strategy": self.strategy,
-                     "data_provider": self.data_provider}
+                     "data_provider": self.data_provider,
+                     "live_data_context_size": bot_live_data_context_size,
+                     "online_mode": bot_online_mode}
         if bot_custom_kwargs is None:
             bot_custom_kwargs = {}
         bot_kwargs.update(bot_custom_kwargs)
@@ -192,5 +197,7 @@ class BotService(DataProviderService, BrokerService):
         BrokerService.enrich_arg_parser(p)
         DataProviderService.enrich_arg_parser(p)
         p.add("--strategy_class", help="strategy to use", env_var="STRATEGY_CLASS", dest="StrategyClass")
+        p.add("--bot_live_data_context_size", type=int, help="Live trading context size", env_var="BOT_LIVE_DATA_CONTEXT_SIZE")
+        p.add("--bot_online_mode", action="store_true", help="Run bot in online mode (get data during live trading)", env_var="BOT_ONLINE_MODE")
         p.add('--strategy_kwargs', help="kwargs to instantiate the strategy", env_var="STRATEGY_KWARGS", type=yaml.safe_load)
         p.add('--bot_kwargs', help="kwargs to instantiate the bot", env_var="BOT_KWARGS", type=yaml.safe_load)

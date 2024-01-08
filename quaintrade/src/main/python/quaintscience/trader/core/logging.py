@@ -408,6 +408,6 @@ class DefaultPythonLogger(Logger):
         logger = logging.LoggerAdapter(self._logger, self.context)
         if typ == "warn":
             typ = "warning"  # Python deprecation of warn
-        print(f"LOG | {typ}: {msg}")
+        print(f"LOG | {typ}: {msg}", flush=True)
         #getattr(logger, typ)(msg)
         return self

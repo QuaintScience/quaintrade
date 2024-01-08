@@ -28,20 +28,22 @@ class HiekinAshiStrategy(Strategy):
         self.ma_period = ma_period
         self.donchain_period = donchain_period
         indicators = indicators=[(HeikinAshiIndicator(), None, None),
-                                 (SupertrendIndicator(period=self.st_period,
-                                                      multiplier=self.st_multiplier), None, None),
-                                 (SMAIndicator(period=self.ma_period), None, None),
-                                 (SlopeIndicator(signal=f"SMA_{self.ma_period}"), None, None),
-                                 (DonchainIndicator(period=self.donchain_period), None, None)]
+                                 #(SupertrendIndicator(period=self.st_period,
+                                 #                     multiplier=self.st_multiplier), None, None),
+                                 #(SMAIndicator(period=self.ma_period), None, None),
+                                 #(SlopeIndicator(signal=f"SMA_{self.ma_period}"), None, None),
+                                 #(DonchainIndicator(period=self.donchain_period), None, None)
+                                 ]
         kwargs["indicator_pipeline"] = IndicatorPipeline(indicators=indicators)
         kwargs["plottables"] = {"indicator_fields": [{"field": "ha_long_trend", "panel": 2},
                                                      {"field": "ha_short_trend", "panel": 3},
                                                      {"field": "ha_non_trending", "panel": 4},
-                                                     {"field": f"SMA_{self.ma_period}_slope", "panel": 5},
-                                                     f"supertrend_{self.st_period}_{self.st_multiplier:.1f}",
-                                                     f"SMA_{self.ma_period}",
-                                                     f"donchainUpper_{self.donchain_period}",
-                                                     f"donchainLower_{self.donchain_period}",]}
+                                                     #{"field": f"SMA_{self.ma_period}_slope", "panel": 5},
+                                                     #f"supertrend_{self.st_period}_{self.st_multiplier:.1f}",
+                                                     #f"SMA_{self.ma_period}",
+                                                     #f"donchainUpper_{self.donchain_period}",
+                                                     #f"donchainLower_{self.donchain_period}",
+                                                     ]}
         non_trading_timeslots = []
         non_trading_timeslots.extend(Strategy.NON_TRADING_FIRST_HOUR)
         non_trading_timeslots.extend(Strategy.NON_TRADING_AFTERNOON)

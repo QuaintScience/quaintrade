@@ -17,9 +17,9 @@ from ..core.roles import HistoricDataProvider, AuthenticatorMixin, Broker, Strea
 from ..core.util import today_timestamp, hash_dict, datestring_to_datetime, get_key_from_scrip_and_exchange
 
 
-class FyersBaseMixin(AuthenticatorMixin):
+class NeoBaseMixin(AuthenticatorMixin):
 
-    ProviderName = "fyers"
+    ProviderName = "neo"
 
     def __init__(self, *args,
                  **kwargs):

@@ -72,6 +72,10 @@ class AuthenticatorMixin():
         self.reset_auth_cache = reset_auth_cache
         self.auth_state = {"state": "Not Logged In."}
 
+    @property
+    def access_token_filepath(self):
+        os.makedirs(os.path.join(self.auth_cache_filepath, self.ProviderName), exist_ok=True)
+        return os.path.join(self.auth_cache_filepath, self.ProviderName, "access_token.json")
 
     def listen_to_login_callback(self):
         return OAuthCallBackServer.get_oauth_callback_data(self.oauth_callback_port)
@@ -144,7 +148,8 @@ class DataProvider(TradingServiceProvider):
             conflict_resolution_type = "REPLACE"
         else:
             conflict_resolution_type = "IGNORE"
-        data = storage.get(scrip, exchange, from_date, to_date, conflict_resolution_type=conflict_resolution_type)
+        data = storage.get(scrip, exchange, from_date, to_date,
+                           conflict_resolution_type=conflict_resolution_type)
 
         data = self.postprocess_data(data, interval)
         self.logger.info(f"Read {len(data)} rows.")
@@ -160,7 +165,7 @@ class DataProvider(TradingServiceProvider):
             data.drop(["date", "time"], inplace=True, axis=1)
             data.index = data["timestamp"]
         data.dropna(inplace=True)
-        data.index = pd.to_datetime(data.index)
+        data.index = pd.to_datetime(data.index).tz_localize(None)
         data = resample_candle_data(data, interval)
         return data
     
@@ -178,7 +183,8 @@ class HistoricDataProvider(DataProvider):
                                exchange: str,
                                interval: str,
                                from_date: Union[datetime.datetime, str],
-                               to_date: Union[datetime.datetime, str]) -> bool:
+                               to_date: Union[datetime.datetime, str],
+                               finegrained: bool = False) -> bool:
         pass
 
     def store_perm_data(self, scrip: str,
@@ -209,12 +215,11 @@ class HistoricDataProvider(DataProvider):
                                        from_date=batch_from_date,
                                        to_date=batch_to_date)
             if len(data) == 0:
-                break
-            if batch_from_date == from_date:
+                self.logger.info(f"No more data found. breaking")
                 break
             batch_to_date = batch_from_date
             batch_from_date = batch_from_date - datetime.timedelta(**subtracting_func)
-            batch_from_date = max(from_date, batch_from_date)
+        print(batch_from_date, batch_to_date, from_date, to_date)
         return True
 
     def get_data_as_df(self,
@@ -224,28 +229,45 @@ class HistoricDataProvider(DataProvider):
                        from_date: datetime.datetime,
                        to_date: datetime.datetime,
                        storage_type: OHLCStorageType = OHLCStorageType.PERM,
-                       download_missing_data: bool = False) -> pd.DataFrame:
-        
+                       download_missing_data: bool = False,
+                       finegrained_scan: bool = False) -> pd.DataFrame:
+
         data = super().get_data_as_df(scrip=scrip,
                                       exchange=exchange,
                                       interval=interval,
                                       from_date=from_date,
                                       to_date=to_date,
                                       storage_type=storage_type)
-        # self.logger.info(data)
+
         if download_missing_data and storage_type == OHLCStorageType.PERM:
             if len(data) > 0:
-                days = set(data.index.to_series().apply(lambda x: x.to_pydatetime().replace(hour=0, minute=0, second=0, microsecond=0)))
-                start_datetime = from_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                ticks = set([item.to_pydatetime()
+                            for item in data.index.to_series().apply(lambda x: x.to_pydatetime())])
+                if not finegrained_scan:
+                    ticks = set([item.replace(hour=0, minute=0, second=0, microsecond=0) for item in ticks])
+                    start_datetime = from_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                else:
+                    ticks = set([item.replace(second=0, microsecond=0) for item in ticks])
+                    start_datetime = from_date.replace(second=0, microsecond=0)
                 while start_datetime < to_date:
-                    if start_datetime not in days and not start_datetime.weekday() in [5,6]:
+                    if start_datetime not in ticks and not start_datetime.weekday() in [5,6]:
+                        self.logger.info(f"Could not find data for {start_datetime}; "
+                                         f"Starting download of data from provider for "
+                                         f"{scrip}/{exchange} for"
+                                         f"{start_datetime}")
                         self.download_historic_data(scrip=scrip,
-                                                exchange=exchange,
-                                                interval="1min",
-                                                from_date=start_datetime,
-                                                to_date=start_datetime + datetime.timedelta(days=1))
-                    start_datetime = start_datetime + datetime.timedelta(days=1)
+                                                    exchange=exchange,
+                                                    interval="1min",
+                                                    from_date=start_datetime,
+                                                    to_date=start_datetime,
+                                                    finegrained=finegrained_scan)
+                    if not finegrained_scan:
+                        start_datetime = start_datetime + datetime.timedelta(days=1)
+                    else:
+                        start_datetime = start_datetime + datetime.timedelta(minutes=1)
             else:
+                self.logger.info(f"No data found.Starting download of data from provider for "
+                                 f"{scrip}/{exchange} from {from_date} to {to_date}")
                 self.download_historic_data(scrip=scrip,
                                             exchange=exchange,
                                             interval="1min",
@@ -258,6 +280,7 @@ class HistoricDataProvider(DataProvider):
                                       to_date=to_date,
                                       storage_type=storage_type)
         return data
+
 
 class StreamingDataProvider(DataProvider):
 
