@@ -65,7 +65,7 @@ class FyersBaseMixin(AuthenticatorMixin):
                                              secret_key=secret_key,
                                              grant_type=grant_type)
         generateTokenUrl = appSession.generate_authcode()
-        print(generateTokenUrl)
+        print(generateTokenUrl, flush=True)
         response = self.listen_to_login_callback()
         appSession.set_token(response["query_params"]["auth_code"][0])
         response = appSession.generate_token()
@@ -149,7 +149,6 @@ class FyersHistoricDataProvider(FyersBaseMixin, HistoricDataProvider):
         storage.put(scrip, exchange, data)
         time_elapsed = time.time() - req_start_time
         self.logger.info(f"Fetching {len(data)} rows of data from fyers {from_date} to {to_date} took {time_elapsed:.2f} seconds")
-        print(data)
         if time_elapsed < self.rate_limit_time:
             time.sleep(self.rate_limit_time - time_elapsed)
         return True

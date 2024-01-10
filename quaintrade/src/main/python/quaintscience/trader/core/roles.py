@@ -253,7 +253,7 @@ class HistoricDataProvider(DataProvider):
                     if start_datetime not in ticks and not start_datetime.weekday() in [5,6]:
                         self.logger.info(f"Could not find data for {start_datetime}; "
                                          f"Starting download of data from provider for "
-                                         f"{scrip}/{exchange} for"
+                                         f"{scrip}/{exchange} for "
                                          f"{start_datetime}")
                         self.download_historic_data(scrip=scrip,
                                                     exchange=exchange,

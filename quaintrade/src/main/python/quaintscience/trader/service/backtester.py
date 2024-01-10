@@ -44,7 +44,7 @@ class BackTesterService(BotService):
                                           "historic_context_to": self.to_date,
                                           "interval": self.interval,
                                           "refresh_orders_immediately_on_gtt_state_change": refresh_orders_immediately_on_gtt_state_change,
-                                          "refresh_data_on_every_time_change": True}
+                                          "refresh_data_on_every_time_change": False}
         BotService.__init__(self,
                             *args,
                             **kwargs)

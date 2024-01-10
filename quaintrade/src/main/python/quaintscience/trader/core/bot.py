@@ -98,14 +98,17 @@ class Bot(LoggerMixin):
                                                       finegrained=True)
         data = self.__get_live_data_cache(scrip, exchange)
         
-        if data is None:    
+        if data is None or len(data) == 0:
             data = self.data_provider.get_data_as_df(scrip=scrip, exchange=exchange,
                                                     from_date=from_date, to_date=to_date,
                                                     interval=interval,
                                                     storage_type=OHLCStorageType.PERM,
                                                     download_missing_data=self.online_mode)
             data["date"] = data.index
-        elif blend_live_data:
+            self.__set_live_data_cache(scrip,
+                                       exchange,
+                                       data)
+        if blend_live_data:
             data_updates = self.data_provider.get_data_as_df(scrip=scrip, exchange=exchange,
                                                              from_date=to_date_day_begin,
                                                              to_date=to_date,
@@ -113,32 +116,33 @@ class Bot(LoggerMixin):
                                                              storage_type=OHLCStorageType.PERM,
                                                              download_missing_data=False)
             data_updates["date"] = data_updates.index
+            print(data_updates)    
             if len(data_updates) > 0:
                 data = pd.concat([data_updates, data],
                                   axis=0,
                                   ignore_index=True,
                                   sort=False).drop_duplicates(["date"], keep='last')
-            self.__set_live_data_cache(scrip,
-                                       exchange,
-                                       data)
-            live_data = self.data_provider.get_data_as_df(scrip=scrip, exchange=exchange,
-                                                          from_date=to_date_day_begin,
-                                                          to_date=to_date,
-                                                          interval=interval,
-                                                          storage_type=OHLCStorageType.LIVE)
+        
+        live_data = self.data_provider.get_data_as_df(scrip=scrip, exchange=exchange,
+                                                        from_date=to_date_day_begin,
+                                                        to_date=to_date,
+                                                        interval=interval,
+                                                        storage_type=OHLCStorageType.LIVE)
 
-            live_data["date"] = live_data.index
-            if len(data) == 0:
-                self.logger.warn(f"Did not find historic data. Using only live data...")
-                data = live_data
-            elif len(live_data) > 0:
-                self.logger.info(f"Found a combination of live and historic data")
-                data = pd.concat([live_data, data],
-                                 axis=0,
-                                 ignore_index=True,
-                                 sort=False).drop_duplicates(["date"], keep='last')
-        data.set_index(data["date"])
+        live_data["date"] = live_data.index
+        print(live_data)
+        if len(data) == 0:
+            self.logger.warn(f"Did not find historic data. Using only live data...")
+            data = live_data
+        elif len(live_data) > 0:
+            self.logger.info(f"Found a combination of live and historic data")
+            data = pd.concat([live_data, data],
+                                axis=0,
+                                ignore_index=True,
+                                sort=False).drop_duplicates(["date"], keep='last')
+        data = data.set_index(data["date"])
         data.drop(["date"], axis=1, inplace=True)
+        self.logger.info(f"First {data.iloc[0].name} - Latest {data.iloc[-1].name}")
         context = self.get_context(data)
         return context, data
 
@@ -234,7 +238,7 @@ class Bot(LoggerMixin):
         print(tabulate([[str(x.next_run)] for x in all_jobs]), flush=True)
 
     def do_live_trade_task(self, instruments: list[dict[str, str]], interval: str):
-        to_date = datetime.datetime.now().replace(second=0, microsecond=0)
+        to_date = datetime.datetime.now().replace(hour=23, minute=59, second=0, microsecond=0)
         from_date = to_date - datetime.timedelta(days=self.live_data_context_size)
         from_date = from_date.replace(hour=0, minute=0, second=0, microsecond=0)
         print(f"Live trade task {from_date} {to_date}")
@@ -264,6 +268,6 @@ class Bot(LoggerMixin):
         while True:
             # self.print_pending_trading_timeslots()
             schedule.run_pending()
-            time.sleep(10)
+            time.sleep(1)
         #self.do_live_trade_task(instruments=instruments, interval=interval)
         #self.do_live_trade_task(instruments=instruments, interval=interval)

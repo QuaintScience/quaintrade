@@ -9,12 +9,44 @@ from ..core.ds import (Order,
                        Position,
                        OrderType,
                        OHLCStorageType,
-                       OrderState,
+                       OrderState, TradingProduct,
                        TransactionType)
 from ..core.roles import Broker, HistoricDataProvider
 from ..core.util import (default_dataclass_field,
                          get_key_from_scrip_and_exchange,
                          get_scrip_and_exchange_from_key)
+
+
+
+def nse_commission_func(order: Order, brokerage_percentage: float = 0.03, max_commission: float = 20):
+    charges = 0.
+    if max_commission > 0:
+        brokerage = min((brokerage_percentage / 100) * order.price * order.quantity, max_commission)
+    else:
+        brokerage = (brokerage_percentage / 100) * order.price * order.quantity
+    stt = 0.
+    if order.product == TradingProduct.MIS:
+        if order.transaction_type == TransactionType.SELL:
+            stt = (0.025 / 100) * order.price * order.quantity # STT
+    else:
+        stt = (0.1 / 100) * order.price * order.quantity # STT
+    transaction_charges = (0.00325 / 100) * order.price * order.quantity # Transaction charges NSE
+    sebi_charges = (order.price * order.quantity / 10000000) * 10
+    stamp_charges = 0.
+    if order.transaction_type == TransactionType.BUY:
+        stamp_charges = (0.015 / 100) * (order.price * order.quantity / 10000000)
+    gst = (18 / 100) * (brokerage + sebi_charges + transaction_charges)
+    
+    brokerage = round(brokerage, 2)
+    stt = round(stt, 2)
+    transaction_charges = round(transaction_charges, 2)
+    sebi_charges = round(sebi_charges, 2)
+    stamp_charges = round(stamp_charges, 2)
+    gst = round(gst, 2)
+    
+    print(f"Brokerage: {brokerage} | STT: {stt} | TransactionCharges: {transaction_charges} | SEBICharges: {sebi_charges} | Stamp: {stamp_charges} | GST: {gst}")
+    return round(brokerage + stt + transaction_charges + sebi_charges + stamp_charges + gst, 2)
+    #return 0
 
 
 @dataclass(kw_only=True)
@@ -45,6 +77,7 @@ class PaperBroker(Broker):
                  interval: str = "10min",
                  refresh_orders_immediately_on_gtt_state_change: bool = False,
                  refresh_data_on_every_time_change: bool = False,
+                 commission_func: Optional[callable] = None,
                  **kwargs):
 
         self.data_provider = data_provider
@@ -66,7 +99,9 @@ class PaperBroker(Broker):
         self.refresh_orders_immediately_on_gtt_state_change = refresh_orders_immediately_on_gtt_state_change
 
         self.refresh_data_on_every_time_change = refresh_data_on_every_time_change
-
+        if commission_func is None:
+            commission_func = nse_commission_func
+        self.commission_func = commission_func
         self.orders = []
         self.positions = {}
         self.gtt_orders = []
@@ -195,9 +230,9 @@ class PaperBroker(Broker):
             position.average_price =  (abs(money_spent) / abs(net_quantity)) if abs(net_quantity) > 0 else 0
             key = get_key_from_scrip_and_exchange(position.scrip, position.exchange)
             #print(cash_flow, position.quantity_and_price_history)
-            position.pnl = cash_flow + (net_quantity * self.data[key].iloc[self.idx[key]]["close"])
+            position.pnl = cash_flow + (net_quantity * self.data[key].iloc[self.idx[key]]["close"]) - position.charges
 
-    def __update_position_stats(self, position, price, quantity, transaction_type):
+    def __update_position_stats(self, position, price, quantity, charges, transaction_type):
         if transaction_type == TransactionType.SELL:
             quantity = -quantity
         money_spent = position.stats.get("money_spent", 0.)
@@ -213,9 +248,11 @@ class PaperBroker(Broker):
         position.stats["net_quantity"] = net_quantity
 
         position.average_price =  (abs(money_spent) / abs(net_quantity)) if abs(net_quantity) > 0 else 0
+        
         key = get_key_from_scrip_and_exchange(position.scrip, position.exchange)
         #print(cash_flow, position.quantity_and_price_history)
-        position.pnl = cash_flow + (net_quantity * self.data[key].iloc[self.idx[key]]["close"])
+        position.charges += charges
+        position.pnl = cash_flow + (net_quantity * self.data[key].iloc[self.idx[key]]["close"]) - position.charges
 
     def get_pnl_history_as_table(self):
         print(tabulate(self.pnl_history))
@@ -234,10 +271,11 @@ class PaperBroker(Broker):
                                         position.stats["net_quantity"],
                                         position.average_price,
                                         self.data[key].iloc[self.idx[key]]["close"],
-                                        position.pnl])
+                                        position.pnl,
+                                        position.charges])
             self.logger.info(f"{self.current_time} "
                              f"Position: {position.scrip}/{position.exchange} | {position.stats['net_quantity']} | {position.pnl:.2f}")
-        headers = ["time", "scrip", "exchange", "qty", "avgP", "LTP", "PnL"]
+        headers = ["time", "scrip", "exchange", "qty", "avgP", "LTP", "PnL", "Comm"]
         print(tabulate(printable_positions, headers=headers, tablefmt="double_outline"))
         return printable_positions, headers
 
@@ -250,8 +288,10 @@ class PaperBroker(Broker):
         if price is None:
             price = order.limit_price
         order.price = price
+        
         self.logger.info(f"Order {order.transaction_type.value} {order.order_id[:4]}/{order.scrip}/"
                          f"{order.exchange}/{order.order_type.value} [tags={order.tags}] @ {order.price} x {order.quantity} executed.")
+
         self.events.append([self.current_time,
                             {"scrip": order.scrip,
                              "exchange": order.exchange,
@@ -260,6 +300,8 @@ class PaperBroker(Broker):
                              "price": price,
                              "event_type": ",".join(order.tags)}])
         # self.logger.info(self.events)
+        if self.commission_func is not None:
+            charges = self.commission_func(order)
         position = PaperPosition(timestamp=self.current_time,
                                  scrip_id=order.scrip_id,
                                  scrip=order.scrip,
@@ -277,13 +319,9 @@ class PaperBroker(Broker):
         # print(position)
         if order.transaction_type == TransactionType.SELL:
             position.quantity -= order.quantity
-            self.__update_position_stats(position, price, order.quantity, order.transaction_type)
-            #position.quantity_and_price_history.append((price, -order.quantity))
         else:
             position.quantity += order.quantity
-            self.__update_position_stats(position, price, order.quantity, order.transaction_type)
-            #position.quantity_and_price_history.append((price, order.quantity))
-
+        self.__update_position_stats(position, price, order.quantity, charges, order.transaction_type)
     def __process_orders(self,
                          scrip=None,
                          exchange=None,
@@ -350,6 +388,7 @@ class PaperBroker(Broker):
                     continue
             if entry_order.state == OrderState.COMPLETED:
                 self.orders.append(other_order)
+                print(other_order)
                 gtt_state_changed = True
                 continue
             new_gtt_orders.append((entry_order, other_order))

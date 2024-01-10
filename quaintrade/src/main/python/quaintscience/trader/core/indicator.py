@@ -547,7 +547,8 @@ class HeikinAshiIndicator(Indicator):
         heikin_ashi_df = pd.DataFrame(index=df.index.values,
                                       columns=['open', 'high', 'low', 'close'])
     
-        heikin_ashi_df['close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
+        #heikin_ashi_df['close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
+        heikin_ashi_df['close'] = df["close"]
         
         for i in range(len(df)):
             if i == 0:
@@ -591,18 +592,22 @@ class HeikinAshiIndicator(Indicator):
                 prev_row = row
                 continue
             if ((prev_row["ha_trending_green"] == 1.0
-                or prev_row["ha_non_trending"] == 1.0)
-                and row["ha_trending_red"] == 1.0):
+                or prev_row["ha_non_trending"] == 1.0
+                 )
+                and row["ha_trending_red"] == 1.0
+                and row["ha_non_trending"] != 1.0):
                 short_trend_in_progress = True
                 long_trend_in_progress = False
             elif ((prev_row["ha_trending_red"] == 1.0
-                or prev_row["ha_non_trending"] == 1.0)
-                and row["ha_trending_green"] == 1.0):
+                or prev_row["ha_non_trending"] == 1.0
+                   )
+                and row["ha_trending_green"] == 1.0
+                and row["ha_non_trending"] != 1.0):
                 short_trend_in_progress = False
                 long_trend_in_progress = True
-            elif row["ha_non_trending"] == 1.0:
-                short_trend_in_progress = False
-                long_trend_in_progress = False
+            #elif row["ha_non_trending"] == 1.0:
+            #    short_trend_in_progress = False
+            #    long_trend_in_progress = False
 
             if short_trend_in_progress:
                 df.loc[row_id, "ha_short_trend"] = 1.0
@@ -624,8 +629,14 @@ class HeikinAshiIndicator(Indicator):
         return False
 
     def doji_candle(self, row):
-        if ((row["high"] - max(row["open"], row["close"])) > 0.2 * abs(row["open"] - row["close"])
-            and ((min(row["open"], row["close"]) - row["low"]) > 0.2 * abs(row["close"] - row["open"]))):
+        upper_wick = (row["high"] - max(row["open"], row["close"]))
+        lower_wick = (min(row["open"], row["close"]) - row["low"])
+        if (upper_wick >  1 * abs(row["open"] - row["close"])
+            and (lower_wick >  1 * abs(row["close"] - row["open"]))):
+            return True
+        if 2 * abs(row["close"] - row["open"]) < max(lower_wick, upper_wick):
+            return True
+        if abs(upper_wick - lower_wick) / min(upper_wick, lower_wick) < 0.1:
             return True
         return False
 

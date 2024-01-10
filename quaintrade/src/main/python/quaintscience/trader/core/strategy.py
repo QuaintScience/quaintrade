@@ -99,6 +99,7 @@ class Strategy(ABC, LoggerMixin):
     def __can_trade_with_context(self, context: dict[str, pd.DataFrame]):
         for key in self.context_required:
             if key not in context or len(context[key]) == 0:
+                self.logger.info(f"Context {key} is empty. So not trading...")
                 return False
         return True
 
@@ -126,7 +127,7 @@ class Strategy(ABC, LoggerMixin):
                       use_sl_market_order: bool = False,
                       tags: Optional[list] = None,
                       group_id: Optional[str] = None,
-                      parent_order: Optional[Order] = None):
+                      parent_order: Optional[Order] = None) -> Order:
 
         if tags is None:
             tags = []
@@ -134,11 +135,20 @@ class Strategy(ABC, LoggerMixin):
         all_tags = copy.deepcopy(self.default_tags)
         all_tags.extend(tags)
         all_tags = list(set(all_tags))
+        all_tags.append(position_type.value)
         order = None
 
         parent_id = None
         if parent_order is not None:
             parent_id = parent_order.order_id
+
+        order_template = partial(broker.create_express_order,
+                                 scrip=scrip,
+                                 exchange=exchange,
+                                 quantity=quantity,
+                                 product=product,
+                                 group_id=group_id,
+                                 parent_order_id=parent_id)
 
         if position_type == PositionType.ENTRY:
 
@@ -168,16 +178,11 @@ class Strategy(ABC, LoggerMixin):
             else:
                 transaction_type = TransactionType.BUY
 
-            order_template = partial(broker.create_express_order,
-                                     scrip=scrip,
-                                     exchange=exchange,
-                                     quantity=quantity,
-                                     product=product,
-                                     group_id=group_id)
             if position_type == PositionType.STOPLOSS:
                 limit_order_type = OrderType.SL_LIMIT if not use_sl_market_order else OrderType.SL_MARKET
             else:
                 limit_order_type = OrderType.LIMIT
+
             order = order_template(transaction_type=transaction_type,
                                    order_type=limit_order_type,
                                    trigger_price=price,

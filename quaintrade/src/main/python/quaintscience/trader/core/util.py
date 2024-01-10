@@ -85,9 +85,9 @@ def new_id_field():
 
 def resample_candle_data(data, interval):
     data = data.resample(interval).apply({'open': 'first',
-                                            'high': 'max',
-                                            'low': 'min',
-                                            'close': 'last'})
+                                          'high': 'max',
+                                          'low': 'min',
+                                          'close': 'last'})
     data.dropna(inplace=True)
     return data
 
