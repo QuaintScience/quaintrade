@@ -3,7 +3,7 @@ import os
 
 import pandas as pd
 
-from ..service.backtester import BackTesterService
+from quaintscience.trader.integration.kite import KiteHistoricDataProvider
 from ..core.logging import LoggerMixin
 
 class Unittest(unittest.TestCase, LoggerMixin):
@@ -36,27 +36,12 @@ class Unittest(unittest.TestCase, LoggerMixin):
                           exchange,
                           from_date,
                           to_date,
-                          cache_path=None,
-                          interval='10min',
-                          redis_server='localhost',
-                          redis_port=6379):
-        if cache_path is None:
-            cache_path = os.environ.get("QTRADE_PY_UNITTEST_CACHE_DIR")
-        instrument = {"scrip": scrip, "exchange": exchange}
-        service = BackTesterService(from_date=from_date,
-                                    to_date=to_date,
-                                    interval=interval,
-                                    redis_server=redis_server,
-                                    redis_port=redis_port,
-                                    instruments=f"{scrip}:{exchange}",
-                                    cache_path=cache_path,
-                                    init=False)
-        return service.trade_manager.get_historic_data(scrip=instrument["scrip"],
-                                                       exchange=instrument["exchange"],
-                                                       interval=service.interval,
-                                                       from_date=service.from_date,
-                                                       to_date=service.to_date,
-                                                       download=False)
+                          data_path=None,
+                          interval='10min'):
+        if data_path is None:
+            data_path = os.environ.get("QTRADE_PY_UNITTEST_CACHE_DIR")
+        provider = KiteHistoricDataProvider(auth_credentials=None, auth_cache_filepath="auth_cache/", data_path=data_path)
+        return provider.get_data_as_df(scrip=scrip, exchange=exchange, from_date=from_date, to_date=to_date, interval=interval)
 
     @staticmethod
     def cli_execution():

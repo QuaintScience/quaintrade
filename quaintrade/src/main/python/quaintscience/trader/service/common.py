@@ -54,6 +54,18 @@ class Service(LoggerMixin):
         kwargs = p.__dict__
         return cls(**kwargs)
 
+    def process_instruments_str(self, instruments: str):
+        if isinstance(instruments, str):
+            instruments = instruments.split(",")
+            for ii, instrument in enumerate(instruments):
+                parts = instrument.split(":")
+                if len(parts) == 2:
+                    instruments[ii] = {"scrip": parts[0], "exchange": parts[1], "type": "EQ"}
+                elif len(parts) == 3:
+                    instruments[ii] = {"scrip": parts[0], "exchange": parts[1], "type": parts[2]}
+                else:
+                    raise ValueError(f"Could not parse instrument {instrument}")
+        return instruments
 
 class DataProviderService(Service):
 
@@ -96,10 +108,7 @@ class DataProviderService(Service):
             self.logger.info(f"Initing data provider...")
             self.data_provider.init()
 
-        if isinstance(instruments, str):
-            instruments = [{"scrip": value.split(":")[0], "exchange": value.split(":")[1]}
-                           for value in instruments.split(",")]
-        self.instruments = instruments
+        self.instruments = self.process_instruments_str(instruments)
 
     @classmethod
     def enrich_arg_parser(cls, p: configargparse.ArgParser):
@@ -122,11 +131,12 @@ class BrokerService(Service):
                  *args,
                  broker_login: bool = False,
                  broker_init: bool = False,
+                 broker_skip_order_streamer: bool = False,
                  broker_auth_credentials: Optional[dict] = None,
                  broker_auth_cache_filepath: Optional[str] = None,
                  broker_reset_auth_cache: Optional[bool] = False,
                  broker_custom_kwargs: Optional[dict] = None,
-                 broker_thread_id: int = 1,
+                 broker_thread_id: str = "1",
                  **kwargs):
         Service.__init__(self, *args, **kwargs)
         
@@ -151,13 +161,16 @@ class BrokerService(Service):
         if broker_init:
             self.logger.info("Initializing Broker...")
             self.broker.init()
+        if not broker_skip_order_streamer:
+            self.broker.start_order_change_streamer()
     
     @classmethod
     def enrich_arg_parser(cls, p: configargparse.ArgParser):
         p.add('--broker_class', dest="BrokerClass", help="Broker Class", env_var="BROKER_CLASS")
         p.add('--broker_login', help="Broker Login needed", env_var="BROKER_LOGIN_NEEDED", action="store_true")
         p.add('--broker_init', help="Do broker init", env_var="BROKER_INIT_NEEDED", action="store_true")
-        p.add('--broker_thread_id', help="Thread ID of broker (To store separate tradebooks)", env_var="BROKER_THREAD_ID", default=1, type=int)
+        p.add('--broker_skip_order_streamer', help="Do not start order streamer (to listen to order change)", env_var="BROKER_SKIP_ORDER_STREAMER", action="store_true")
+        p.add('--broker_thread_id', help="Thread ID of broker (To store separate tradebooks)", env_var="BROKER_THREAD_ID", default=1)
         p.add('--broker_audit_records_path', help="Path to store broker audit records", env_var="BROKER_AUDIT_RECORDS_PATH")
         p.add('--broker_reset_auth_cache', help="Reset broker auth cache", env_var="BROKER_RESET_AUTH_CACHE", action="store_true")
         p.add('--broker_auth_credentials', help="Broker auth Credentials", env_var="BROKER_AUTH_CREDENTIALS", type=yaml.safe_load)

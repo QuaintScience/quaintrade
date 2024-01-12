@@ -11,7 +11,7 @@ from urllib.parse import urlparse, parse_qs
 from typing import Optional
 
 import pandas as pd
-import redis
+from tabulate import tabulate
 
 from .logging import LoggerMixin
 from .ds import (Order,
@@ -207,7 +207,7 @@ class HistoricDataProvider(DataProvider):
         batch_from_date = max(from_date, batch_from_date)
         self.logger.info(f"Beginning downloading of data in batches for {scrip}/{exchange} between {from_date} and {to_date}...")
         while ((batch_from_date >= from_date or
-            (batch_to_date <= to_date and
+                (batch_to_date <= to_date and
                 batch_to_date >= from_date))):
             self.logger.info(f"Batch {batch_from_date} -- {batch_to_date}")
             data = self.get_data_as_df(scrip=scrip,
@@ -373,7 +373,7 @@ class Broker(TradingServiceProvider):
                  TradingBookStorageClass: Type[TradeBookStorageMixin] = SqliteTradeBookStorage,
                  strategy: Optional[str] = None,
                  run_name: Optional[str] = None,
-                 thread_id: int = 1,
+                 thread_id: str = "1",
                  **kwargs):
         self.TradingBookStorageClass = TradingBookStorageClass
         self.audit_records_path = audit_records_path
@@ -427,7 +427,7 @@ class Broker(TradingServiceProvider):
                     if (other_order.group_id == order.group_id
                         and other_order.order_id != order.order_id
                         and other_order.state == OrderState.PENDING
-                        and "entry_order" in other_order.tags):
+                        and "entry" in other_order.tags):
                         self.logger.info(f"Cancelling order {other_order.order_id[:4]}/"
                                          f"{other_order.scrip}/{other_order.exchange}/"
                                          f"{other_order.transaction_type}/{other_order.order_type}"
@@ -436,41 +436,87 @@ class Broker(TradingServiceProvider):
                         self.delete_gtt_orders_for(other_order)
 
     # Get state in a form that can be printed as a table.
-    @abstractmethod
     def get_orders_as_table(self) -> (list[list], list):
-        pass
+        printable_orders = []
+        for order in self.get_orders():
+            if order.state == OrderState.PENDING:
+                printable_orders.append(["R",
+                                         order.order_id[:4],
+                                         order.parent_order_id[:4] if order.parent_order_id is not None else "",
+                                         order.group_id[:4] if order.group_id is not None else "",
+                                         order.scrip,
+                                         order.exchange,
+                                         order.transaction_type,
+                                         order.quantity,
+                                         order.order_type,
+                                         order.limit_price,
+                                         ", ".join(order.tags)])
+        for from_order, to_order in self.get_gtt_orders():
+            printable_orders.append(["GTT",
+                                     to_order.order_id[:4],
+                                     from_order.order_id[:4],
+                                     to_order.group_id[:4] if order.group_id is not None else "",
+                                     to_order.scrip,
+                                     to_order.exchange,
+                                     to_order.transaction_type,
+                                     to_order.quantity,
+                                     to_order.order_type,
+                                     to_order.limit_price,
+                                     ", ".join(to_order.tags)])
+        headers = ["Typ", "id", "parent","group_id", "scrip", "exchange",
+                   "buy/sell", "qty", "order_type", "limit_price", "reason"]
+        print(tabulate(printable_orders, headers=headers, tablefmt="double_outline"))
+        return printable_orders, headers
 
-    @abstractmethod
     def get_positions_as_table(self) -> (list[list], list):
-        pass
+        printable_positions = []
+        # print(self.positions)
+        for position in self.get_positions():
+            printable_positions.append([position.timestamp,
+                                        position.scrip,
+                                        position.exchange,
+                                        position.stats["net_quantity"],
+                                        position.average_price,
+                                        position.last_price,
+                                        position.pnl,
+                                        position.charges])
+        headers = ["time", "scrip", "exchange", "qty", "avgP", "LTP", "PnL", "Comm"]
+        print(tabulate(printable_positions, headers=headers, tablefmt="double_outline"))
+        return printable_positions, headers
 
     @abstractmethod
-    def get_orders(self) -> list[Order]:
+    def get_orders(self, refresh_cache: bool = True) -> list[Order]:
         pass
 
     @abstractmethod
     def place_order(self,
-                    order: Order) -> Order:
+                    order: Order,
+                    refresh_cache: bool = True) -> Order:
         pass
 
     def order_callback(self,
-                       orders):
+                       *args, **kwargs):
         raise NotImplementedError("Order Callback")
 
     @abstractmethod
-    def update_order(self, order: Order) -> Order:
+    def update_order(self, order: Order,
+                     refresh_cache: bool = True) -> Order:
+        pass
+
+    def cancel_pending_orders(self,
+                              refresh_cache: bool = True):
+        for order in self.orders:
+            if order.state == OrderState.PENDING:
+                self.cancel_order(order)
+
+    @abstractmethod
+    def cancel_order(self, order: Order,
+                     refresh_cache: bool = True) -> Order:
         pass
 
     @abstractmethod
-    def cancel_pending_orders(self):
-        pass
-
-    @abstractmethod
-    def cancel_order(self, order: Order) -> Order:
-        pass
-
-    @abstractmethod
-    def get_positions(self) -> list[Position]:
+    def get_positions(self,
+                      refresh_cache: bool = True) -> list[Position]:
         pass
 
     def create_express_order(self, 
@@ -572,3 +618,23 @@ class Broker(TradingServiceProvider):
 
     def clear_gtt_orders(self):
         self.gtt_orders =[]
+
+    def gtt_order_callback(self,
+                           refresh_cache: bool = True) -> bool:
+        new_gtt_orders = []
+        gtt_state_changed = False
+        self.get_orders(refresh_cache=refresh_cache)
+        for entry_order, other_order in self.gtt_orders:
+            if (entry_order.state == OrderState.COMPLETED
+                and other_order.state == OrderState.PENDING):
+                self.place_order(other_order)
+                # print(other_order)
+                gtt_state_changed = True
+                continue
+            new_gtt_orders.append((entry_order, other_order))
+        self.gtt_orders = new_gtt_orders
+        self.get_orders(refresh_cache=refresh_cache)
+        return gtt_state_changed
+
+    def start_order_change_streamer(self):
+        pass

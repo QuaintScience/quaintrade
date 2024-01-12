@@ -44,6 +44,15 @@ class FyersBaseMixin(AuthenticatorMixin):
             self.generate_access_token()
         self.finish_login()
 
+    @staticmethod
+    def denormalize_instrument(instrument: dict):
+        scrip = instrument["scrip"]
+        exchange = instrument["exchange"]
+        if exchange == "NSE" or exchange == "BSE":
+            if not scrip.endswith("-EQ"):
+                scrip = f'{scrip}-EQ'
+        return {"scrip": scrip, "exchange": exchange}
+
     def generate_access_token(self):
         # redircet_uri you entered while creating APP.
         redirect_uri = self.auth_credentials["REDIRECT_URI"] 
@@ -113,6 +122,10 @@ class FyersHistoricDataProvider(FyersBaseMixin, HistoricDataProvider):
         if interval == "1min":
             interval = "1"
 
+        normalized_instrument = FyersBaseMixin.denormalize_instrument({"scrip": scrip, "exchange": exchange})
+        scrip = normalized_instrument["scrip"]
+        exchange = normalized_instrument["exchange"]
+
         if isinstance(from_date, str):
             from_date = datestring_to_datetime(from_date)
         if isinstance(to_date, str):
@@ -128,13 +141,13 @@ class FyersHistoricDataProvider(FyersBaseMixin, HistoricDataProvider):
             to_date = to_date.strftime("%s")
 
         req_start_time = time.time()
-
         req = {"symbol": f"{exchange}:{scrip}",
                "resolution": interval,
                "date_format": "1" if not finegrained else "0",
                "range_from": from_date,
                "range_to": to_date,
                "cont_flag": "1"}
+        self.logger.debug(f"Req: {req}")
         data = self.fyers.history(req)
         if len(data) == 0 or data["s"] == "error":
             print(f"No data or error: {data}")
@@ -162,7 +175,7 @@ class FyersStreamingDataProvider(FyersBaseMixin, StreamingDataProvider):
 
     def start(self, instruments: list[str], *args, **kwargs):
 
-        self.ticker_instruments = [f"{instrument['exchange']}:{instrument['scrip']}" for instrument in instruments]
+        self.ticker_instruments = [f"{instrument['exchange']}:{instrument['scrip']}-EQ" for instrument in instruments]
 
         self.fws = data_ws.FyersDataSocket(access_token=self.auth_state["access_token"],
                                            log_path="",

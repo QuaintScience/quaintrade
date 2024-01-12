@@ -36,6 +36,7 @@ class OrderState(Enum):
     CANCELLED = "cancelled"
     PENDING = "pending"
     COMPLETED = "completed"
+    REJECTED = "rejected"
 
 
 @dataclass
@@ -62,7 +63,19 @@ class Order:
     tags: list = default_dataclass_field([])
     parent_order_id: Optional[str] = None
     group_id: Optional[str] = None
+   
+    def __hash__(self):
+        return hash(self.scrip, self.exchange, self.product.value, self.order_id)
 
+    def __eq__(self, other: object):
+        if not isinstance(other, Position):
+            return False
+        if (self.scrip == other.scrip
+            and self.exchange == other.exchange
+            and self.product == other.product
+            and self.order_id == other.order_id):
+            return True
+        return False
 
 @dataclass
 class Position:

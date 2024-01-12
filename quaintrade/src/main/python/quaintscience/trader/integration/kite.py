@@ -1,12 +1,11 @@
 import datetime
-import copy
 import json
 import pytz
 import os
 from threading import Thread
 from functools import cache
 
-from typing import Union
+from typing import Union, Optional
 
 from kiteconnect import KiteConnect, KiteTicker
 import pandas as pd
@@ -46,7 +45,7 @@ class KiteBaseMixin(AuthenticatorMixin):
                 except Exception:
                     print(self.kite.login_url())
                     response = self.listen_to_login_callback()
-                    self.finish_login(response["request_token"])
+                    self.finish_login(response["query_params"]["request_token"][0])
             return None
         print(self.kite.login_url())
         response = self.listen_to_login_callback()
@@ -100,6 +99,41 @@ class KiteBaseMixin(AuthenticatorMixin):
         if isinstance(instruments, dict):
             return result[0]
         return result
+
+
+class KiteStreamingMixin():
+    
+    def __init__(self, *args,
+                 on_message: Optional[callable] = None,
+                 on_connect: Optional[callable] = None,
+                 on_close: Optional[callable] = None,
+                 on_order_update: Optional[callable] = None,
+                 **kwargs):
+        if on_message is None and on_order_update is None:
+            raise ValueError("Streaming cannot work when both on_message and on_orders is None.")
+        self.on_message_callable = on_message
+        self.on_connect_callable = on_connect
+        self.on_close_callable = on_close
+        self.on_order_update_callable = on_order_update
+
+    def start_streamer(self):
+        self.kws = KiteTicker(self.auth_credentials["API_KEY"],
+                              self.auth_state["access_token"])
+        if self.on_message_callable is not None:
+            self.kws.on_ticks = self.on_message_callable
+        if self.on_order_update_callable is not None:
+            self.kws.on_order_update = self.on_order_update_callable
+        if self.on_connect_callable is not None:
+            self.kws.on_connect = self.on_connect_callable
+        if self.on_close_callable is not None:
+            self.kws.on_close = self.on_close_callable
+        self.logger.info("Starting streamer....")
+        self.ticker_thread = Thread(target=self.kws.connect,
+                                    kwargs={"threaded": True})
+        self.ticker_thread.start()
+
+    def on_close(self, ws, code, reason, *args, **kwargs):
+        self.logger.info(f"Ticker Websock closed {code} / {reason}.")
 
 
 class KiteHistoricDataProvider(KiteBaseMixin, HistoricDataProvider):
@@ -156,119 +190,188 @@ class KiteHistoricDataProvider(KiteBaseMixin, HistoricDataProvider):
         return True
 
 
-class KiteBroker(KiteBaseMixin, Broker):
+class KiteBroker(KiteBaseMixin,
+                 Broker,
+                 KiteStreamingMixin):
+
+    ProviderName = "kite"
 
     def __init__(self,
                  *args,
                  **kwargs):
-        super().__init__(*args, **kwargs)
+        self.orders_cache = []
+        self.positions_cache = []
+        Broker.__init__(self, *args, **kwargs)
+        KiteBaseMixin.__init__(self, *args, **kwargs)
+        kwargs["on_order_update"] = self.order_callback
+        KiteStreamingMixin.__init__(self, *args, **kwargs)
 
     # Order management
 
-    def cancel_pending_orders(self):
-        pass
+    def cancel_pending_orders(self, refresh_cache: bool = True):
+        for order in self.get_orders(refresh_cache=refresh_cache):
+            if order.state == OrderState.PENDING:
+                self.cancel_order(order, refresh=False)
+        self.get_orders(refresh_cache=refresh_cache)
 
-    def get_orders_as_table(self):
-        pass
-    
-    def get_positions_as_table(self):
-        pass
+    def cancel_order(self, order: Order, refresh_cache: bool = True) -> Order:
+        self.logger.info(f"Cancelling order with order_id {order.order_id}...")
+        for existing_order in self.get_orders(refresh_cache=refresh_cache):
+            if existing_order.order_id == order.order_id:
+                if existing_order.state == OrderState.PENDING:
+                    self.kite.cancel_order(variety=self.kite.VARIETY_REGULAR,
+                                        order_id=order.order_id)
+                    self.get_orders(refresh=refresh_cache)
+                    storage = self.get_tradebook_storage()
+                    storage.store_order_execution(self.strategy, self.run_name,
+                                                date=self.current_datetime(),
+                                                order=order, event="OrderCancelled")
+                else:
+                    self.logger.info(f"Did not cancel order as it's state is {order.state}")
 
-    def cancel_order(self, order: Order) -> Order:
-        raise NotImplemented(f"Cancel order ({order})")
+    def update_order(self, order: Order, refresh_cache: bool = True) -> Order:
+        self.logger.info(f"Attempting update of order with order_id {order.order_id}...")
+        for existing_order in self.get_orders(refresh_cache=refresh_cache):
+            if existing_order.order_id == order.order_id:
 
-    def update_order(self, order: Order) -> Order:
-        
-        for existing_order in self.get_orders():
-            if (existing_order.order_id == order.order_id
-                and existing_order.state == OrderState.PENDING):
-                self.kite.modify_order(variety=self.kite.VARIETY_REGULAR,
-                                       order_id=order.order_id,
-                                       quantity=order.quantity,
-                                       price=order.price,
-                                       order=)
+                if existing_order.state == OrderState.PENDING:
+                    self.logger.info(f"Found order with order_id {order.order_id} for updation...")
+                    order_id = self.kite.modify_order(variety=self.kite.VARIETY_REGULAR,
+                                                    order_id=order.order_id,
+                                                    quantity=order.quantity,
+                                                    price=order.price,
+                                                    order=order.trigger_price)
+                    order.order_id = order_id
+                    self.get_orders(refresh_cache=refresh_cache)
+                    return order
+            else:
+                self.logger.info(f"Did not update order as order state is {order.state}")
+        self.logger.info(f"Could not find order with order_id {order.order_id} for updation...")
 
-        raise NotImplementedError(f"Update order {order}")
-
-    def place_order(self, order: Order) -> Order:
-        if not self.dry_mode:
-            order_kwargs = {"tradingsymbol": order.scrip,
-                            "exchange": order.exchange,
-                            "transaction_type": order.transaction_type.value,
-                            "quantity": order.quantity,
-                            "variety": self.kite.VARIETY_REGULAR,
-                            "order_type": order.order_type.value,
-                            "product": order.product.value,
-                            "validity": order.validity}
-            order_id = self.kite.place_order()
-            order.order_id = order_id
+    def place_order(self, order: Order, refresh_cache: bool = True) -> Order:
+        order_kwargs = {"tradingsymbol": order.scrip,
+                        "exchange": order.exchange,
+                        "transaction_type": order.transaction_type.value,
+                        "quantity": order.quantity,
+                        "variety": self.kite.VARIETY_REGULAR,
+                        "order_type": order.order_type.value,
+                        "product": order.product.value,
+                        "validity": order.validity}
+        if order.order_type == OrderType.LIMIT:
+            order_kwargs["price"] = order.limit_price
+        if order.order_type == OrderType.SL_MARKET:
+            order_kwargs["trigger_price"] = order.trigger_price
+        order_id = self.kite.place_order(**order_kwargs)
+        order.order_id = order_id
+        self.orders_cache.append(order)
+        self.get_orders(refresh_cache=refresh_cache)
+        self.logger.info(f"Placed order with order_id {order.order_id} for "
+                            f"{order.scrip} / {order.exchange} "
+                            f"qty={order.quantity} @ {order.limit_price} "
+                            f"of type {order.order_type}")
         return order
 
-    def order_callback(self, orders):
-        raise NotImplementedError("Order Callback")
+    def order_callback(self, ws, message):
+        self.logger.info(f"Received order update {message}")
+        self.__update_order_in_cache(message)
+        self.gtt_order_callback()
 
-    def get_positions(self) -> list[Position]:
-        raise NotImplementedError("get_positions")
+    def get_positions(self, refresh_cache: bool = True) -> list[Position]:
+        if refresh_cache:
+            positions = self.kite.positions()
+        else:
+            positions = {"day": [], "net": []}
+        for position in positions["day"]:
+            found_position_in_cache = False
+            for existing_position in self.positions_cache:
+                # print(existing_position, position)
+                if (existing_position.scrip == position["tradingsymbol"]
+                    and existing_position.exchange == position["exchange"]
+                    and existing_position.product.value.upper() == position["product"]):
+                    found_position_in_cache = True
+                    existing_position.quantity = position["quantity"]
+                    existing_position.last_price = position["last_price"]
+                    existing_position.pnl = position["pnl"]
+                    existing_position.average_price = position["average_price"]
+                    existing_position.timestamp = self.current_datetime()
+                    break
+            if not found_position_in_cache:
+                new_position = Position(scrip_id=position["instrument_token"],
+                                        scrip=position["tradingsymbol"],
+                                        exchange=position["exchange"],
+                                        exchange_id=position["exchange"],
+                                        product=TradingProduct(position["product"].lower()),
+                                        last_price=position["last_price"],
+                                        pnl=position["pnl"],
+                                        quantity=position["quantity"],
+                                        timestamp=self.current_datetime(),
+                                        average_price=position["average_price"])
+                self.positions_cache.append(new_position)
+        return self.positions_cache
 
-    def place_another_order_on_entry(self,
-                                     entry_order: Order,
-                                     other_order: Order):
-        raise NotImplementedError("place_another_order_on_entry")
-
-    def get_orders(self):
-        orders = self.kite.orders()
-        result = []
-        for order in orders:
-            result.append(Order(order_id=order["order_id"],
-                                scrip_id=order["instrument_token"],
+    def __update_order_in_cache(self,
+                                order: dict):
+        if order["status"] == "OPEN":
+            order["status"] = OrderState.PENDING
+        elif order["status"] == "COMPLETE":
+            order["status"] = OrderState.COMPLETED
+        else:
+            order["status"] = OrderState(order["status"].lower())
+        found_in_cache = False
+        for cached_order in self.orders_cache:
+            if order["order_id"] == cached_order.order_id:
+                cached_order.quantity = order["quantity"]
+                cached_order.trigger_price = order["trigger_price"]
+                cached_order.limit_price = order["price"]
+                cached_order.filled_quantity = order["filled_quantity"]
+                cached_order.pending_quantity = order["pending_quantity"]
+                cached_order.cancelled_quantity = order["cancelled_quantity"]
+                cached_order.state = order["status"]
+                cached_order.raw_dict = order
+                found_in_cache = True
+                break
+        if not found_in_cache:
+            new_order = Order(order_id=order["order_id"],
                                 exchange_id=order["exchange"],
-                                scrip=order["exchange_symbol"],
+                                scrip=order["tradingsymbol"],
+                                scrip_id=order["instrument_token"],
                                 exchange=order["exchange"],
-                                transaction_type=TransactionType[order["transaction_type"]],
+                                transaction_type=TransactionType(order["transaction_type"].lower()),
                                 raw_dict=order,
-                                timestamp=self.__kite_timestamp_to_datetime(order["order_timestamp"]),
-                                order_type = OrderType[order["order_type"]],
-                                product = TradingProduct[order["product"]],
+                                state=order["status"],
+                                timestamp=order["order_timestamp"],
+                                order_type = OrderType(order["order_type"].lower()),
+                                product = TradingProduct(order["product"].lower()),
                                 quantity = order["quantity"],
                                 trigger_price = order["trigger_price"],
-                                limit_price = order["limit_price"],
+                                limit_price = order["price"],
                                 filled_quantity = order["filled_quantity"],
                                 pending_quantity = order["pending_quantity"],
-                                cancelled_quantity = order["cancelled_quantity"]))
-        return result
+                                cancelled_quantity = order["cancelled_quantity"])
+            self.orders_cache.append(new_order)
+
+    def get_orders(self, refresh_cache=True) -> list[Order]:
+        if refresh_cache:
+            orders = self.kite.orders()
+        else:
+            orders = []
+        for order in orders:
+            self.__update_order_in_cache(order)
+        return self.orders_cache
+
+    def start_order_change_streamer(self):
+        self.start_streamer()
 
 
-class KiteStreamingDataProvider(KiteBaseMixin, StreamingDataProvider):
+class KiteStreamingDataProvider(KiteBaseMixin, StreamingDataProvider, KiteStreamingMixin):
     
+    ProviderName = "kite"
+
     def __init__(self, *args, **kwargs):
         StreamingDataProvider.__init__(self, *args, **kwargs)
         KiteBaseMixin.__init__(self, *args, **kwargs)
-
-    def start(self, instruments: list[str], *args, **kwargs):
-        instruments = self.get_instrument_object(instruments)
-        if isinstance(instruments, dict):
-            instruments = [instruments]
-        self.ticker_instruments = instruments
-
-        self.kws = KiteTicker(self.auth_credentials["API_KEY"], self.auth_state["access_token"])
-
-        self.kws.on_ticks = self.on_message
-        self.kws.on_connect = self.on_connect
-        self.kws.on_close = self.on_close
-        self.logger.info("Starting ticker....")
-        self.ticker_thread = Thread(target=self.kws.connect, kwargs={"threaded": True})
-        self.ticker_thread.start()
-
-    def on_connect(self, ws, response, *args, **kwargs):
-        self.logger.info(f"Ticker Websock connected {response}.")
-        self.logger.info(f"Subscribing to {self.ticker_instruments}")
-        tokens = [instrument["instrument_token"] for instrument in self.ticker_instruments]
-        self.kws.subscribe(tokens)
-        self.kws.set_mode(KiteTicker.MODE_QUOTE, tokens)
-
-    def on_close(self, ws, code, reason, *args, **kwargs):
-        self.logger.info(f"Ticker Websock closed {code} / {reason}.")
-
+        kwargs["on_message"] = self.on_message
+        KiteStreamingMixin.__init__(self, *args, **kwargs)
 
     @cache
     def __get_readable_string(self, instrument_token):
@@ -292,3 +395,19 @@ class KiteStreamingDataProvider(KiteBaseMixin, StreamingDataProvider):
             token = tick["instrument_token"]
             token = self.__get_readable_string(tick["instrument_token"])
             self.on_tick(token, ltp, ltq, ltt, *args, **kwargs)
+
+    def on_connect(self, ws,
+                   response,
+                   *args, **kwargs):
+        self.logger.info(f"Ticker Websock connected {response}.")
+        self.logger.info(f"Subscribing to {self.ticker_instruments}")
+        tokens = [instrument["instrument_token"] for instrument in self.ticker_instruments]
+        self.kws.subscribe(tokens)
+        self.kws.set_mode(KiteTicker.MODE_QUOTE, tokens)
+    
+    def start_ticker(self, instruments: list[str], *args, **kwargs):
+        instruments = self.get_instrument_object(instruments)
+        if isinstance(instruments, dict):
+            instruments = [instruments]
+        self.ticker_instruments = instruments
+        self.start_streamer()

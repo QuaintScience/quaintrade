@@ -167,7 +167,7 @@ class HiekinAshiStrategy(Strategy):
                 self.logger.debug(f"Entering short trade!")
 
             if make_entry:
-                qty = 50000 // window.iloc[-1]["close"]
+                qty = max(self.max_budget // window.iloc[-1]["close"], self.min_quantity)
                 self.logger.debug(f"Taking position!")
                 self.cancel_active_orders(broker=broker)
                 entry_order = self.take_position(scrip=scrip,

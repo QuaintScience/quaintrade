@@ -38,6 +38,8 @@ class Strategy(ABC, LoggerMixin):
                  plottables: Optional[dict] = None,
                  default_tags: Optional[list] = None,
                  context_required: Optional[list[str]] = None,
+                 max_budget: float = 10000,
+                 min_quantity: int = 1,
                  **kwargs):
         
         self.indicator_pipeline = indicator_pipeline
@@ -57,6 +59,8 @@ class Strategy(ABC, LoggerMixin):
         self.plottables = plottables
         self.default_tags = default_tags
         self.context_required = context_required
+        self.min_quantity = min_quantity
+        self.max_budget = max_budget
         super().__init__(*args, **kwargs)
 
     @property
@@ -68,7 +72,7 @@ class Strategy(ABC, LoggerMixin):
         broker.cancel_pending_orders()
         positions = broker.get_positions()
         for position in positions:
-            if position.quantity > 0:
+            if position.quantity > 0 and position.product == TradingProduct.MIS:
                 broker.place_express_order(scrip=position.scrip,
                                            exchange=position.exchange,
                                            quantity=position.quantity,

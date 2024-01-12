@@ -15,18 +15,19 @@ from quaintscience.trader.core.indicator import (DonchainIndicator,
                                                  BreakoutIndicator,
                                                  HeikinAshiIndicator,
                                                  SupportIndicator,
-                                                 SlopeIndicator)
+                                                 SlopeIndicator,
+                                                 IntradayHighLowIndicator)
 
-from quaintscience.trader.core.graphing import backtesting_results_plot
+from quaintscience.trader.core.graphing import plot_backtesting_results
 
 
 class TestIndicators(Unittest):
 
     def customSetUp(self):
-        self.test_data = self.get_historic_data(scrip="NIFTY 50",
+        self.test_data = self.get_historic_data(scrip="NIFTY_50",
                                                 exchange="NSE",
                                                 from_date="20230101",
-                                                to_date="20230107")
+                                                to_date="20230215")
 
     def validate_indicator_output(self,
                                   indicator,
@@ -179,6 +180,19 @@ class TestIndicators(Unittest):
                                                            {"field": "WMA_22_slope", "panel": 1},
                                                            "WMA_22"])
         """
+
+    def test_highlow_indicator(self):
+        indicator = IntradayHighLowIndicator(start_hour=9,
+                                             start_minute=45,
+                                             end_hour=14,
+                                             end_minute=0)
+        result = indicator.compute(self.test_data)
+        self.validate_indicator_output(result, 2, ["start_hour", "start_minute", "end_hour", "end_minute"], result)
+        print(result)
+        plot_backtesting_results(result[0], None, indicator_fields=["period_high_9_45_14_0",
+                                                                    "period_low_9_45_14_0"])
+        
+
 
 if __name__ == "__main__":
     TestIndicators.cli_execution()

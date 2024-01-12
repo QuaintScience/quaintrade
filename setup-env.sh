@@ -1,7 +1,9 @@
 #!/bin/bash
 
+. venv/bin/activate
+
 export QTRADE_PY_UNITTEST_DATA_DIR=$(pwd)/unittest_resources
-export QTRADE_PY_UNITTEST_CACHE_DIR=$(pwd)/data_cache/kite
+export QTRADE_PY_UNITTEST_CACHE_DIR=$(pwd)/data
 
 for package in q*
 do

@@ -56,7 +56,7 @@ def live_ohlc_plot(get_live_ohlc_func: callable,
 
 
 def plot_backtesting_results(df: pd.DataFrame,
-                             events: list[tuple],
+                             events: pd.DataFrame,
                              indicator_fields: list[Union[dict, str]],
                              title: str = "Backtesting Results",
                              make_mpf_style_kwargs: Optional[dict] = None,
@@ -75,25 +75,33 @@ def plot_backtesting_results(df: pd.DataFrame,
         custom_addplots = []
     style = mpf.make_mpf_style(**make_mpf_style_kwargs)
 
+    events_exist = False
     df = copy.deepcopy(df)
+    if events is not None:
+        sell_events_df = copy.deepcopy(events[events["transaction_type"] == TransactionType.SELL])
+        sell_events_df["sell_signals"] = sell_events_df["price"]
+        sell_events_df = sell_events_df[["sell_signals"]]
+        if len(sell_events_df) > 0:
+            events_exist = True
+        df = df.merge(sell_events_df, how='left', left_index=True, right_index=True)
 
-    sell_events_df = copy.deepcopy(events[events["transaction_type"] == TransactionType.SELL])
-    sell_events_df["sell_signals"] = sell_events_df["price"]
-    sell_events_df = sell_events_df[["sell_signals"]]
-    df = df.merge(sell_events_df, how='left', left_index=True, right_index=True)
+        buy_events_df = copy.deepcopy(events[events["transaction_type"] == TransactionType.BUY])
+        buy_events_df["buy_signals"] = buy_events_df["price"]
+        buy_events_df = buy_events_df[["buy_signals"]]
+        if len(buy_events_df):
+            events_exist = True
 
-    buy_events_df = copy.deepcopy(events[events["transaction_type"] == TransactionType.BUY])
-    buy_events_df["buy_signals"] = buy_events_df["price"]
-    buy_events_df = buy_events_df[["buy_signals"]]
-    df = df.merge(buy_events_df, on="date", how='left')
+        df = df.merge(buy_events_df, on="date", how='left')
 
     event_plots = []
-    if len(events) > 0:
-        event_plots.append(mpf.make_addplot(df["sell_signals"], type='scatter', marker=r'$\downarrow$', color='k'))
-        event_plots.append(mpf.make_addplot(df["buy_signals"], type='scatter', marker=r'$\uparrow$', color='k'))
-    event_plots.extend(custom_addplots)
-
+    if events_exist:
+        if events is not None and len(events) > 0:
+            event_plots.append(mpf.make_addplot(df["sell_signals"], type='scatter', marker=r'$\downarrow$', color='k'))
+            event_plots.append(mpf.make_addplot(df["buy_signals"], type='scatter', marker=r'$\uparrow$', color='k'))
+        event_plots.extend(custom_addplots)
+    
     num_panels = 1
+    
     for field in indicator_fields:
         if isinstance(field, str):
             event_plots.append(mpf.make_addplot(df[field]))
@@ -101,18 +109,19 @@ def plot_backtesting_results(df: pd.DataFrame,
             event_plots.append(mpf.make_addplot(df[field.get("field")],
                                                 panel=field.get("panel", 1)))
             num_panels = max(num_panels, field.get("panel", 0) + 1)
-
+    
     kwargs = {"returnfig": True,
               "type": "candle",
               "title": title,
               "style": style,
-              "addplot": event_plots,
               "num_panels": num_panels}
-
+    if len(event_plots) > 0:
+        kwargs["addplot"] = event_plots
     if hlines is not None and len(hlines) > 0:
         kwargs["hlines"] = hlines
 
     kwargs.update(mpf_custom_kwargs)
+    print(kwargs)
     fig, axes = mpf.plot(df,
                          **kwargs)
     mpf.show()

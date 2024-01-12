@@ -480,7 +480,6 @@ class SqliteOHLCStorage(SqliteStorage, OHLCStorageMixin):
             from_date: Union[str, datetime.datetime],
             to_date: Union[str, datetime.datetime],
             conflict_resolution_type: str) -> pd.DataFrame:
-
         cols = ["date", "open", "high", "low",
                 "close", "volume", "oi"]
         return self.get_timestamped_data(scrip, exchange,

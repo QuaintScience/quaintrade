@@ -15,7 +15,7 @@ from ..core.roles import Broker, HistoricDataProvider
 from ..core.util import (default_dataclass_field,
                          get_key_from_scrip_and_exchange,
                          get_scrip_and_exchange_from_key)
-
+from .common import get_instrument_for_provider
 
 
 def nse_commission_func(order: Order, brokerage_percentage: float = 0.03, max_commission: float = 20):
@@ -136,8 +136,9 @@ class PaperBroker(Broker):
             self.logger.info(f"Paper Trader: Loading data for {instrument}")
             scrip = instrument["scrip"]
             exchange = instrument["exchange"]
-            instrument_data = self.data_provider.get_data_as_df(scrip=scrip,
-                                                                exchange=exchange,
+            data_provider_instrument = get_instrument_for_provider(instrument, self.data_provider.__class__)
+            instrument_data = self.data_provider.get_data_as_df(scrip=data_provider_instrument["scrip"],
+                                                                exchange=data_provider_instrument["exchange"],
                                                                 interval=self.interval,
                                                                 from_date=self.historic_context_from,
                                                                 to_date=self.historic_context_to,
@@ -194,35 +195,7 @@ class PaperBroker(Broker):
                    self.order_stats["completed"],
                    self.order_stats["cancelled"]]]
         print(tabulate(status, headers=["Time", "Pending", "Completed", "Cancelled"], tablefmt="double_outline"))
-        
-        printable_orders = []
-        for order in self.orders:
-            if order.state == OrderState.PENDING:
-                printable_orders.append(["R",
-                                         order.order_id[:4],
-                                         order.parent_order_id[:4] if order.parent_order_id is not None else "",
-                                         order.scrip,
-                                         order.exchange,
-                                         order.transaction_type,
-                                         order.quantity,
-                                         order.order_type,
-                                         order.limit_price,
-                                         ", ".join(order.tags)])
-        for from_order, to_order in self.gtt_orders:
-            printable_orders.append(["GTT",
-                                     to_order.order_id[:4],
-                                     from_order.order_id[:4],
-                                     to_order.scrip,
-                                     to_order.exchange,
-                                     to_order.transaction_type,
-                                     to_order.quantity,
-                                     to_order.order_type,
-                                     to_order.limit_price,
-                                     ", ".join(to_order.tags)])
-        headers = ["Typ", "id", "parent", "scrip", "exchange",
-                   "buy/sell", "qty", "order_type", "limit_price", "reason"]
-        print(tabulate(printable_orders, headers=headers, tablefmt="double_outline"))
-        return printable_orders, headers
+        return super().get_orders_as_table()
 
     def __update_positions(self):
         for _, position in self.get_positions().items():
@@ -345,7 +318,8 @@ class PaperBroker(Broker):
                          exchange=None,
                          inside_a_recursion=False):
         # self.logger.debug(f"{self.current_time} entered __process_orders scrip={scrip} exchange={exchange}")
-        for order in self.orders:
+        for order in self.get_orders():
+
             key = get_key_from_scrip_and_exchange(order.scrip, order.exchange)
             order_scrip, order_exchange = get_scrip_and_exchange_from_key(key)
             if scrip is not None and exchange is not None:
@@ -398,19 +372,8 @@ class PaperBroker(Broker):
                     self.cancel_invalid_group_orders()
                 else:
                     self.order_stats["pending"] += 1
-        new_gtt_orders = []
-        gtt_state_changed = False
-        for ii, (entry_order, other_order) in enumerate(self.gtt_orders):
-            if scrip is not None and exchange is not None:
-                if entry_order.scrip != scrip or entry_order.exchange != exchange:
-                    continue
-            if entry_order.state == OrderState.COMPLETED:
-                self.place_order(other_order)
-                # print(other_order)
-                gtt_state_changed = True
-                continue
-            new_gtt_orders.append((entry_order, other_order))
-        self.gtt_orders = new_gtt_orders
+
+        gtt_state_changed = self.gtt_order_callback()
 
         if gtt_state_changed and self.refresh_orders_immediately_on_gtt_state_change:
             self.logger.info(f"{self.current_time} gtt_state_changed")
@@ -422,23 +385,24 @@ class PaperBroker(Broker):
             key = get_key_from_scrip_and_exchange(position.scrip, position.exchange)
             position.last_price = candle = self.data[key].iloc[self.idx[key]]["close"]
             position.pnl = (position.last_price - position.average_price) * position.quantity
-        self.order_callback(self.orders)
+        self.order_callback(self.get_orders())
         orders = []
-        for order in self.orders:
+        for order in self.get_orders():
             if order.state == OrderState.COMPLETED:
                 continue
             orders.append(order)
         self.orders = orders
 
-    def order_callback(self, orders):
+    def order_callback(self, *args, **kwargs):
         self.cancel_invalid_child_orders()
         self.cancel_invalid_group_orders()
 
     # Order streaming / management
-    def get_orders(self) -> list[Order]:
+    def get_orders(self, refresh_cache: bool = True) -> list[Order]:
         return self.orders
 
-    def update_order(self, order: Order) -> Order:
+    def update_order(self, order: Order,
+                     refresh_cache: bool = True) -> Order:
         found = False
         for ii, other_order in enumerate(self.orders):
             if other_order.order_id == order.order_id:
@@ -447,16 +411,10 @@ class PaperBroker(Broker):
         if not found:
             raise KeyError(f"Order {order} not found.")
 
-    def cancel_pending_orders(self):
-        new_orders = []
-        for order in self.orders:
-            if order.state == OrderState.PENDING:
-                continue
-            new_orders.append(order)
-        self.orders = new_orders
-
     def place_order(self,
-                    order: Order) -> Order:
+                    order: Order,
+                    refresh_cache: bool = True) -> Order:
+        self.logger.info(f"PaperTrader placed order {order}")
         self.orders.append(order)
         storage = self.get_tradebook_storage()
         storage.store_order_execution(self.strategy,
@@ -466,11 +424,13 @@ class PaperBroker(Broker):
                                       event="OrderCreated")
         return order
 
-    def cancel_order(self, order: Order) -> Order:
+    def cancel_order(self, order: Order,
+                     refresh_cache: bool = True) -> Order:
         for other_order in self.orders:
             if other_order.order_id == order.order_id:
                 other_order.state = OrderState.CANCELLED
                 self.order_stats["cancelled"] += 1
 
-    def get_positions(self) -> list[Position]:
+    def get_positions(self,
+                      refresh_cache: bool = True) -> list[Position]:
         return self.positions

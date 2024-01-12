@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Union
 import copy
 
+import numpy as np
 import pandas as pd
 import pandas_ta as pd_ta
 import talib
@@ -262,8 +263,8 @@ class PastPeriodHighLowIndicator(Indicator):
         super().__init__(*args, **kwargs)
 
     def compute_impl(self, df: pd.DataFrame,
-                output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                settings: Optional[dict] = None) -> pd.DataFrame:
+                     output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                     settings: Optional[dict] = None) -> pd.DataFrame:
 
         if output_column_name is None or len(output_column_name) == 0:
             x = ["previous_high", "previous_low"]
@@ -276,6 +277,62 @@ class PastPeriodHighLowIndicator(Indicator):
         pwl = df["low"].resample(settings["period_interval"]).apply("min").shift(settings["shift"],
                                                                                  freq=settings["period_interval"])
         df[output_column_name["previous_low"]] = pwl.resample(settings["data_interval"]).ffill().ffill()
+        return df, output_column_name, settings
+
+
+class IntradayHighLowIndicator(Indicator):
+
+    def __init__(self, *args,
+                 start_hour: int,
+                 start_minute: int,
+                 end_hour: int,
+                 end_minute: int,
+                 **kwargs):
+        self.start_hour = start_hour
+        self.end_hour = end_hour
+        self.start_minute = start_minute
+        self.end_minute = end_minute
+        kwargs["setting_attrs"] = ["start_hour",
+                                   "start_minute",
+                                   "end_hour",
+                                   "end_minute"]
+        super().__init__(*args, **kwargs)
+
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                     settings: Optional[dict] = None) -> pd.DataFrame:
+
+        if output_column_name is None or len(output_column_name) == 0:
+            output_column_name = {"period_high": f"period_high_{settings['start_hour']}_{settings['start_minute']}_{settings['end_hour']}_{settings['end_minute']}",
+                                  "period_low": f"period_low_{settings['start_hour']}_{settings['start_minute']}_{settings['end_hour']}_{settings['end_minute']}"}
+
+        df[output_column_name["period_high"]] = np.nan
+        df[output_column_name["period_low"]] = np.nan
+
+        current_high = np.nan
+        current_low = np.nan
+        
+        for row_id, row in df.iterrows():
+            if (row_id.hour < settings["start_hour"]
+                or (row_id.hour == settings["start_hour"] and row_id.minute < settings["start_minute"])):
+                current_high = np.nan
+                current_low = np.nan
+                continue
+            if (((row_id.hour == settings["start_hour"] and row_id.minute >= settings["start_minute"])
+                 or row_id.hour > settings["start_hour"])
+                 and (row_id.hour < settings["end_hour"] or
+                      (row_id.hour == settings["end_hour"] and row_id.minute <= settings["end_hour"]))):
+                if np.isnan(current_high):
+                    current_high = row["high"]
+                else:
+                    current_high = max(current_high, row["high"])
+                if np.isnan(current_low):
+                    current_low = row["low"]
+                else:
+                    current_low = min(current_low, row["low"])
+            df.loc[row_id, output_column_name["period_high"]] = current_high
+            df.loc[row_id, output_column_name["period_low"]] = current_low
+
         return df, output_column_name, settings
 
 

@@ -16,6 +16,7 @@ from .strategy import Strategy
 from .graphing import plot_backtesting_results
 
 from ..integration.paper import PaperBroker
+from ..integration.common import get_instruments_for_provider, get_instrument_for_provider
 
 
 class Bot(LoggerMixin):
@@ -168,17 +169,20 @@ class Bot(LoggerMixin):
                  to_date: Union[str, datetime.datetime],
                  interval: Optional[str] = None,
                  window_size: int = 5,
-                 plot_results: bool = False):
+                 plot_results: bool = False,
+                 clear_tradebook_for_scrip_and_exchange: bool = False):
+
         self.broker.strategy = self.strategy.strategy_name
         self.broker.run_name = "backtest"
-        self.broker.clear_tradebooks(scrip, exchange)
+        if clear_tradebook_for_scrip_and_exchange:
+            self.broker.clear_tradebooks(scrip, exchange)
         if not isinstance(self.broker, PaperBroker):
             raise TypeError(f"Cannot backtest with Broker of type {type(self.broker)}; Need PaperBroker")
-
-
-
-        context, data = self.__get_context_data(scrip=scrip,
-                                                exchange=exchange,
+        data_provider_instrument = get_instrument_for_provider({"scrip": scrip,
+                                                                "exchange": exchange},
+                                                                self.data_provider.__class__)
+        context, data = self.__get_context_data(scrip=data_provider_instrument["scrip"],
+                                                exchange=data_provider_instrument["exchange"],
                                                 from_date=from_date,
                                                 to_date=to_date,
                                                 interval=interval,
@@ -212,6 +216,7 @@ class Bot(LoggerMixin):
                                                       to_date=to_date)
             positions = positions[(positions["scrip"] == scrip) & (positions["exchange"] == exchange)]
             data = data.merge(positions, on="date", how='left')
+            data["pnl"].fillna(0., inplace=True)
             self.strategy.plottables["indicator_fields"].append({"field": "pnl", "panel": 1})
             events = storage.get_events(self.broker.strategy, self.broker.run_name)
             events = events[(events["scrip"] == scrip) & (events["exchange"] == exchange)]
@@ -255,7 +260,9 @@ class Bot(LoggerMixin):
         from_date = to_date - datetime.timedelta(days=self.live_data_context_size)
         from_date = from_date.replace(hour=0, minute=0, second=0, microsecond=0)
         print(f"Live trade task {from_date} {to_date}")
-        for instrument in instruments:
+        data_provider_instruments = get_instruments_for_provider(instruments,
+                                                                 self.data_provider.__class__)
+        for instrument in data_provider_instruments:
             scrip, exchange = instrument["scrip"], instrument["exchange"]
             context, data = self.__get_context_data(scrip=scrip,
                                                     exchange=exchange,
@@ -271,6 +278,7 @@ class Bot(LoggerMixin):
              instruments: list[dict[str, str]],
              interval: Optional[str] = None):
 
+        self.do_live_trade_task(instruments=instruments, interval=interval)
         for dt in self.get_trading_timeslots(interval):
                 schedule.every().day.at(dt.strftime("%H:%M:%S")).do(partial(self.do_live_trade_task,
                                                                          instruments=instruments,
