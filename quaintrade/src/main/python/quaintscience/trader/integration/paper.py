@@ -44,9 +44,15 @@ def nse_commission_func(order: Order, brokerage_percentage: float = 0.03, max_co
     stamp_charges = round(stamp_charges, 2)
     gst = round(gst, 2)
     
-    print(f"Brokerage: {brokerage} | STT: {stt} | TransactionCharges: {transaction_charges} | SEBICharges: {sebi_charges} | Stamp: {stamp_charges} | GST: {gst}")
-    return round(brokerage + stt + transaction_charges + sebi_charges + stamp_charges + gst, 2)
-    #return 0
+    total = round(brokerage + stt + transaction_charges + sebi_charges + stamp_charges + gst, 2)
+    print(f"Brokerage: {brokerage} "
+          f"| STT: {stt} "
+          f"| TransactionCharges: {transaction_charges} "
+          f"| SEBICharges: {sebi_charges} "
+          f"| Stamp: {stamp_charges} "
+          f"| GST: {gst} "
+          f"| Total : {total}")
+    return total
 
 
 @dataclass(kw_only=True)
@@ -67,6 +73,8 @@ class PaperPosition(Position):
 
 
 class PaperBroker(Broker):
+
+    ProviderName = "paper"
 
     def __init__(self,
                  *args,
@@ -180,11 +188,6 @@ class PaperBroker(Broker):
 
                 self.__update_positions()
 
-                total_pnl = 0
-                for value in self.positions.values():
-                    total_pnl += value.pnl
-                self.pnl_history.append([self.current_datetime(), total_pnl])
-
     def get_orders_as_table(self):
         status = [[self.current_time,
                    self.order_stats["pending"],
@@ -222,7 +225,7 @@ class PaperBroker(Broker):
         return printable_orders, headers
 
     def __update_positions(self):
-        for _, position in self.positions.items():
+        for _, position in self.get_positions().items():
             money_spent = position.stats.get("money_spent", 0.)
             cash_flow = position.stats.get("cash_flow", 0.)
             net_quantity = position.stats.get("net_quantity", 0.)
@@ -231,6 +234,12 @@ class PaperBroker(Broker):
             key = get_key_from_scrip_and_exchange(position.scrip, position.exchange)
             #print(cash_flow, position.quantity_and_price_history)
             position.pnl = cash_flow + (net_quantity * self.data[key].iloc[self.idx[key]]["close"]) - position.charges
+
+            storage = self.get_tradebook_storage()
+            storage.store_position_state(strategy=self.strategy,
+                                         run_name=self.run_name,
+                                         date=self.current_datetime(),
+                                         position=position)
 
     def __update_position_stats(self, position, price, quantity, charges, transaction_type):
         if transaction_type == TransactionType.SELL:
@@ -254,16 +263,12 @@ class PaperBroker(Broker):
         position.charges += charges
         position.pnl = cash_flow + (net_quantity * self.data[key].iloc[self.idx[key]]["close"]) - position.charges
 
-    def get_pnl_history_as_table(self):
-        print(tabulate(self.pnl_history))
-        return self.pnl_history
-
     def get_positions_as_table(self):
         # self.logger.debug(f"{self.current_time} entered __refresh_positions")
         #self.__update_positions()
         printable_positions = []
         # print(self.positions)
-        for _, position in self.positions.items():
+        for _, position in self.get_positions().items():
             key = get_key_from_scrip_and_exchange(position.scrip, position.exchange)
             printable_positions.append([self.current_time,
                                         position.scrip,
@@ -291,7 +296,7 @@ class PaperBroker(Broker):
         
         self.logger.info(f"Order {order.transaction_type.value} {order.order_id[:4]}/{order.scrip}/"
                          f"{order.exchange}/{order.order_type.value} [tags={order.tags}] @ {order.price} x {order.quantity} executed.")
-
+        """
         self.events.append([self.current_time,
                             {"scrip": order.scrip,
                              "exchange": order.exchange,
@@ -299,6 +304,18 @@ class PaperBroker(Broker):
                              "quantity": order.quantity,
                              "price": price,
                              "event_type": ",".join(order.tags)}])
+        """
+        storage = self.get_tradebook_storage()
+        storage.store_event(strategy=self.strategy,
+                            run_name=self.run_name,
+                            scrip=order.scrip,
+                            exchange=order.exchange,
+                            date=self.current_datetime(),
+                            quantity=order.quantity,
+                            price=price,
+                            event_type=",".join(order.tags),
+                            transaction_type=order.transaction_type)
+
         # self.logger.info(self.events)
         if self.commission_func is not None:
             charges = self.commission_func(order)
@@ -322,6 +339,7 @@ class PaperBroker(Broker):
         else:
             position.quantity += order.quantity
         self.__update_position_stats(position, price, order.quantity, charges, order.transaction_type)
+
     def __process_orders(self,
                          scrip=None,
                          exchange=None,
@@ -345,7 +363,7 @@ class PaperBroker(Broker):
                             else:
                                 order.order_type = OrderType.MARKET
                     else:
-                        print(candle["low"], order.trigger_price, order.limit_price)
+                        # print(candle["low"], order.trigger_price, order.limit_price)
                         if candle["low"] <= order.trigger_price:
                             if order.order_type == OrderType.SL_LIMIT:
                                 self.logger.info(f"{order.order_id[:4]} Became LIMIT FROM SL_LIMIT")
@@ -387,8 +405,8 @@ class PaperBroker(Broker):
                 if entry_order.scrip != scrip or entry_order.exchange != exchange:
                     continue
             if entry_order.state == OrderState.COMPLETED:
-                self.orders.append(other_order)
-                print(other_order)
+                self.place_order(other_order)
+                # print(other_order)
                 gtt_state_changed = True
                 continue
             new_gtt_orders.append((entry_order, other_order))
@@ -440,6 +458,12 @@ class PaperBroker(Broker):
     def place_order(self,
                     order: Order) -> Order:
         self.orders.append(order)
+        storage = self.get_tradebook_storage()
+        storage.store_order_execution(self.strategy,
+                                      self.run_name,
+                                      date=self.current_datetime(),
+                                      order=order,
+                                      event="OrderCreated")
         return order
 
     def cancel_order(self, order: Order) -> Order:

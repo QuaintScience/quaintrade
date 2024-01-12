@@ -32,6 +32,7 @@ class Bot(LoggerMixin):
                  live_trading_market_start_minute: int = 15,
                  live_trading_market_end_hour: int = 15,
                  live_trading_market_end_minute: int = 30,
+                 backtesting_print_tables: bool = True,
                  **kwargs):
         super().__init__(*args, **kwargs)
         self.broker = broker
@@ -44,6 +45,7 @@ class Bot(LoggerMixin):
         self.live_trading_market_end_hour = live_trading_market_end_hour
         self.live_trading_market_start_minute = live_trading_market_start_minute
         self.live_trading_market_end_minute = live_trading_market_end_minute
+        self.backtesting_print_tables = backtesting_print_tables
         self.live_data_cache = {}
 
     def do(self,
@@ -167,7 +169,9 @@ class Bot(LoggerMixin):
                  interval: Optional[str] = None,
                  window_size: int = 5,
                  plot_results: bool = False):
-        
+        self.broker.strategy = self.strategy.strategy_name
+        self.broker.run_name = "backtest"
+        self.broker.clear_tradebooks(scrip, exchange)
         if not isinstance(self.broker, PaperBroker):
             raise TypeError(f"Cannot backtest with Broker of type {type(self.broker)}; Need PaperBroker")
 
@@ -192,19 +196,26 @@ class Bot(LoggerMixin):
 
             this_context = self.pick_relevant_context(context, now_tick)
             self.do(window=window, context=this_context, scrip=scrip, exchange=exchange)
+            if self.backtesting_print_tables:
+                self.logger.info("--------------Tables After Strategy Computation Start-------------")
+                self.broker.get_orders_as_table()
+                self.broker.get_positions_as_table()
+                self.logger.info("--------------Tables After Strategy Computation End-------------")
 
-            self.logger.info("--------------Tables After Strategy Computation Start-------------")
-            self.broker.get_orders_as_table()
-            self.broker.get_positions_as_table()
-            self.logger.info("--------------Tables After Strategy Computation End-------------")
-            
+        self.broker.get_tradebook_storage().commit()
+
         if plot_results:
-            pnl_history = self.broker.get_pnl_history_as_table()
-            pnl_history = pd.DataFrame(pnl_history)
-            pnl_history = pnl_history.set_index(pnl_history.columns[0])
-            data["pnl_history"] = pnl_history[pnl_history.columns[0]]
-            self.strategy.plottables["indicator_fields"].append({"field": "pnl_history", "panel": 1})
-            plot_backtesting_results(data, events=self.broker.events,
+            storage = self.broker.get_tradebook_storage()
+            positions = storage.get_positions_for_run(self.broker.strategy,
+                                                      self.broker.run_name,
+                                                      from_date=from_date,
+                                                      to_date=to_date)
+            positions = positions[(positions["scrip"] == scrip) & (positions["exchange"] == exchange)]
+            data = data.merge(positions, on="date", how='left')
+            self.strategy.plottables["indicator_fields"].append({"field": "pnl", "panel": 1})
+            events = storage.get_events(self.broker.strategy, self.broker.run_name)
+            events = events[(events["scrip"] == scrip) & (events["exchange"] == exchange)]
+            plot_backtesting_results(data, events=events,
                                      indicator_fields=self.strategy.plottables["indicator_fields"])
 
     def get_trading_timeslots(self, interval):
@@ -238,6 +249,8 @@ class Bot(LoggerMixin):
         print(tabulate([[str(x.next_run)] for x in all_jobs]), flush=True)
 
     def do_live_trade_task(self, instruments: list[dict[str, str]], interval: str):
+        self.broker.strategy = self.strategy.strategy_name
+        self.broker.run_name = "backtest"
         to_date = datetime.datetime.now().replace(hour=23, minute=59, second=0, microsecond=0)
         from_date = to_date - datetime.timedelta(days=self.live_data_context_size)
         from_date = from_date.replace(hour=0, minute=0, second=0, microsecond=0)

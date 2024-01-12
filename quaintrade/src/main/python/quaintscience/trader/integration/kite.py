@@ -14,7 +14,7 @@ import datetime
 import time
 import traceback
 
-from ..core.ds import Order, OrderType, TradingProduct, TransactionType, Position, OHLCStorageType
+from ..core.ds import Order, OrderType, TradingProduct, TransactionType, Position, OHLCStorageType, OrderState
 from ..core.roles import HistoricDataProvider, AuthenticatorMixin, Broker, StreamingDataProvider
 from ..core.util import today_timestamp, hash_dict, datestring_to_datetime, get_key_from_scrip_and_exchange
 
@@ -178,18 +178,29 @@ class KiteBroker(KiteBaseMixin, Broker):
         raise NotImplemented(f"Cancel order ({order})")
 
     def update_order(self, order: Order) -> Order:
+        
+        for existing_order in self.get_orders():
+            if (existing_order.order_id == order.order_id
+                and existing_order.state == OrderState.PENDING):
+                self.kite.modify_order(variety=self.kite.VARIETY_REGULAR,
+                                       order_id=order.order_id,
+                                       quantity=order.quantity,
+                                       price=order.price,
+                                       order=)
+
         raise NotImplementedError(f"Update order {order}")
 
     def place_order(self, order: Order) -> Order:
         if not self.dry_mode:
-            order_id = self.kite.place_order(tradingsymbol=order.scrip,
-                                            exchange=order.exchange,
-                                            transaction_type=order.transaction_type.value,
-                                            quantity=order.quantity,
-                                            variety=self.kite.VARIETY_REGULAR,
-                                            order_type=order.order_type.value,
-                                            product=order.product.value,
-                                            validity=order.validity)
+            order_kwargs = {"tradingsymbol": order.scrip,
+                            "exchange": order.exchange,
+                            "transaction_type": order.transaction_type.value,
+                            "quantity": order.quantity,
+                            "variety": self.kite.VARIETY_REGULAR,
+                            "order_type": order.order_type.value,
+                            "product": order.product.value,
+                            "validity": order.validity}
+            order_id = self.kite.place_order()
             order.order_id = order_id
         return order
 

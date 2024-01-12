@@ -57,8 +57,11 @@ class Strategy(ABC, LoggerMixin):
         self.plottables = plottables
         self.default_tags = default_tags
         self.context_required = context_required
-
         super().__init__(*args, **kwargs)
+
+    @property
+    def strategy_name(self):
+        return f"{self.__class__.__name__}"
 
     def perform_squareoff(self, broker: Broker):
 
@@ -71,7 +74,9 @@ class Strategy(ABC, LoggerMixin):
                                            quantity=position.quantity,
                                            transaction_type=TransactionType.SELL,
                                            order_type=OrderType.MARKET,
-                                           tags=["squareoff_order"])
+                                           tags=["squareoff_order"],
+                                           strategy=self.strategy_name,
+                                           run_name=broker.run_name)
                 self.logger.info(f"Squared off {position.quantity} in {position.scrip} with SELL")
             elif position.quantity < 0:
                 broker.place_express_order(scrip=position.scrip,
@@ -79,7 +84,9 @@ class Strategy(ABC, LoggerMixin):
                                            quantity=-position.quantity,
                                            transaction_type=TransactionType.BUY,
                                            order_type=OrderType.MARKET,
-                                           tags=["squareoff_order"])
+                                           tags=["squareoff_order"],
+                                           strategy=self.strategy_name,
+                                           run_name=broker.run_name)
                 self.logger.info(f"Squared off {position.quantity} in {position.scrip} with BUY")
         broker.clear_gtt_orders()
 
@@ -157,13 +164,6 @@ class Strategy(ABC, LoggerMixin):
             else:
                 transaction_type = TransactionType.SELL
 
-            order_template = partial(broker.create_express_order,
-                                     scrip=scrip,
-                                     exchange=exchange,
-                                     quantity=quantity,
-                                     product=product,
-                                     group_id=group_id,
-                                     parent_order_id=parent_id)
             limit_order_type = OrderType.SL_LIMIT if not use_sl_market_order else OrderType.SL_MARKET
             order = order_template(transaction_type=transaction_type,
                                    order_type=limit_order_type,

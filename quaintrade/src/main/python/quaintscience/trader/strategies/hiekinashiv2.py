@@ -57,7 +57,6 @@ class HiekinAshiStrategy(Strategy):
         non_trading_timeslots.extend(Strategy.NON_TRADING_AFTERNOON)
         kwargs["non_trading_timeslots"] = non_trading_timeslots
         kwargs["context_required"] = ["30min", "1h"]
-        self.current_run = None
 
         self.target_amt = 3
 
@@ -67,14 +66,15 @@ class HiekinAshiStrategy(Strategy):
         self.sl_factor = 2
         self.target_factor = 2.5
         """
-        
+
         self.sl_factor = 2
         self.target_factor = 3.5
-        
+
         """
         self.sl_factor = 3
         self.target_factor = 3
         """
+
         print(args, kwargs)
         super().__init__(*args, **kwargs)
 
@@ -103,24 +103,6 @@ class HiekinAshiStrategy(Strategy):
             return window.iloc[-1]["low"] - self.sl_factor * window.iloc[-1][f"ATR_{self.atr_period}"]
         else:
             return window.iloc[-1]["high"] + self.sl_factor * window.iloc[-1][f"ATR_{self.atr_period}"]
-        
-        
-
-
-    def update_stoplosses(self, window):
-        for order in self.trade_manager.get_orders():
-            if (order.state == OrderState.PENDING
-                and "hiekinashi_long" in order.tags
-                and "sl_order" in order.tags):
-               order.limit_price = window.iloc[-1]["low"] - self.stoploss_threshold
-               self.trigger_price = window.iloc[-1]["low"] - self.stoploss_threshold
-               self.trade_manager.update_order(order)
-            if (order.state == OrderState.PENDING
-                and "hiekinashi_short" in order.tags
-                and "sl_order" in order.tags):
-               order.limit_price = window.iloc[-1]["high"] + self.stoploss_threshold
-               self.trigger_price = window.iloc[-1]["high"] + self.stoploss_threshold
-               self.trade_manager.update_order(order)
 
     def cancel_active_orders(self, broker: Broker):
         for order in broker.get_orders():
@@ -128,8 +110,15 @@ class HiekinAshiStrategy(Strategy):
                 and ("hiekinashi_long" in order.tags
                      or "hiekinashi_short" in order.tags)):
                 broker.cancel_order(order)
+                storage = broker.get_tradebook_storage()
+                storage.store_order_execution(strategy=self.strategy_name,
+                                              run_name=broker.run_name,
+                                              date=broker.current_datetime(),
+                                              order=order,
+                                              event="OrderCancelled")
+
         self.perform_squareoff(broker=broker)
-    
+
     def get_current_run(self, broker: Broker):
         for order in broker.get_orders():
             if (order.state == OrderState.PENDING
@@ -156,54 +145,54 @@ class HiekinAshiStrategy(Strategy):
                          f" L={window.iloc[-1]['low']}"
                          f" C={window.iloc[-1]['close']}"
                          f" {' '.join(colvals)}")
-        self.current_run = self.get_current_run(broker)
-        self.logger.info(f"Current Run: {self.current_run}")
+        current_run = self.get_current_run(broker)
+        self.logger.info(f"Current Run: {current_run}")
         if self.can_trade(window, context):
             make_entry = False
             if (((window.iloc[-1]["ha_long_trend"] == 1.0 and window.iloc[-2]["ha_long_trend"] != 1.0)
-                 or (window.iloc[-1]["ha_long_trend"] == 1.0 and self.current_run is None))
+                 or (window.iloc[-1]["ha_long_trend"] == 1.0 and current_run is None))
                 #and context["1d"].iloc[-1]["ha_trending_green"] == 1.0
                 and context["1h"].iloc[-1]["ha_trending_green"] == 1.0
-                and self.current_run != TradeType.LONG):
-                self.current_run = TradeType.LONG
+                and current_run != TradeType.LONG):
+                current_run = TradeType.LONG
                 make_entry = True
                 self.logger.debug(f"Entering long trade!")
             if ((window.iloc[-1]["ha_short_trend"] == 1.0 and window.iloc[-2]["ha_short_trend"] != 1.0
-                 or (window.iloc[-1]["ha_short_trend"] == 1.0 and self.current_run is None))
+                 or (window.iloc[-1]["ha_short_trend"] == 1.0 and current_run is None))
                 #and context["1d"].iloc[-1]["ha_trending_red"] == 1.0
                 and context["1h"].iloc[-1]["ha_trending_red"] == 1.0
-                and self.current_run != TradeType.SHORT):
-                self.current_run = TradeType.SHORT
+                and current_run != TradeType.SHORT):
+                current_run = TradeType.SHORT
                 make_entry = True
                 self.logger.debug(f"Entering short trade!")
 
             if make_entry:
-                qty = 10
+                qty = 50000 // window.iloc[-1]["close"]
                 self.logger.debug(f"Taking position!")
                 self.cancel_active_orders(broker=broker)
                 entry_order = self.take_position(scrip=scrip,
                                                  exchange=exchange,
                                                  broker=broker,
                                                  position_type=PositionType.ENTRY,
-                                                 trade_type=self.current_run,
-                                                 price=self.get_entry(window, self.current_run),
+                                                 trade_type=current_run,
+                                                 price=self.get_entry(window, current_run),
                                                  quantity=qty,
-                                                 tags=[f"hiekinashi_{self.current_run.value}"])
+                                                 tags=[f"hiekinashi_{current_run.value}"])
                 self.take_position(scrip=scrip,
                                    exchange=exchange,
                                    broker=broker,
                                    position_type=PositionType.STOPLOSS,
-                                   trade_type=self.current_run,
-                                   price=self.get_stoploss(window, context, self.current_run),
+                                   trade_type=current_run,
+                                   price=self.get_stoploss(window, context, current_run),
                                    quantity=qty,
-                                   tags=[f"hiekinashi_{self.current_run.value}"],
+                                   tags=[f"hiekinashi_{current_run.value}"],
                                    parent_order=entry_order)
                 self.take_position(scrip=scrip,
                                    exchange=exchange,
                                    broker=broker,
                                    position_type=PositionType.TARGET,
-                                   trade_type=self.current_run,
-                                   price=self.get_target(window, context, self.current_run),
+                                   trade_type=current_run,
+                                   price=self.get_target(window, context, current_run),
                                    quantity=qty,
-                                   tags=[f"hiekinashi_{self.current_run.value}"],
+                                   tags=[f"hiekinashi_{current_run.value}"],
                                    parent_order=entry_order)

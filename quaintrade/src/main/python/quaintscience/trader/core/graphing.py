@@ -76,22 +76,16 @@ def plot_backtesting_results(df: pd.DataFrame,
     style = mpf.make_mpf_style(**make_mpf_style_kwargs)
 
     df = copy.deepcopy(df)
-    df["sell_signals"] = np.nan
-    df["buy_signals"] = np.nan
-    sell_signal_timestamps = [event[0]
-                              for event in events
-                              if event[1]["transaction_type"] == TransactionType.SELL]
-    sell_price = [event[1]["price"]
-                  for event in events
-                  if event[1]["transaction_type"] == TransactionType.SELL]
-    df.loc[sell_signal_timestamps, "sell_signals"] = sell_price
-    buy_signal_timestamps = [event[0]
-                              for event in events
-                              if event[1]["transaction_type"] == TransactionType.BUY]
-    buy_price = [event[1]["price"]
-                 for event in events
-                 if event[1]["transaction_type"] == TransactionType.BUY]
-    df.loc[buy_signal_timestamps, "buy_signals"] = buy_price
+
+    sell_events_df = copy.deepcopy(events[events["transaction_type"] == TransactionType.SELL])
+    sell_events_df["sell_signals"] = sell_events_df["price"]
+    sell_events_df = sell_events_df[["sell_signals"]]
+    df = df.merge(sell_events_df, how='left', left_index=True, right_index=True)
+
+    buy_events_df = copy.deepcopy(events[events["transaction_type"] == TransactionType.BUY])
+    buy_events_df["buy_signals"] = buy_events_df["price"]
+    buy_events_df = buy_events_df[["buy_signals"]]
+    df = df.merge(buy_events_df, on="date", how='left')
 
     event_plots = []
     if len(events) > 0:
@@ -116,7 +110,7 @@ def plot_backtesting_results(df: pd.DataFrame,
               "num_panels": num_panels}
 
     if hlines is not None and len(hlines) > 0:
-        kwargs["hlines"] = hlines_dct
+        kwargs["hlines"] = hlines
 
     kwargs.update(mpf_custom_kwargs)
     fig, axes = mpf.plot(df,

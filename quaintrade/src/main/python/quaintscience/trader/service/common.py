@@ -7,7 +7,7 @@ import configargparse
 from ..core.logging import LoggerMixin
 from ..core.roles import DataProvider, AuthenticatorMixin, Broker
 from ..core.reflection import dynamically_load_class
-from ..core.persistence import OHLCStorage
+from ..core.persistence import OHLCStorageMixin
 from ..core.bot import Bot
 from ..core.strategy import Strategy
 
@@ -64,7 +64,7 @@ class DataProviderService(Service):
                  data_provider_login: bool = False,
                  data_provider_init: bool = False,
                  instruments: Union[str, list]=None,
-                 StorageClass: Optional[Union[str, Type[OHLCStorage]]] == None,
+                 StorageClass: Optional[Union[str, Type[OHLCStorageMixin]]] == None,
                  data_provider_auth_credentials: Optional[dict] = None,
                  data_provider_auth_cache_filepath: Optional[str] = None,
                  data_provider_reset_auth_cache: Optional[bool] = False,
@@ -118,6 +118,7 @@ class BrokerService(Service):
 
     def __init__(self,
                  BrokerClass: Union[Type[Broker], str],
+                 broker_audit_records_path: str,
                  *args,
                  broker_login: bool = False,
                  broker_init: bool = False,
@@ -125,12 +126,14 @@ class BrokerService(Service):
                  broker_auth_cache_filepath: Optional[str] = None,
                  broker_reset_auth_cache: Optional[bool] = False,
                  broker_custom_kwargs: Optional[dict] = None,
+                 broker_thread_id: int = 1,
                  **kwargs):
         Service.__init__(self, *args, **kwargs)
         
         if isinstance(BrokerClass, str):
             BrokerClass = dynamically_load_class(BrokerClass)
-        broker_kwargs = {}
+        broker_kwargs = {"audit_records_path": broker_audit_records_path,
+                         "thread_id": broker_thread_id}
 
         if issubclass(BrokerClass, AuthenticatorMixin):
             broker_kwargs["auth_credentials"] = broker_auth_credentials
@@ -154,6 +157,8 @@ class BrokerService(Service):
         p.add('--broker_class', dest="BrokerClass", help="Broker Class", env_var="BROKER_CLASS")
         p.add('--broker_login', help="Broker Login needed", env_var="BROKER_LOGIN_NEEDED", action="store_true")
         p.add('--broker_init', help="Do broker init", env_var="BROKER_INIT_NEEDED", action="store_true")
+        p.add('--broker_thread_id', help="Thread ID of broker (To store separate tradebooks)", env_var="BROKER_THREAD_ID", default=1, type=int)
+        p.add('--broker_audit_records_path', help="Path to store broker audit records", env_var="BROKER_AUDIT_RECORDS_PATH")
         p.add('--broker_reset_auth_cache', help="Reset broker auth cache", env_var="BROKER_RESET_AUTH_CACHE", action="store_true")
         p.add('--broker_auth_credentials', help="Broker auth Credentials", env_var="BROKER_AUTH_CREDENTIALS", type=yaml.safe_load)
         p.add('--broker_auth_cache_filepath', help="Broker auth credentials cache filepath", env_var="BROKER_AUTH_CACHE_FILEPATH")
@@ -165,6 +170,7 @@ class BotService(DataProviderService, BrokerService):
                  StrategyClass: Union[str, Type[Strategy]],
                  *args,
                  bot_live_data_context_size: int = 60,
+                 bot_backtesting_print_tables: bool = False,
                  bot_online_mode: bool = False,
                  strategy_kwargs: Optional[dict] = None,
                  bot_custom_kwargs: Optional[dict] = None,
@@ -186,7 +192,8 @@ class BotService(DataProviderService, BrokerService):
                      "strategy": self.strategy,
                      "data_provider": self.data_provider,
                      "live_data_context_size": bot_live_data_context_size,
-                     "online_mode": bot_online_mode}
+                     "online_mode": bot_online_mode,
+                     "backtesting_print_tables": bot_backtesting_print_tables}
         if bot_custom_kwargs is None:
             bot_custom_kwargs = {}
         bot_kwargs.update(bot_custom_kwargs)
@@ -198,6 +205,7 @@ class BotService(DataProviderService, BrokerService):
         DataProviderService.enrich_arg_parser(p)
         p.add("--strategy_class", help="strategy to use", env_var="STRATEGY_CLASS", dest="StrategyClass")
         p.add("--bot_live_data_context_size", type=int, help="Live trading context size", env_var="BOT_LIVE_DATA_CONTEXT_SIZE")
+        p.add("--bot_backtesting_print_tables", action="store_true", help="Print tables for every tick in backtesting", env_var="BOT_BACKTESTING_PRINT_TABLES")
         p.add("--bot_online_mode", action="store_true", help="Run bot in online mode (get data during live trading)", env_var="BOT_ONLINE_MODE")
         p.add('--strategy_kwargs', help="kwargs to instantiate the strategy", env_var="STRATEGY_KWARGS", type=yaml.safe_load)
         p.add('--bot_kwargs', help="kwargs to instantiate the bot", env_var="BOT_KWARGS", type=yaml.safe_load)

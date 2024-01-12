@@ -6,9 +6,6 @@ import copy
 import uuid
 import re
 
-import sqlalchemy
-import pandas as pd
-
 
 def crossunder(df, col1, col2):
     if df.iloc[-2][col1] > df.iloc[-2][col2] and df.iloc[-1][col1] <= df.iloc[-1][col2]:
@@ -91,13 +88,16 @@ def resample_candle_data(data, interval):
     data.dropna(inplace=True)
     return data
 
+def sanitize(s: str):
+    pattern = re.compile(r"[: \-]")
+    return re.sub(pattern, "_", s)
+
 
 def get_key_from_scrip_and_exchange(scrip: str,
                                     exchange: str):
-        pattern = re.compile(r"[: \-]")
-        scrip = re.sub(pattern, "_", scrip)
-        exchange = re.sub(pattern, "_", exchange)
-        return f'{scrip.replace(":", " _").replace(" ", "_")}__{exchange.replace(":", "_").replace(" ", "_")}'
+        scrip = sanitize(scrip)
+        exchange = sanitize(exchange)
+        return f'{scrip}__{exchange}'
 
 def get_scrip_and_exchange_from_key(key: str):
     if ":" in key:

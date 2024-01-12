@@ -21,8 +21,11 @@ from .ds import (Order,
                        OrderType,
                        OrderState,
                        OHLCStorageType)
-from .util import resample_candle_data, get_scrip_and_exchange_from_key
-from .persistence import SqliteOHLCStorage, OHLCStorage
+from .util import resample_candle_data, get_scrip_and_exchange_from_key, sanitize
+from .persistence import (SqliteOHLCStorage,
+                          OHLCStorageMixin,
+                          TradeBookStorageMixin,
+                          SqliteTradeBookStorage)
 
 
 def CallbackHandleFactory(context):
@@ -105,7 +108,7 @@ class DataProvider(TradingServiceProvider):
     def __init__(self,
                  data_path: str,
                  *args,
-                 StorageClass: Union[str, Type[OHLCStorage]] = SqliteOHLCStorage,
+                 StorageClass: Type[OHLCStorageMixin] = SqliteOHLCStorage,
                  **kwargs):
         self.data_path = data_path
         self.StorageClass = StorageClass
@@ -114,8 +117,8 @@ class DataProvider(TradingServiceProvider):
 
     def get_db_path(self, scrip: str, exchange: str,
                     storage_type: OHLCStorageType):
-        exchange = exchange.replace("-", "_").replace(":", "_").replace(" ", "_")
-        scrip = scrip.replace("-", "_").replace(":", "_").replace(" ", "_")
+        exchange = sanitize(exchange)
+        scrip = sanitize(scrip)
         root = os.path.join(self.data_path, self.ProviderName,
                             "historical_data", exchange, scrip)
         os.makedirs(root, exist_ok=True)
@@ -219,7 +222,7 @@ class HistoricDataProvider(DataProvider):
                 break
             batch_to_date = batch_from_date
             batch_from_date = batch_from_date - datetime.timedelta(**subtracting_func)
-        print(batch_from_date, batch_to_date, from_date, to_date)
+        # print(batch_from_date, batch_to_date, from_date, to_date)
         return True
 
     def get_data_as_df(self,
@@ -362,12 +365,44 @@ class StreamingDataProvider(DataProvider):
 
 class Broker(TradingServiceProvider):
 
-    def __init__(self,
-                 *args,
-                 **kwargs):
+    ProviderName = "unknown"
 
+    def __init__(self,
+                 audit_records_path: str,
+                 *args,
+                 TradingBookStorageClass: Type[TradeBookStorageMixin] = SqliteTradeBookStorage,
+                 strategy: Optional[str] = None,
+                 run_name: Optional[str] = None,
+                 thread_id: int = 1,
+                 **kwargs):
+        self.TradingBookStorageClass = TradingBookStorageClass
+        self.audit_records_path = audit_records_path
         self.gtt_orders = []
+        self.strategy = strategy
+        self.run_name = run_name
+        self.thread_id = thread_id
         super().__init__(*args, **kwargs)
+
+    def clear_tradebooks(self, scrip: str, exchange: str):
+        if (self.strategy is not None and self.run_name is not None):
+            self.get_tradebook_storage().clear_run(self.strategy, self.run_name,
+                                                   scrip=scrip, exchange=exchange)
+
+    def get_tradebook_db_path(self):
+        root = os.path.join(self.audit_records_path, self.ProviderName,
+                            "trade_book")
+        os.makedirs(root, exist_ok=True)
+        if self.TradingBookStorageClass == SqliteTradeBookStorage:
+            return os.path.join(root, f"tradebook-{self.thread_id}.sqlite")
+        else:
+            raise ValueError(f"Cannot handle storage type {self.TradingBookStorageClass}")
+
+    def get_tradebook_storage(self) -> TradeBookStorageMixin:
+        if not hasattr(self, "tradebook_storage"):
+            self.logger.info("Connecting to new Tradebook storage")
+            db_path = self.get_tradebook_db_path()
+            self.tradebook_storage = self.TradingBookStorageClass(db_path)
+        return self.tradebook_storage
 
     def cancel_invalid_child_orders(self):
         for order in self.get_orders():
@@ -478,7 +513,9 @@ class Broker(TradingServiceProvider):
                             trigger_price: float = None,
                             group_id: Optional[str] = None,
                             parent_order_id: Optional[str] = None,
-                            tags: Optional[list] = None) -> Order:
+                            tags: Optional[list] = None,
+                            strategy: str = None,
+                            run_name: str = None) -> Order:
         order = self.create_express_order(scrip=scrip,
                                           exchange=exchange,
                                           quantity=quantity,
@@ -491,6 +528,13 @@ class Broker(TradingServiceProvider):
                                           parent_order_id=parent_order_id,
                                           tags=tags)
         order = self.place_order(order)
+        if strategy is not None and run_name is not None:
+            storage = self.get_tradebook_storage()
+            storage.store_order_execution(strategy=strategy,
+                                          run_name=run_name,
+                                          date=self.current_datetime(),
+                                          order=order,
+                                          event="OrderCreated")
         return order
 
     def place_gtt_order(self,
