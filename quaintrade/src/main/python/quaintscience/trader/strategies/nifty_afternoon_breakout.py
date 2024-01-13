@@ -47,7 +47,10 @@ class NiftyAfternoonBreakout(Strategy):
                                                      {"field": f"ATR_{self.atr_period}", "panel": 3}
                                                      ]}
         non_trading_timeslots = []
-        #non_trading_timeslots.extend(Strategy.NON_TRADING_FIRST_HOUR)
+        non_trading_timeslots.extend([{"from": {"hour": 22,
+                                        "minute": 30},
+                                        "to": {"hour": 23,
+                                        "minute": 59}}])
         #non_trading_timeslots.extend(Strategy.NON_TRADING_AFTERNOON)
         kwargs["non_trading_timeslots"] = non_trading_timeslots
         kwargs["context_required"] = ["1h"]
@@ -140,7 +143,8 @@ class NiftyAfternoonBreakout(Strategy):
         if (((window.iloc[-1].name.hour == self.end_hour
             and window.iloc[-1].name.minute > self.end_minute)
             or (window.iloc[-1].name.hour > self.end_hour))
-            and self.get_current_run(broker) is None):
+            and self.get_current_run(broker) is None
+            and self.can_trade(window, context)):
             qty = max(self.max_budget // window.iloc[-1]["close"], self.min_quantity)
             
             group_id = new_id()

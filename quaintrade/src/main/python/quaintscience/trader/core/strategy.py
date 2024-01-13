@@ -72,26 +72,24 @@ class Strategy(ABC, LoggerMixin):
         broker.cancel_pending_orders()
         positions = broker.get_positions()
         for position in positions:
+
+            squareoff_transaction = None
             if position.quantity > 0 and position.product == TradingProduct.MIS:
-                broker.place_express_order(scrip=position.scrip,
-                                           exchange=position.exchange,
-                                           quantity=position.quantity,
-                                           transaction_type=TransactionType.SELL,
-                                           order_type=OrderType.MARKET,
-                                           tags=["squareoff_order"],
-                                           strategy=self.strategy_name,
-                                           run_name=broker.run_name)
-                self.logger.info(f"Squared off {position.quantity} in {position.scrip} with SELL")
+                squareoff_transaction = TransactionType.SELL
             elif position.quantity < 0:
+                squareoff_transaction = TransactionType.BUY
+                
+            if squareoff_transaction is not None:
                 broker.place_express_order(scrip=position.scrip,
                                            exchange=position.exchange,
-                                           quantity=-position.quantity,
-                                           transaction_type=TransactionType.BUY,
+                                           quantity=abs(position.quantity),
+                                           transaction_type=squareoff_transaction,
                                            order_type=OrderType.MARKET,
                                            tags=["squareoff_order"],
                                            strategy=self.strategy_name,
-                                           run_name=broker.run_name)
-                self.logger.info(f"Squared off {position.quantity} in {position.scrip} with BUY")
+                                           run_name=broker.run_name,
+                                           run_id=broker.run_id)
+                self.logger.info(f"Squared off {position.quantity} in {position.scrip} with {squareoff_transaction}")
         broker.clear_gtt_orders()
 
     def perform_intraday_squareoff(self,

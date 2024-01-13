@@ -9,7 +9,7 @@ from tabulate import tabulate
 
 
 from .ds import OHLCStorageType
-from .util import resample_candle_data, get_key_from_scrip_and_exchange
+from .util import resample_candle_data, get_key_from_scrip_and_exchange, new_id
 from .logging import LoggerMixin
 from .roles import Broker, HistoricDataProvider
 from .strategy import Strategy
@@ -172,6 +172,7 @@ class Bot(LoggerMixin):
                  plot_results: bool = False,
                  clear_tradebook_for_scrip_and_exchange: bool = False):
 
+        self.broker.run_id = new_id()
         self.broker.strategy = self.strategy.strategy_name
         self.broker.run_name = "backtest"
         if clear_tradebook_for_scrip_and_exchange:
@@ -212,13 +213,14 @@ class Bot(LoggerMixin):
             storage = self.broker.get_tradebook_storage()
             positions = storage.get_positions_for_run(self.broker.strategy,
                                                       self.broker.run_name,
+                                                      run_id=self.broker.run_id,
                                                       from_date=from_date,
                                                       to_date=to_date)
             positions = positions[(positions["scrip"] == scrip) & (positions["exchange"] == exchange)]
             data = data.merge(positions, on="date", how='left')
             data["pnl"].fillna(0., inplace=True)
             self.strategy.plottables["indicator_fields"].append({"field": "pnl", "panel": 1})
-            events = storage.get_events(self.broker.strategy, self.broker.run_name)
+            events = storage.get_events(self.broker.strategy, self.broker.run_name, run_id=self.broker.run_id)
             events = events[(events["scrip"] == scrip) & (events["exchange"] == exchange)]
             plot_backtesting_results(data, events=events,
                                      indicator_fields=self.strategy.plottables["indicator_fields"])

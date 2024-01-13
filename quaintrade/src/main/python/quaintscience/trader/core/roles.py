@@ -21,7 +21,10 @@ from .ds import (Order,
                        OrderType,
                        OrderState,
                        OHLCStorageType)
-from .util import resample_candle_data, get_scrip_and_exchange_from_key, sanitize
+from .util import (resample_candle_data,
+                   get_scrip_and_exchange_from_key,
+                   sanitize,
+                   new_id)
 from .persistence import (SqliteOHLCStorage,
                           OHLCStorageMixin,
                           TradeBookStorageMixin,
@@ -380,6 +383,7 @@ class Broker(TradingServiceProvider):
         self.gtt_orders = []
         self.strategy = strategy
         self.run_name = run_name
+        self.run_id = new_id()
         self.thread_id = thread_id
         super().__init__(*args, **kwargs)
 
@@ -561,7 +565,10 @@ class Broker(TradingServiceProvider):
                             parent_order_id: Optional[str] = None,
                             tags: Optional[list] = None,
                             strategy: str = None,
-                            run_name: str = None) -> Order:
+                            run_name: str = None,
+                            run_id: str = None) -> Order:
+        if run_id is None:
+            run_id = self.run_id
         order = self.create_express_order(scrip=scrip,
                                           exchange=exchange,
                                           quantity=quantity,
@@ -578,6 +585,7 @@ class Broker(TradingServiceProvider):
             storage = self.get_tradebook_storage()
             storage.store_order_execution(strategy=strategy,
                                           run_name=run_name,
+                                          run_id=run_id,
                                           date=self.current_datetime(),
                                           order=order,
                                           event="OrderCreated")

@@ -211,6 +211,7 @@ class PaperBroker(Broker):
             storage = self.get_tradebook_storage()
             storage.store_position_state(strategy=self.strategy,
                                          run_name=self.run_name,
+                                         run_id=self.run_id,
                                          date=self.current_datetime(),
                                          position=position)
 
@@ -281,6 +282,7 @@ class PaperBroker(Broker):
         storage = self.get_tradebook_storage()
         storage.store_event(strategy=self.strategy,
                             run_name=self.run_name,
+                            run_id=self.run_id,
                             scrip=order.scrip,
                             exchange=order.exchange,
                             date=self.current_datetime(),
@@ -419,6 +421,7 @@ class PaperBroker(Broker):
         storage = self.get_tradebook_storage()
         storage.store_order_execution(self.strategy,
                                       self.run_name,
+                                      run_id=self.run_id,
                                       date=self.current_datetime(),
                                       order=order,
                                       event="OrderCreated")

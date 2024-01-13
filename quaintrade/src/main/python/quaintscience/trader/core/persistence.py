@@ -112,12 +112,13 @@ class SqliteStorage(Storage):
             col_filters = {}
         if len(col_filters) > 0:
             filters = []
-            for k, v in col_filters:
+            for k, v in col_filters.items():
                 if isinstance(v, float) or isinstance(v, int):
                     filters.append(f"{k}={v}")
                 else:
                     filters.append(f"{k}='{v}'")
             filters = " AND ".join(filters)
+            filters = f"AND {filters}"
         sql = (f"SELECT {', '.join(cols)} FROM "
                f"{table_name} WHERE "
                f"(datetime(date) BETWEEN '{from_date}' AND '{to_date}')"
@@ -248,6 +249,7 @@ class SqliteTradeBookStorage(SqliteStorage, TradeBookStorageMixin):
         self.connection.execute(f"""CREATE TABLE IF NOT EXISTS {table_name}__orders (date VARCHAR(255) NOT NULL,
                                                                              strategy VARCHAR(255) NOT NULL,
                                                                              run_name VARCHAR(255) NOT NULL,
+                                                                             run_id VARCHAR(255) NOT NULL,
                                                                              scrip VARCHAR(255) NOT NULL,
                                                                              exchange VARCHAR(255) NOT NULL,
                                                                              order_id VARCHAR(255) NOT NULL,
@@ -268,6 +270,7 @@ class SqliteTradeBookStorage(SqliteStorage, TradeBookStorageMixin):
                                                                              exchange VARCHAR(255) NOT NULL,
                                                                              strategy VARCHAR(255) NOT NULL,
                                                                              run_name VARCHAR(255) NOT NULL,
+                                                                             run_id VARCHAR(255) NOT NULL,
                                                                              product VARCHAR(255) NOT NULL,
                                                                              pnl REAL NOT NULL,
                                                                              charges REAL NOT NULL,
@@ -276,6 +279,7 @@ class SqliteTradeBookStorage(SqliteStorage, TradeBookStorageMixin):
                                                                              scrip VARCHAR(255) NOT NULL,
                                                                              exchange VARCHAR(255) NOT NULL,
                                                                              strategy VARCHAR(255) NOT NULL,
+                                                                             run_id VARCHAR(255) NOT NULL,
                                                                              run_name VARCHAR(255) NOT NULL,
                                                                              quantity REAL,
                                                                              price REAL,
@@ -286,6 +290,7 @@ class SqliteTradeBookStorage(SqliteStorage, TradeBookStorageMixin):
     def store_event(self,
                     strategy: str,
                     run_name: str,
+                    run_id: str,
                     scrip: str,
                     exchange: str,
                     event_type: str,
@@ -311,12 +316,14 @@ class SqliteTradeBookStorage(SqliteStorage, TradeBookStorageMixin):
                                           "price": price,
                                           "strategy": strategy,
                                           "run_name": run_name,
+                                          "run_id": run_id,
                                           "date": date})
        
 
     def store_order_execution(self,
                               strategy: str,
                               run_name: str,
+                              run_id: str,
                               order: Order,
                               event: str,
                               date: Optional[Union[str, datetime.datetime]] = None,
@@ -343,12 +350,14 @@ class SqliteTradeBookStorage(SqliteStorage, TradeBookStorageMixin):
                                           "strategy": strategy,
                                           "order_type": order.order_type.value,
                                           "event": event,
+                                          "run_id": run_id,
                                           "run_name": run_name,
                                           "date": date})
 
     def store_position_state(self,
                              strategy: str,
                              run_name: str,
+                             run_id: str,
                              position: Position,
                              date: Optional[Union[str, datetime.datetime]] = None,
                              conflict_resolution_type: str = "REPLACE"):
@@ -363,6 +372,7 @@ class SqliteTradeBookStorage(SqliteStorage, TradeBookStorageMixin):
                                              "exchange": position.exchange,
                                              "strategy": strategy,
                                              "run_name": run_name,
+                                             "run_id": run_id,
                                              "product": position.product.value,
                                              "pnl": position.pnl,
                                              "charges": position.charges,
@@ -371,6 +381,7 @@ class SqliteTradeBookStorage(SqliteStorage, TradeBookStorageMixin):
     def get_orders_for_run(self,
                            strategy: str,
                            run_name: str,
+                           run_id: Optional[str] = None,
                            from_date: Optional[Union[str, datetime.datetime]] = None,
                            to_date: Optional[Union[str, datetime.datetime]] = None,
                            conflict_resolution_type: str = "REPLACE") -> pd.DataFrame:
@@ -378,12 +389,16 @@ class SqliteTradeBookStorage(SqliteStorage, TradeBookStorageMixin):
                 "transaction_type", "tags", "product",
                 "quantity", "price", "limit_price", "trigger_price",
                 "parent_order_id", "group_id", "strategy", "run_name"]
+        col_filters = None
+        if run_id is not None:
+            col_filters = {"run_id": run_id}
         data = self.get_timestamped_data(strategy, run_name,
                                          table_name_suffixes=["orders"],
                                          from_date=from_date,
                                          to_date=to_date,
                                          cols=cols,
                                          index_col="order_id",
+                                         col_filters=col_filters,
                                          conflict_resolution_type=conflict_resolution_type)
         data["transaction_type"] = data["transaction_type"].apply(lambda x: TransactionType(x) if x is not None else None)
         data["product"] = data["product"].apply(lambda x: TradingProduct(x) if x is not None else x)
@@ -391,23 +406,29 @@ class SqliteTradeBookStorage(SqliteStorage, TradeBookStorageMixin):
 
     def get_positions_for_run(self, strategy: str,
                               run_name: str,
+                              run_id: Optional[str] = None,
                               from_date: Optional[Union[str, datetime.datetime]] = None,
                               to_date: Optional[Union[str, datetime.datetime]] = None,
                               conflict_resolution_type: str = "REPLACE") -> pd.DataFrame:
         cols = ["scrip", "exchange", "strategy", "run_name",
                 "product", "pnl", "charges"]
+        col_filters = None
+        if run_id is not None:
+            col_filters = {"run_id": run_id}
         data = self.get_timestamped_data(strategy, run_name,
                                          table_name_suffixes=["positions"],
                                          from_date=from_date,
                                          to_date=to_date,
                                          cols=cols,
                                          index_col="date",
+                                         col_filters=col_filters,
                                          conflict_resolution_type=conflict_resolution_type)
         data["product"] = data["product"].apply(lambda x: TradingProduct(x) if x is not None else None)
         return data
 
     def get_events(self, strategy: str,
                    run_name: str,
+                   run_id: Optional[str] = None,
                    scrip: Optional[str] = None,
                    exchange: Optional[str] = None,
                    transaction_type: Optional[TransactionType] = None,
@@ -426,6 +447,8 @@ class SqliteTradeBookStorage(SqliteStorage, TradeBookStorageMixin):
             col_filters["transaction_type"] = transaction_type.value
         if event_type is not None:
             col_filters["event_type"] = event_type
+        if run_id is not None:
+            col_filters["run_id"] = run_id
 
         data = self.get_timestamped_data(strategy, run_name,
                                          table_name_suffixes=["events"],
@@ -448,6 +471,7 @@ class SqliteTradeBookStorage(SqliteStorage, TradeBookStorageMixin):
             sql = f"DELETE FROM {table_name}__{table} WHERE scrip='{scrip}' AND exchange='{exchange}';"
             self.logger.debug(f"Executing {sql}")
             self.connection.execute(sql)
+
 
 class SqliteOHLCStorage(SqliteStorage, OHLCStorageMixin):
 

@@ -113,6 +113,7 @@ class HiekinAshiStrategy(Strategy):
                 storage = broker.get_tradebook_storage()
                 storage.store_order_execution(strategy=self.strategy_name,
                                               run_name=broker.run_name,
+                                              run_id=broker.run_id,
                                               date=broker.current_datetime(),
                                               order=order,
                                               event="OrderCancelled")
