@@ -28,7 +28,7 @@ class Bot(LoggerMixin):
                  *args,
                  live_data_context_size: int = 60,
                  online_mode: bool = False,
-                 timeslot_offset_seconds: float = -2.0,
+                 timeslot_offset_seconds: float = 1.0,
                  live_trading_market_start_hour: int = 9,
                  live_trading_market_start_minute: int = 15,
                  live_trading_market_end_hour: int = 15,
@@ -145,6 +145,8 @@ class Bot(LoggerMixin):
                                 sort=False).drop_duplicates(["date"], keep='last')
         data = data.set_index(data["date"])
         data.drop(["date"], axis=1, inplace=True)
+        data.sort_index(inplace=True)
+        print(data)
         self.logger.info(f"First {data.iloc[0].name} - Latest {data.iloc[-1].name}")
         context = self.get_context(data)
         return context, data
@@ -222,7 +224,7 @@ class Bot(LoggerMixin):
             self.strategy.plottables["indicator_fields"].append({"field": "pnl", "panel": 1})
             events = storage.get_events(self.broker.strategy, self.broker.run_name, run_id=self.broker.run_id)
             events = events[(events["scrip"] == scrip) & (events["exchange"] == exchange)]
-            plot_backtesting_results(data, events=events,
+            plot_backtesting_results(data, context=context, interval=interval, events=events,
                                      indicator_fields=self.strategy.plottables["indicator_fields"])
 
     def get_trading_timeslots(self, interval):
@@ -255,7 +257,11 @@ class Bot(LoggerMixin):
         self.logger.debug(f"{datetime.datetime.now()}: Pending job status")
         print(tabulate([[str(x.next_run)] for x in all_jobs]), flush=True)
 
-    def do_live_trade_task(self, instruments: list[dict[str, str]], interval: str):
+    def do_live_trade_task(self,
+                           instruments: list[dict[str, str]],
+                           interval: str,
+                           running_for_timeslot: Optional[datetime.datetime] = None):
+        self.logger.info(f"===== started for {running_for_timeslot} =====")
         self.broker.strategy = self.strategy.strategy_name
         self.broker.run_name = "backtest"
         to_date = datetime.datetime.now().replace(hour=23, minute=59, second=0, microsecond=0)
@@ -264,7 +270,8 @@ class Bot(LoggerMixin):
         print(f"Live trade task {from_date} {to_date}")
         data_provider_instruments = get_instruments_for_provider(instruments,
                                                                  self.data_provider.__class__)
-        for instrument in data_provider_instruments:
+        broker_instruments = get_instrument_for_provider(instruments, self.broker.__class__)
+        for ii, instrument in enumerate(data_provider_instruments):
             scrip, exchange = instrument["scrip"], instrument["exchange"]
             context, data = self.__get_context_data(scrip=scrip,
                                                     exchange=exchange,
@@ -273,8 +280,11 @@ class Bot(LoggerMixin):
                                                     interval=interval,
                                                     blend_live_data=True)
             context = self.pick_relevant_context(context, datetime.datetime.now())
-            self.do(window=data, context=context, scrip=scrip, exchange=exchange)
-
+            self.do(window=data,
+                    context=context,
+                    scrip=broker_instruments[ii]["scrip"],
+                    exchange=broker_instruments[ii]["exchange"])
+        self.logger.info(f"===== ended for {running_for_timeslot} =====")
 
     def live(self,
              instruments: list[dict[str, str]],
@@ -282,9 +292,12 @@ class Bot(LoggerMixin):
 
         self.do_live_trade_task(instruments=instruments, interval=interval)
         for dt in self.get_trading_timeslots(interval):
-                schedule.every().day.at(dt.strftime("%H:%M:%S")).do(partial(self.do_live_trade_task,
-                                                                         instruments=instruments,
-                                                                         interval=interval)).tag(f"run-{self.strategy.__class__.__name__}-at-{dt.strftime('%H:%M')}")
+                func = partial(self.do_live_trade_task,
+                               instruments=instruments,
+                               interval=interval,
+                               running_for_timeslot=dt)
+                run_name = f"run-{self.strategy.__class__.__name__}-at-{dt.strftime('%H:%M')}"
+                schedule.every().day.at(dt.strftime("%H:%M:%S")).do(func).tag(run_name)
 
         self.print_pending_trading_timeslots()
 

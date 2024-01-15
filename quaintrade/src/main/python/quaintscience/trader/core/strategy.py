@@ -21,7 +21,7 @@ class Strategy(ABC, LoggerMixin):
     NON_TRADING_FIRST_HOUR = [{"from": {"hour": 9,
                                         "minute": 0},
                                "to": {"hour": 9,
-                                      "minute": 29}}]
+                                      "minute": 45}}]
     NON_TRADING_AFTERNOON = [{"from": {"hour": 15,
                                        "minute": 00},
                               "to": {"hour": 15,
@@ -193,6 +193,7 @@ class Strategy(ABC, LoggerMixin):
             order = broker.place_gtt_order(parent_order, order)
         else:
             raise ValueError(f"Cannot take position for {position_type}")
+        self.logger.info(f"Strategy: Take Position: Order placed: {order}")
         return order
 
 

@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Union, Type
 import datetime
 import os
-import copy
+import pickle
 from threading import Lock
 from collections import defaultdict
 import http.server
@@ -25,10 +25,11 @@ from .util import (resample_candle_data,
                    get_scrip_and_exchange_from_key,
                    sanitize,
                    new_id)
-from .persistence import (SqliteOHLCStorage,
-                          OHLCStorageMixin,
-                          TradeBookStorageMixin,
-                          SqliteTradeBookStorage)
+
+from .persistence.sqlite.ohlc import SqliteOHLCStorage
+from .persistence.ohlc import OHLCStorageMixin
+from .persistence.tradebook import TradeBookStorageMixin
+from .persistence.sqlite.tradebook import SqliteTradeBookStorage
 
 
 def CallbackHandleFactory(context):
@@ -380,12 +381,26 @@ class Broker(TradingServiceProvider):
                  **kwargs):
         self.TradingBookStorageClass = TradingBookStorageClass
         self.audit_records_path = audit_records_path
-        self.gtt_orders = []
+        self.state_filepath = os.path.join(audit_records_path,
+                                          f"state_{self.__class__}_"
+                                          f"{strategy}_{run_name}_{thread_id}.pickle")
+        if os.path.exists(self.state_filepath):
+            self.logger.info(f"Loading broker state from {self.state_filepath}")
+            with open(self.state_filepath, 'rb') as fid:
+                self.gtt_orders = pickle.load(fid)
+        else:
+            self.logger.info(f"No prior broker state found.")
+            self.gtt_orders = []
         self.strategy = strategy
         self.run_name = run_name
         self.run_id = new_id()
         self.thread_id = thread_id
         super().__init__(*args, **kwargs)
+
+    def save_state(self):
+        self.logger.debug(f"Saving state to {self.state_filepath}")
+        with open(self.state_filepath, 'wb') as fid:
+            pickle.dump(self.gtt_orders, fid)
 
     def clear_tradebooks(self, scrip: str, exchange: str):
         if (self.strategy is not None and self.run_name is not None):
@@ -595,6 +610,7 @@ class Broker(TradingServiceProvider):
                         entry_order: Order,
                         other_order: Order) -> (Order, Order):
         self.gtt_orders.append((entry_order, other_order))
+        self.save_state()
         return entry_order, other_order
 
     def get_gtt_orders(self) -> list[(Order, Order)]:
@@ -614,6 +630,7 @@ class Broker(TradingServiceProvider):
             if (o1.order_id == entry_order.order_id
                 and o2.order_id == other_order.order_id):
                 self.gtt_orders[ii] == (entry_order, other_order)
+        self.save_state()
         return entry_order, other_order
 
     def delete_gtt_orders_for(self, order: Order):
@@ -622,10 +639,12 @@ class Broker(TradingServiceProvider):
             if o1.order_id == order.order_id:
                 continue
             new_gtt_orders.append((o1, o2))
+        self.save_state()
         self.gtt_orders = new_gtt_orders
 
     def clear_gtt_orders(self):
         self.gtt_orders =[]
+        self.save_state()
 
     def gtt_order_callback(self,
                            refresh_cache: bool = True) -> bool:
@@ -642,6 +661,7 @@ class Broker(TradingServiceProvider):
             new_gtt_orders.append((entry_order, other_order))
         self.gtt_orders = new_gtt_orders
         self.get_orders(refresh_cache=refresh_cache)
+        self.save_state()
         return gtt_state_changed
 
     def start_order_change_streamer(self):

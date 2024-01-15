@@ -12,6 +12,7 @@ import matplotlib.animation as animation
 from matplotlib.widgets import MultiCursor
 
 from .ds import TransactionType
+from .util import resample_candle_data
 
 matplotlib.use('TkAgg')
 
@@ -56,7 +57,9 @@ def live_ohlc_plot(get_live_ohlc_func: callable,
 
 
 def plot_backtesting_results(df: pd.DataFrame,
+                             context: dict[str, pd.DataFrame],
                              events: pd.DataFrame,
+                             interval: str,
                              indicator_fields: list[Union[dict, str]],
                              title: str = "Backtesting Results",
                              make_mpf_style_kwargs: Optional[dict] = None,
@@ -106,8 +109,16 @@ def plot_backtesting_results(df: pd.DataFrame,
         if isinstance(field, str):
             event_plots.append(mpf.make_addplot(df[field]))
         else:
-            event_plots.append(mpf.make_addplot(df[field.get("field")],
-                                                panel=field.get("panel", 1)))
+            if "context" in field:
+                context_data = context[field["context"]][field["field"]].resample(interval).ffill()
+                print("CONTEXT DATA", context_data, interval)
+                # context_data = context_data[df.index]
+                df = df.merge(context_data, how='left', left_index=True, right_index=True, suffixes=(None, f"_{field['context']}"))
+                event_plots.append(mpf.make_addplot(df.get(f"{field['field']}_{field['context']}"),
+                                                    panel=field.get("panel", 1)))
+            else:
+                event_plots.append(mpf.make_addplot(df[field.get("field")],
+                                                    panel=field.get("panel", 1)))
             num_panels = max(num_panels, field.get("panel", 0) + 1)
     
     kwargs = {"returnfig": True,

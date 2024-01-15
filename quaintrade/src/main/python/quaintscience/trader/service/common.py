@@ -7,9 +7,9 @@ import configargparse
 from ..core.logging import LoggerMixin
 from ..core.roles import DataProvider, AuthenticatorMixin, Broker
 from ..core.reflection import dynamically_load_class
-from ..core.persistence import OHLCStorageMixin
 from ..core.bot import Bot
 from ..core.strategy import Strategy
+from ..core.persistence.ohlc import OHLCStorageMixin
 
 
 class Service(LoggerMixin):

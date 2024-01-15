@@ -408,7 +408,7 @@ class ATRIndicator(Indicator):
                 settings: Optional[dict] = None) -> pd.DataFrame:
         if output_column_name is None or len(output_column_name) == 0:
             output_column_name = {"ATR": f"ATR_{settings['period']}"}
-        df[output_column_name["ATR"]] = talib.ADX(df["high"], df["low"], df["close"], timeperiod=settings['period'])
+        df[output_column_name["ATR"]] = talib.ATR(df["high"], df["low"], df["close"], timeperiod=settings['period'])
         return df, output_column_name, settings
 
 

@@ -14,7 +14,7 @@ import traceback
 
 from ..core.ds import Order, OrderType, TradingProduct, TransactionType, Position, OHLCStorageType
 from ..core.roles import HistoricDataProvider, AuthenticatorMixin, Broker, StreamingDataProvider
-from ..core.util import today_timestamp, hash_dict, datestring_to_datetime, get_key_from_scrip_and_exchange
+from ..core.util import datestring_to_datetime
 
 
 class FyersBaseMixin(AuthenticatorMixin):

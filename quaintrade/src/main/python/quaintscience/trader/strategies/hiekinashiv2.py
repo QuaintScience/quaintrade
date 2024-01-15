@@ -1,6 +1,7 @@
 from typing import Optional
 
 import pandas as pd
+import numpy as np
 
 from ..core.ds import (TradeType, OrderState, PositionType)
 
@@ -42,8 +43,10 @@ class HiekinAshiStrategy(Strategy):
                                  ]
         kwargs["indicator_pipeline"] = IndicatorPipeline(indicators=indicators)
         kwargs["plottables"] = {"indicator_fields": [{"field": "ha_long_trend", "panel": 2},
+                                                     {"field": "ha_trending_green", "panel": 2, "context": "1h"},
                                                      {"field": "ha_short_trend", "panel": 3},
-                                                     {"field": "ha_non_trending", "panel": 4},
+                                                     {"field": "ha_trending_red", "panel": 3, "context": "1h"},
+                                                     #{"field": "ha_non_trending", "panel": 4},
                                                      f"BBandUpper_{self.bb_period}",
                                                      f"BBandLower_{self.bb_period}",
                                                      {"field": f"ATR_{self.atr_period}", "panel": 5},
@@ -53,7 +56,7 @@ class HiekinAshiStrategy(Strategy):
                                                      #f"donchainLower_{self.donchain_period}",
                                                      ]}
         non_trading_timeslots = []
-        #non_trading_timeslots.extend(Strategy.NON_TRADING_FIRST_HOUR)
+        non_trading_timeslots.extend(Strategy.NON_TRADING_FIRST_HOUR)
         non_trading_timeslots.extend(Strategy.NON_TRADING_AFTERNOON)
         kwargs["non_trading_timeslots"] = non_trading_timeslots
         kwargs["context_required"] = ["30min", "1h"]
@@ -68,7 +71,10 @@ class HiekinAshiStrategy(Strategy):
         """
 
         self.sl_factor = 2
-        self.target_factor = 3.5
+        self.target_factor = 5
+
+        #self.sl_factor = 10
+        #self.target_factor = 10
 
         """
         self.sl_factor = 3
@@ -167,7 +173,9 @@ class HiekinAshiStrategy(Strategy):
                 make_entry = True
                 self.logger.debug(f"Entering short trade!")
 
-            if make_entry:
+            if make_entry and not (np.isnan(self.get_entry(window, current_run))
+                                   or np.isnan(self.get_stoploss(window, context, current_run))
+                                   or np.isnan(self.get_target(window, context, current_run))):
                 qty = max(self.max_budget // window.iloc[-1]["close"], self.min_quantity)
                 self.logger.debug(f"Taking position!")
                 self.cancel_active_orders(broker=broker)

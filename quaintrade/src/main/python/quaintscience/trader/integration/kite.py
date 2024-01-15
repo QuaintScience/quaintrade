@@ -43,11 +43,11 @@ class KiteBaseMixin(AuthenticatorMixin):
                     self.kite.instruments()
                     self.init()
                 except Exception:
-                    print(self.kite.login_url())
+                    self.logger.info(self.kite.login_url())
                     response = self.listen_to_login_callback()
                     self.finish_login(response["query_params"]["request_token"][0])
             return None
-        print(self.kite.login_url())
+        self.logger.info(self.kite.login_url())
         response = self.listen_to_login_callback()
         self.finish_login(response["query_params"]["request_token"][0])
 
@@ -238,7 +238,7 @@ class KiteBroker(KiteBaseMixin,
                     self.logger.info(f"Found order with order_id {order.order_id} for updation...")
                     order_id = self.kite.modify_order(variety=self.kite.VARIETY_REGULAR,
                                                     order_id=order.order_id,
-                                                    quantity=order.quantity,
+                                                    quantity=int(order.quantity),
                                                     price=order.price,
                                                     order=order.trigger_price)
                     order.order_id = order_id
@@ -248,19 +248,44 @@ class KiteBroker(KiteBaseMixin,
                 self.logger.info(f"Did not update order as order state is {order.state}")
         self.logger.info(f"Could not find order with order_id {order.order_id} for updation...")
 
+    def __translate_order_type(self, order: Order):
+        if order.order_type == OrderType.SL_LIMIT:
+            return self.kite.ORDER_TYPE_SL
+        elif order.order_type == OrderType.MARKET:
+            return self.kite.ORDER_TYPE_MARKET
+        elif order.order_type == OrderType.LIMIT:
+            return self.kite.ORDER_TYPE_LIMIT
+        elif order.order_type == OrderType.SL_MARKET:
+            return self.kite.ORDER_TYPE_SLM
+
+    def __translate_transaction_type(self, order: Order):
+        if order.transaction_type == TransactionType.BUY:
+            return self.kite.TRANSACTION_TYPE_BUY
+        elif order.transaction_type == TransactionType.SELL:
+            return self.kite.TRANSACTION_TYPE_SELL
+    
+    def __translate_product(self, order: Order):
+        if order.product == TradingProduct.MIS:
+            return self.kite.PRODUCT_MIS
+        elif order.price == TradingProduct.CNC:
+            return self.kite.PRODUCT_CNC
+        elif order.price == TradingProduct.NRML:
+            return self.kite.PRODUCT_NRML
+
     def place_order(self, order: Order, refresh_cache: bool = True) -> Order:
         order_kwargs = {"tradingsymbol": order.scrip,
                         "exchange": order.exchange,
-                        "transaction_type": order.transaction_type.value,
-                        "quantity": order.quantity,
+                        "transaction_type": self.__translate_transaction_type(order),
+                        "quantity": int(order.quantity),
                         "variety": self.kite.VARIETY_REGULAR,
-                        "order_type": order.order_type.value,
-                        "product": order.product.value,
+                        "order_type": self.__translate_order_type(order),
+                        "product": self.__translate_product(order),
                         "validity": order.validity}
-        if order.order_type == OrderType.LIMIT:
+        if order.order_type in [OrderType.LIMIT, OrderType.SL_LIMIT]:
             order_kwargs["price"] = order.limit_price
-        if order.order_type == OrderType.SL_MARKET:
+        if order.order_type in [OrderType.SL_LIMIT, OrderType.SL_MARKET]:
             order_kwargs["trigger_price"] = order.trigger_price
+        self.logger.info(f"KITE: {order_kwargs}")
         order_id = self.kite.place_order(**order_kwargs)
         order.order_id = order_id
         self.orders_cache.append(order)
@@ -287,7 +312,7 @@ class KiteBroker(KiteBaseMixin,
                 # print(existing_position, position)
                 if (existing_position.scrip == position["tradingsymbol"]
                     and existing_position.exchange == position["exchange"]
-                    and existing_position.product.value.upper() == position["product"]):
+                    and existing_position.product == self.__reverse_translate_product(position["product"])):
                     found_position_in_cache = True
                     existing_position.quantity = position["quantity"]
                     existing_position.last_price = position["last_price"]
@@ -300,7 +325,7 @@ class KiteBroker(KiteBaseMixin,
                                         scrip=position["tradingsymbol"],
                                         exchange=position["exchange"],
                                         exchange_id=position["exchange"],
-                                        product=TradingProduct(position["product"].lower()),
+                                        product=self.__reverse_translate_product(position["product"]),
                                         last_price=position["last_price"],
                                         pnl=position["pnl"],
                                         quantity=position["quantity"],
@@ -309,25 +334,60 @@ class KiteBroker(KiteBaseMixin,
                 self.positions_cache.append(new_position)
         return self.positions_cache
 
+    def __reverse_translate_order_type(self, order_type: str):
+        if order_type == self.kite.ORDER_TYPE_LIMIT:
+            return OrderType.LIMIT
+        elif order_type == self.kite.ORDER_TYPE_MARKET:
+            return OrderType.MARKET
+        elif order_type == self.kite.ORDER_TYPE_SL:
+            return OrderType.SL_LIMIT
+        elif order_type == self.kite.ORDER_TYPE_SLM:
+            return OrderType.SL_MARKET
+    
+    def __reverse_translate_product(self, product: str):
+        if product == self.kite.PRODUCT_CNC:
+            return TradingProduct.CNC
+        elif product == self.kite.PRODUCT_MIS:
+            return TradingProduct.MIS
+        elif product == self.kite.PRODUCT_NRML:
+            return TradingProduct.NRML
+
+    def __reverse_translate_transaction_type(self, transaction_type: str):
+        if transaction_type == self.kite.TRANSACTION_TYPE_BUY:
+            return TransactionType.BUY
+        elif transaction_type == self.kite.TRANSACTION_TYPE_SELL:
+            return TransactionType.SELL
+
+    def __reverse_translate_order_state(self, order_state: str):
+        if order_state == self.kite.STATUS_CANCELLED:
+            return OrderState.CANCELLED
+        elif order_state == self.kite.STATUS_COMPLETE:
+            return OrderState.COMPLETED
+        elif order_state == self.kite.STATUS_REJECTED:
+            return OrderState.REJECTED
+        elif order_state == "TRIGGER PENDING":
+            return OrderState.PENDING
+        return order_state
+
+    def __update_order_from_dct(self, cached_order: Order, order: dict):
+        cached_order.quantity = order["quantity"]
+        cached_order.trigger_price = order["trigger_price"]
+        cached_order.limit_price = order["price"]
+        cached_order.filled_quantity = order["filled_quantity"]
+        cached_order.pending_quantity = order["pending_quantity"]
+        cached_order.cancelled_quantity = order["cancelled_quantity"]
+        cached_order.state = order["status"]
+        cached_order.raw_dict = order
+
     def __update_order_in_cache(self,
                                 order: dict):
-        if order["status"] == "OPEN":
-            order["status"] = OrderState.PENDING
-        elif order["status"] == "COMPLETE":
-            order["status"] = OrderState.COMPLETED
-        else:
-            order["status"] = OrderState(order["status"].lower())
+        order["status"] = self.__reverse_translate_order_state(order["status"])
+
         found_in_cache = False
         for cached_order in self.orders_cache:
             if order["order_id"] == cached_order.order_id:
-                cached_order.quantity = order["quantity"]
-                cached_order.trigger_price = order["trigger_price"]
-                cached_order.limit_price = order["price"]
-                cached_order.filled_quantity = order["filled_quantity"]
-                cached_order.pending_quantity = order["pending_quantity"]
-                cached_order.cancelled_quantity = order["cancelled_quantity"]
-                cached_order.state = order["status"]
-                cached_order.raw_dict = order
+                self.__update_order_from_dct(cached_order=cached_order, 
+                                             order=order)
                 found_in_cache = True
                 break
         if not found_in_cache:
@@ -336,12 +396,12 @@ class KiteBroker(KiteBaseMixin,
                                 scrip=order["tradingsymbol"],
                                 scrip_id=order["instrument_token"],
                                 exchange=order["exchange"],
-                                transaction_type=TransactionType(order["transaction_type"].lower()),
+                                transaction_type=self.__reverse_translate_transaction_type(order["transaction_type"]),
                                 raw_dict=order,
                                 state=order["status"],
                                 timestamp=order["order_timestamp"],
-                                order_type = OrderType(order["order_type"].lower()),
-                                product = TradingProduct(order["product"].lower()),
+                                order_type = self.__reverse_translate_order_type(order["order_type"]),
+                                product = self.__reverse_translate_product(order["product"]),
                                 quantity = order["quantity"],
                                 trigger_price = order["trigger_price"],
                                 limit_price = order["price"],
@@ -349,6 +409,9 @@ class KiteBroker(KiteBaseMixin,
                                 pending_quantity = order["pending_quantity"],
                                 cancelled_quantity = order["cancelled_quantity"])
             self.orders_cache.append(new_order)
+        for from_order, _ in self.gtt_orders:
+            if from_order.order_id == order["order_id"]:
+                self.__update_order_from_dct(from_order, order)
 
     def get_orders(self, refresh_cache=True) -> list[Order]:
         if refresh_cache:

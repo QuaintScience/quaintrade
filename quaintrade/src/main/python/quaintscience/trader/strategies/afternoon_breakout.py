@@ -13,7 +13,7 @@ from ..core.roles import Broker
 from ..core.util import new_id
 
 
-class NiftyAfternoonBreakout(Strategy):
+class AfternoonBreakout(Strategy):
 
     def __init__(self,
                  *args,
