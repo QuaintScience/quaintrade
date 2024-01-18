@@ -9,6 +9,7 @@ import http.server
 import socketserver
 from urllib.parse import urlparse, parse_qs
 from typing import Optional
+from threading import Lock
 
 import pandas as pd
 from tabulate import tabulate
@@ -293,12 +294,23 @@ class StreamingDataProvider(DataProvider):
 
     def __init__(self, *args,
                  save_frequency: int = 5,
+                 clear_live_data_cache: bool = True,
                  **kwargs):
         self.kill_tick_thread = False
+        self.clear_live_data_cache = clear_live_data_cache
         self.cache = defaultdict(dict)
         self.tick_counter = defaultdict(int)
         self.save_frequency = save_frequency
         super().__init__(*args, **kwargs)
+
+    def clear_live_storage(self, instruments: list):
+        for instrument in instruments:
+            storage = self.get_storage(instrument["scrip"],
+                                       instrument["exchange"],
+                                       OHLCStorageType.LIVE)
+            self.logger.info(f"Clearing live data for {instrument['scrip']}"
+                             f"/{instrument['exchange']}")
+            storage.clear_data(instrument["scrip"], instrument["exchange"])
 
     @abstractmethod
     def start(self, instruments: list, *args, **kwargs):
@@ -378,34 +390,56 @@ class Broker(TradingServiceProvider):
                  strategy: Optional[str] = None,
                  run_name: Optional[str] = None,
                  thread_id: str = "1",
+                 disable_state_persistence: bool = False,
                  **kwargs):
+        LoggerMixin.__init__(self, *args, **kwargs)
         self.TradingBookStorageClass = TradingBookStorageClass
         self.audit_records_path = audit_records_path
-        self.state_filepath = os.path.join(audit_records_path,
-                                          f"state_{self.__class__}_"
-                                          f"{strategy}_{run_name}_{thread_id}.pickle")
-        if os.path.exists(self.state_filepath):
-            self.logger.info(f"Loading broker state from {self.state_filepath}")
-            with open(self.state_filepath, 'rb') as fid:
-                self.gtt_orders = pickle.load(fid)
-        else:
-            self.logger.info(f"No prior broker state found.")
-            self.gtt_orders = []
         self.strategy = strategy
         self.run_name = run_name
         self.run_id = new_id()
         self.thread_id = thread_id
+        self.order_state_lock = Lock()
+        self.position_state_lock = Lock()
+        self.gtt_state_lock = Lock()
+        self.state_file_lock = Lock()
+        self.disable_state_persistence = disable_state_persistence
+        self.gtt_orders = []
         super().__init__(*args, **kwargs)
+        self.load_state()
+
+    def load_state(self):
+        with self.state_file_lock:
+            self.state_filepath = os.path.join(self.audit_records_path,
+                                            f"state_{self.__class__.__name__}_"
+                                            f"{self.thread_id}.pickle")
+            self.logger.debug(f"Searching for state in {self.state_filepath}")
+            if os.path.exists(self.state_filepath):
+                self.logger.info(f"Loading broker state from {self.state_filepath}")
+                with open(self.state_filepath, 'rb') as fid:
+                    state = pickle.load(fid)
+                    self.gtt_orders = state["gtt_orders"]
+                    if state["extra"] is not None:
+                        for k, v in state["extra"].items():
+                            setattr(self, k, v)
+            else:
+                self.logger.info(f"No prior broker state found.")
 
     def save_state(self):
-        self.logger.debug(f"Saving state to {self.state_filepath}")
-        with open(self.state_filepath, 'wb') as fid:
-            pickle.dump(self.gtt_orders, fid)
+        if not self.disable_state_persistence:
+            self.logger.debug(f"Saving state to {self.state_filepath}")
+            with open(self.state_filepath, 'wb') as fid:
+                state = self.get_state()
+                pickle.dump(state, fid)
 
     def clear_tradebooks(self, scrip: str, exchange: str):
         if (self.strategy is not None and self.run_name is not None):
             self.get_tradebook_storage().clear_run(self.strategy, self.run_name,
                                                    scrip=scrip, exchange=exchange)
+
+    @abstractmethod
+    def get_state(self) -> object:
+        pass
 
     def get_tradebook_db_path(self):
         root = os.path.join(self.audit_records_path, self.ProviderName,
@@ -424,35 +458,47 @@ class Broker(TradingServiceProvider):
         return self.tradebook_storage
 
     def cancel_invalid_child_orders(self):
-        for order in self.get_orders():
-            if (order.parent_order_id is not None and
-                order.state == OrderState.COMPLETED):
-                for other_order in self.get_orders():
-                    if (other_order.parent_order_id == order.parent_order_id and
-                        other_order.order_id != order.order_id and
-                        other_order.state == OrderState.PENDING):
-                        self.logger.info(f"Cancelling order {order.order_id}/"
-                                         f"{order.scrip}/{order.exchange}/"
-                                         f"{order.transaction_type}/{order.order_type}"
-                                         f"{','.join(order.tags)} due OCO (Sibling)")
-                        self.cancel_order(other_order)
-                        self.delete_gtt_orders_for(other_order)
+        state_changed = False
+        for order in self.get_orders(refresh_cache=False):
+            if order.state != OrderState.PENDING:
+                if order.parent_order_id is not None:
+                    #self.logger.info(f"Searching for siblings of "
+                    #                 f"{order.order_id} (parent={order.parent_order_id})")
+                    for other_order in self.get_orders(refresh_cache=False):
+                        if (other_order.parent_order_id == order.parent_order_id and
+                            other_order.order_id != order.order_id and
+                            other_order.state == OrderState.PENDING):
+                            state_changed = True
+                            self.logger.info(f"Cancelling order {other_order.order_id}/"
+                                            f"{other_order.scrip}/{other_order.exchange}/"
+                                            f"{other_order.transaction_type}/{other_order.order_type}"
+                                            f"{','.join(other_order.tags)} due OCO (Sibling)")
+                            self.cancel_order(other_order, refresh_cache=False)
+                            self.delete_gtt_orders_for(other_order)
+        if state_changed:
+            self.get_orders(refresh_cache=True)
 
     def cancel_invalid_group_orders(self):
-        for order in self.get_orders():
+        for order in self.get_orders(refresh_cache=False):
+            state_changed = False
             if (order.group_id is not None
                 and order.state == OrderState.COMPLETED):
-                for other_order in self.get_orders():
+                #self.logger.info(f"Searching for group members of "
+                #                 f"{order.order_id} (group_id={order.group_id})")
+                for other_order in self.get_orders(refresh_cache=False):
                     if (other_order.group_id == order.group_id
                         and other_order.order_id != order.order_id
                         and other_order.state == OrderState.PENDING
                         and "entry" in other_order.tags):
+                        state_changed = True
                         self.logger.info(f"Cancelling order {other_order.order_id[:4]}/"
                                          f"{other_order.scrip}/{other_order.exchange}/"
                                          f"{other_order.transaction_type}/{other_order.order_type}"
                                          f"{','.join(other_order.tags)} due OCO (Group)")
-                        self.cancel_order(other_order)
+                        self.cancel_order(other_order, refresh_cache=False)
                         self.delete_gtt_orders_for(other_order)
+            if state_changed:
+                self.get_orders(refresh_cache=True)
 
     # Get state in a form that can be printed as a table.
     def get_orders_as_table(self) -> (list[list], list):
@@ -521,12 +567,24 @@ class Broker(TradingServiceProvider):
     def update_order(self, order: Order,
                      refresh_cache: bool = True) -> Order:
         pass
-
+    """
+    Deprecated....
     def cancel_pending_orders(self,
+                              scrip: Optional[str] = None,
+                              exchange: Optional[str] = None,
                               refresh_cache: bool = True):
-        for order in self.orders:
+        for order in self.get_orders(refresh_cache=refresh_cache):
+            if scrip is not None and exchange is not None:
+                if scrip != order.scrip or exchange != order.exchange:
+                    continue
             if order.state == OrderState.PENDING:
-                self.cancel_order(order)
+                self.cancel_order(order, refresh_cache=False)
+                self.delete_gtt_orders_for(order)
+        self.get_orders(refresh_cache=refresh_cache)
+        self.cancel_invalid_child_orders()
+        self.cancel_invalid_group_orders()
+        self.get_orders(refresh_cache=refresh_cache)
+    """
 
     @abstractmethod
     def cancel_order(self, order: Order,
@@ -609,7 +667,8 @@ class Broker(TradingServiceProvider):
     def place_gtt_order(self,
                         entry_order: Order,
                         other_order: Order) -> (Order, Order):
-        self.gtt_orders.append((entry_order, other_order))
+        with self.gtt_state_lock:
+            self.gtt_orders.append((entry_order, other_order))
         self.save_state()
         return entry_order, other_order
 
@@ -626,24 +685,27 @@ class Broker(TradingServiceProvider):
     def update_gtt_order(self,
                          entry_order: Order,
                          other_order: Order) -> (Order, Order):
-        for ii, (o1, o2) in enumerate(self.gtt_orders):
-            if (o1.order_id == entry_order.order_id
-                and o2.order_id == other_order.order_id):
-                self.gtt_orders[ii] == (entry_order, other_order)
+        with self.gtt_state_lock:
+            for ii, (o1, o2) in enumerate(self.gtt_orders):
+                if (o1.order_id == entry_order.order_id
+                    and o2.order_id == other_order.order_id):
+                    self.gtt_orders[ii] == (entry_order, other_order)
         self.save_state()
         return entry_order, other_order
 
     def delete_gtt_orders_for(self, order: Order):
         new_gtt_orders = []
-        for o1, o2 in self.get_gtt_orders():
-            if o1.order_id == order.order_id:
-                continue
-            new_gtt_orders.append((o1, o2))
+        with self.gtt_state_lock:
+            for o1, o2 in self.get_gtt_orders():
+                if o1.order_id == order.order_id:
+                    continue
+                new_gtt_orders.append((o1, o2))
+            self.gtt_orders = new_gtt_orders
         self.save_state()
-        self.gtt_orders = new_gtt_orders
 
     def clear_gtt_orders(self):
-        self.gtt_orders =[]
+        with self.gtt_state_lock:
+            self.gtt_orders =[]
         self.save_state()
 
     def gtt_order_callback(self,
@@ -651,18 +713,39 @@ class Broker(TradingServiceProvider):
         new_gtt_orders = []
         gtt_state_changed = False
         self.get_orders(refresh_cache=refresh_cache)
-        for entry_order, other_order in self.gtt_orders:
-            if (entry_order.state == OrderState.COMPLETED
-                and other_order.state == OrderState.PENDING):
-                self.place_order(other_order)
-                # print(other_order)
-                gtt_state_changed = True
-                continue
-            new_gtt_orders.append((entry_order, other_order))
-        self.gtt_orders = new_gtt_orders
+        with self.gtt_state_lock:
+            for entry_order, other_order in self.gtt_orders:
+                print(entry_order.state, other_order.state)
+                if (entry_order.state == OrderState.COMPLETED
+                    and other_order.state == OrderState.PENDING):
+                    if entry_order.product == TradingProduct.MIS:
+                        self.logger.debug("Placing MIS GTT Order for {entry_order.order_id} {other_order.tags}}")
+                        self.place_order(other_order, refresh_cache=False)
+                        # print(other_order)
+                        gtt_state_changed = True
+                        continue
+                    elif entry_order.product in [TradingProduct.NRML, TradingProduct.CNC]: 
+                        # This means, there is some order placed for long term. 
+                        # Check positions and sufficient position exists and the pending 
+                        # order is from the previous work day, place gtt orders.
+                        
+                        self.place_order(other_order, refresh_cache=False)
+                        continue
+                new_gtt_orders.append((entry_order, other_order))
+            self.gtt_orders = new_gtt_orders
         self.get_orders(refresh_cache=refresh_cache)
+        self.cancel_invalid_child_orders()
+        self.cancel_invalid_group_orders()
         self.save_state()
         return gtt_state_changed
+
+    def update_gtt_orders_for(self, order: Order):
+        with self.gtt_state_lock:
+            for ii, (from_order, to_order) in enumerate(self.gtt_orders):
+                print(ii, from_order.order_id, to_order.order_id, order.order_id)
+                if from_order.order_id == order.order_id:
+                    self.gtt_orders[ii] = (order, to_order)
+
 
     def start_order_change_streamer(self):
         pass

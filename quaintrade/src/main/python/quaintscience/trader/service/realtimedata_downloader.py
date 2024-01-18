@@ -11,7 +11,12 @@ class RealtimeDataDownloader(DataProviderService):
 
     def __init__(self,
                  *args,
+                 clear_live_data_cache: bool = False,
                  **kwargs):
+        if "data_provider_custom_kwargs" in kwargs and kwargs["data_provider_custom_kwargs"] is not None:
+            kwargs["data_provider_custom_kwargs"]["clear_live_data_cache"] = clear_live_data_cache
+        else:
+            kwargs["data_provider_custom_kwargs"] = {"clear_live_data_cache": clear_live_data_cache}
         super().__init__(*args, **kwargs)
 
     def start(self):
@@ -23,4 +28,5 @@ class RealtimeDataDownloader(DataProviderService):
 
     @classmethod
     def enrich_arg_parser(cls, p: ArgParser):
-        return DataProviderService.enrich_arg_parser(p)
+        DataProviderService.enrich_arg_parser(p)
+        p.add('--clear_live_data_cache', action="store_true", help="Clear live data cache before starting", env_var="CLEAR_LIVE_DATA_CACHE")

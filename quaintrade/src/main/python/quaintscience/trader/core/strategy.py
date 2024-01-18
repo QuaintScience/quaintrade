@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Optional, Union
 import copy
+import os
+import pickle
 from functools import partial
 
 import pandas as pd
@@ -8,6 +10,7 @@ import pandas as pd
 from .logging import LoggerMixin
 from .ds import (Order,
                  TradeType,
+                 OrderState,
                  OrderType,
                  TransactionType,
                  TradingProduct)
@@ -21,7 +24,7 @@ class Strategy(ABC, LoggerMixin):
     NON_TRADING_FIRST_HOUR = [{"from": {"hour": 9,
                                         "minute": 0},
                                "to": {"hour": 9,
-                                      "minute": 45}}]
+                                      "minute": 15}}]
     NON_TRADING_AFTERNOON = [{"from": {"hour": 15,
                                        "minute": 00},
                               "to": {"hour": 15,
@@ -40,6 +43,8 @@ class Strategy(ABC, LoggerMixin):
                  context_required: Optional[list[str]] = None,
                  max_budget: float = 10000,
                  min_quantity: int = 1,
+                 long_position_tag: Optional[str] = None,
+                 short_position_tag: Optional[str] = None,
                  **kwargs):
         
         self.indicator_pipeline = indicator_pipeline
@@ -61,28 +66,103 @@ class Strategy(ABC, LoggerMixin):
         self.context_required = context_required
         self.min_quantity = min_quantity
         self.max_budget = max_budget
+        if long_position_tag is None:
+            long_position_tag = f"{self.__class__.__name__}_long"
+        if short_position_tag is None:
+            short_position_tag = f"{self.__class__.__name__}_short"
+        self.long_position_tag = long_position_tag
+        self.short_position_tag = short_position_tag
         super().__init__(*args, **kwargs)
 
     @property
     def strategy_name(self):
         return f"{self.__class__.__name__}"
 
-    def perform_squareoff(self, broker: Broker):
+    def cancel_active_orders(self, broker: Broker,
+                             scrip: Optional[str] = None,
+                             exchange: Optional[str] = None,
+                             product: Optional[TradingProduct] = None):
+        quantity = 0
+        visited_parent_ids = set()
+        for order in broker.get_orders(refresh_cache=True):
+            if (order.state == OrderState.PENDING
+                and (self.long_position_tag in order.tags
+                     or self.short_position_tag in order.tags)):
+                if product is not None and order.product != product:
+                    continue
+                if scrip is not None and order.scrip != scrip:
+                    continue
+                if exchange is not None and order.exchange != exchange:
+                    continue
+                if (order.parent_order_id not in visited_parent_ids
+                    and ("target" in order.tags or "stoploss" in order.tags)):
+                    quantity += -order.quantity if order.transaction_type == TransactionType.BUY else order.quantity
+                broker.cancel_order(order, refresh_cache=True)
+                broker.delete_gtt_orders_for(order)
+                storage = broker.get_tradebook_storage()
+                storage.store_order_execution(strategy=self.strategy_name,
+                                              run_name=broker.run_name,
+                                              run_id=broker.run_id,
+                                              date=broker.current_datetime(),
+                                              order=order,
+                                              event="OrderCancelled")
+                if order.parent_order_id is not None:
+                    visited_parent_ids.add(order.parent_order_id)
+        broker.cancel_invalid_child_orders()
+        broker.cancel_invalid_group_orders()
+        broker.get_orders(refresh_cache=True)
+        return quantity
 
-        broker.cancel_pending_orders()
+    def get_current_run(self, broker: Broker,
+                        scrip: str, exchange: str):
+        for order in broker.get_orders(refresh_cache=True):
+            if (order.state == OrderState.PENDING
+                and self.long_position_tag in order.tags
+                and order.scrip == scrip
+                and order.exchange == exchange):
+                return TradeType.LONG
+            elif (order.state == OrderState.PENDING
+                and self.short_position_tag in order.tags
+                and order.scrip == scrip
+                and order.exchange == exchange):
+                return TradeType.SHORT
+
+    def perform_squareoff(self, broker: Broker,
+                          scrip: Optional[str] = None,
+                          exchange: Optional[str] = None,
+                          quantity: Optional[int] = None,
+                          product: Optional[TradingProduct] = None):
+
         positions = broker.get_positions()
         for position in positions:
-
+            if scrip is not None and exchange is not None:
+                if position.scrip != scrip or position.exchange != exchange:
+                    continue
+            if product is not None and position.product != product:
+                continue
             squareoff_transaction = None
-            if position.quantity > 0 and position.product == TradingProduct.MIS:
-                squareoff_transaction = TransactionType.SELL
-            elif position.quantity < 0:
-                squareoff_transaction = TransactionType.BUY
-                
+
+            if quantity is None:
+                if position.quantity > 0:
+                    squareoff_transaction = TransactionType.SELL
+                elif position.quantity < 0:
+                    squareoff_transaction = TransactionType.BUY
+            else:
+                if quantity > 0:
+                    if position.quantity >= quantity and product in [TradingProduct.NRML, TradingProduct.CNC]:
+                        self.logger.info(f"Did not square off {scrip} / {exchange} type {product}"
+                                         f" as position qty {position.quantity} < sq qty {quantity}")
+                        continue
+                    squareoff_transaction = TransactionType.SELL
+                elif quantity < 0:
+                    squareoff_transaction = TransactionType.BUY
+
+            squareoff_quantity = abs(position.quantity) if quantity is None else abs(quantity)
+
             if squareoff_transaction is not None:
                 broker.place_express_order(scrip=position.scrip,
                                            exchange=position.exchange,
-                                           quantity=abs(position.quantity),
+                                           quantity=squareoff_quantity,
                                            transaction_type=squareoff_transaction,
                                            order_type=OrderType.MARKET,
                                            tags=["squareoff_order"],
@@ -90,7 +170,6 @@ class Strategy(ABC, LoggerMixin):
                                            run_name=broker.run_name,
                                            run_id=broker.run_id)
                 self.logger.info(f"Squared off {position.quantity} in {position.scrip} with {squareoff_transaction}")
-        broker.clear_gtt_orders()
 
     def perform_intraday_squareoff(self,
                                    broker: Broker,
@@ -98,6 +177,8 @@ class Strategy(ABC, LoggerMixin):
         if (window.iloc[-1].name.hour >= self.squareoff_hour and
             window.iloc[-1].name.minute >= self.squareoff_minute
             and self.intraday_squareoff):
+            self.cancel_active_orders(broker,
+                                      product=TradingProduct.MIS)
             self.perform_squareoff(broker)
             return True
         return False
@@ -145,6 +226,13 @@ class Strategy(ABC, LoggerMixin):
         all_tags.extend(tags)
         all_tags = list(set(all_tags))
         all_tags.append(position_type.value)
+
+        if trade_type == TradeType.LONG:
+            all_tags.append(self.long_position_tag)
+        elif trade_type == TradeType.SHORT:
+            all_tags.append(self.short_position_tag)
+        else:
+            raise ValueError(f"Don't know how to handle {trade_type}")
         order = None
 
         parent_id = None
@@ -245,7 +333,7 @@ class Strategy(ABC, LoggerMixin):
                         scrip=scrip,
                         exchange=exchange,
                         window=window,
-                        context=context)
+                        context=context)            
         self.perform_intraday_squareoff(broker=broker, window=window)
 
     @abstractmethod

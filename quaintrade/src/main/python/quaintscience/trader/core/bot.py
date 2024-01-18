@@ -28,7 +28,7 @@ class Bot(LoggerMixin):
                  *args,
                  live_data_context_size: int = 60,
                  online_mode: bool = False,
-                 timeslot_offset_seconds: float = 1.0,
+                 timeslot_offset_seconds: float = -2.0,
                  live_trading_market_start_hour: int = 9,
                  live_trading_market_start_minute: int = 15,
                  live_trading_market_end_hour: int = 15,
@@ -177,6 +177,8 @@ class Bot(LoggerMixin):
         self.broker.run_id = new_id()
         self.broker.strategy = self.strategy.strategy_name
         self.broker.run_name = "backtest"
+        self.broker.disable_state_persistence = True
+
         if clear_tradebook_for_scrip_and_exchange:
             self.broker.clear_tradebooks(scrip, exchange)
         if not isinstance(self.broker, PaperBroker):
@@ -220,8 +222,26 @@ class Bot(LoggerMixin):
                                                       to_date=to_date)
             positions = positions[(positions["scrip"] == scrip) & (positions["exchange"] == exchange)]
             data = data.merge(positions, on="date", how='left')
+
             data["pnl"].fillna(0., inplace=True)
+            #import ipdb
+            #ipdb.set_trace()
+            daily_pnl = data["pnl"].resample('1d').apply('last').resample(interval).ffill().fillna(0.)
+            data = data.merge(daily_pnl, how='left', left_index=True, right_index=True)
+            data["daily_pnl"] = data["pnl_y"]
+            data["pnl"] = data["pnl_x"]
+            data.drop(["pnl_x", "pnl_y"], axis=1, inplace=True)
+
+            monthly_pnl = data["pnl"].resample('1M').apply('last').resample(interval).ffill().fillna(0.)
+            data = data.merge(monthly_pnl, how='left', left_index=True, right_index=True)
+            data["monthly_pnl"] = data["pnl_y"].fillna(0.)
+            data["pnl"] = data["pnl_x"]
+            data.drop(["pnl_x", "pnl_y"], axis=1, inplace=True)
+            print(data)
+
             self.strategy.plottables["indicator_fields"].append({"field": "pnl", "panel": 1})
+            self.strategy.plottables["indicator_fields"].append({"field": "daily_pnl", "panel": 1})
+            self.strategy.plottables["indicator_fields"].append({"field": "monthly_pnl", "panel": 1})
             events = storage.get_events(self.broker.strategy, self.broker.run_name, run_id=self.broker.run_id)
             events = events[(events["scrip"] == scrip) & (events["exchange"] == exchange)]
             plot_backtesting_results(data, context=context, interval=interval, events=events,
@@ -263,7 +283,8 @@ class Bot(LoggerMixin):
                            running_for_timeslot: Optional[datetime.datetime] = None):
         self.logger.info(f"===== started for {running_for_timeslot} =====")
         self.broker.strategy = self.strategy.strategy_name
-        self.broker.run_name = "backtest"
+        self.broker.run_name = "live"
+        self.broker.run_id = new_id()
         to_date = datetime.datetime.now().replace(hour=23, minute=59, second=0, microsecond=0)
         from_date = to_date - datetime.timedelta(days=self.live_data_context_size)
         from_date = from_date.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -302,8 +323,5 @@ class Bot(LoggerMixin):
         self.print_pending_trading_timeslots()
 
         while True:
-            # self.print_pending_trading_timeslots()
             schedule.run_pending()
             time.sleep(1)
-        #self.do_live_trade_task(instruments=instruments, interval=interval)
-        #self.do_live_trade_task(instruments=instruments, interval=interval)

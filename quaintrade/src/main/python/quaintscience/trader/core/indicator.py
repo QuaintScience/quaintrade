@@ -693,7 +693,7 @@ class HeikinAshiIndicator(Indicator):
             return True
         if 2 * abs(row["close"] - row["open"]) < max(lower_wick, upper_wick):
             return True
-        if abs(upper_wick - lower_wick) / min(upper_wick, lower_wick) < 0.1:
+        if abs(upper_wick - lower_wick) / (min(upper_wick, lower_wick) + 1e-30) < 0.1:
             return True
         return False
 

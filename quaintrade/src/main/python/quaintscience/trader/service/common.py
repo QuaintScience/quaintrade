@@ -120,6 +120,7 @@ class DataProviderService(Service):
         p.add('--storage_class', dest="StorageClass", help="Storage class", env_var="STORAGE_CLASS")
         p.add('--data_provider_auth_credentials', help="Data provider auth Credentials", env_var="DATA_PROVIDER_AUTH_CREDENTIALS", type=yaml.safe_load)
         p.add('--data_provider_auth_cache_filepath', help="Data provider auth cache filepath", env_var="DATA_PROVIDER_AUTH_CACHE_FILEPATH")
+        p.add('--data_provider_custom_kwargs', help="Data provider custom kwargs", env_var="DATA_PROVIDER_CUSTOM_KWARGS", type=yaml.safe_load)
         p.add('--instruments', help="Instruments", env_var="INSTRUMENTS")
 
 

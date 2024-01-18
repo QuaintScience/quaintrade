@@ -3,7 +3,7 @@ from typing import Optional
 import pandas as pd
 import numpy as np
 
-from ..core.ds import (TradeType, OrderState, PositionType)
+from ..core.ds import (TradeType, PositionType, TradingProduct)
 
 from ..core.strategy import Strategy
 from ..core.indicator import (IndicatorPipeline,
@@ -20,6 +20,7 @@ class HiekinAshiStrategy(Strategy):
 
     def __init__(self,
                  *args,
+                 product: TradingProduct = TradingProduct.MIS,
                  st_period: int = 7,
                  st_multiplier: float = 2.5,
                  ma_period: int = 10,
@@ -33,6 +34,7 @@ class HiekinAshiStrategy(Strategy):
         self.bb_period = bb_period
         self.donchain_period = donchain_period
         self.atr_period = atr_period
+        self.product = product
         indicators = indicators=[(HeikinAshiIndicator(), None, None),
                                  #(SupertrendIndicator(period=self.st_period,
                                  #                     multiplier=self.st_multiplier), None, None),
@@ -59,19 +61,17 @@ class HiekinAshiStrategy(Strategy):
         non_trading_timeslots.extend(Strategy.NON_TRADING_FIRST_HOUR)
         non_trading_timeslots.extend(Strategy.NON_TRADING_AFTERNOON)
         kwargs["non_trading_timeslots"] = non_trading_timeslots
-        kwargs["context_required"] = ["30min", "1h"]
+        kwargs["context_required"] = ["2h", "1h"]
 
-        self.target_amt = 3
-
-        self.entry_threshold = 0.1
+        self.entry_threshold = 0.2
 
         """
         self.sl_factor = 2
         self.target_factor = 2.5
         """
 
-        self.sl_factor = 2
-        self.target_factor = 5
+        self.sl_factor = 3
+        self.target_factor = 7
 
         #self.sl_factor = 10
         #self.target_factor = 10
@@ -86,9 +86,9 @@ class HiekinAshiStrategy(Strategy):
 
     def get_entry(self, window: pd.DataFrame, trade_type: TradeType):
         if trade_type == TradeType.LONG:
-            return window.iloc[-1]["high"] + self.entry_threshold
+            return window.iloc[-1]["high"] + self.entry_threshold * window.iloc[-1][f"ATR_{self.atr_period}"]
         else:
-            return window.iloc[-1]["low"] - self.entry_threshold
+            return window.iloc[-1]["low"] - self.entry_threshold * window.iloc[-1][f"ATR_{self.atr_period}"]
 
     def get_target(self, window: pd.DataFrame, context: dict[str, pd.DataFrame], trade_type: TradeType):
         """
@@ -110,31 +110,6 @@ class HiekinAshiStrategy(Strategy):
         else:
             return window.iloc[-1]["high"] + self.sl_factor * window.iloc[-1][f"ATR_{self.atr_period}"]
 
-    def cancel_active_orders(self, broker: Broker):
-        for order in broker.get_orders():
-            if (order.state == OrderState.PENDING
-                and ("hiekinashi_long" in order.tags
-                     or "hiekinashi_short" in order.tags)):
-                broker.cancel_order(order)
-                storage = broker.get_tradebook_storage()
-                storage.store_order_execution(strategy=self.strategy_name,
-                                              run_name=broker.run_name,
-                                              run_id=broker.run_id,
-                                              date=broker.current_datetime(),
-                                              order=order,
-                                              event="OrderCancelled")
-
-        self.perform_squareoff(broker=broker)
-
-    def get_current_run(self, broker: Broker):
-        for order in broker.get_orders():
-            if (order.state == OrderState.PENDING
-                and "hiekinashi_long" in order.tags):
-                return TradeType.LONG
-            elif (order.state == OrderState.PENDING
-                and "hiekinashi_short" in order.tags):
-                return TradeType.SHORT
-
     def apply_impl(self,
                    broker: Broker,
                    scrip: str,
@@ -152,22 +127,25 @@ class HiekinAshiStrategy(Strategy):
                          f" L={window.iloc[-1]['low']}"
                          f" C={window.iloc[-1]['close']}"
                          f" {' '.join(colvals)}")
-        current_run = self.get_current_run(broker)
+        self.logger.info(f"1h"
+                         f'green {context["1h"].iloc[-1]["ha_trending_green"]}'
+                         f' red {context["1h"].iloc[-1]["ha_trending_red"]}')
+        current_run = self.get_current_run(broker,
+                                           scrip,
+                                           exchange)
         self.logger.info(f"Current Run: {current_run}")
         if self.can_trade(window, context):
             make_entry = False
-            if (((window.iloc[-1]["ha_long_trend"] == 1.0 and window.iloc[-2]["ha_long_trend"] != 1.0)
-                 or (window.iloc[-1]["ha_long_trend"] == 1.0 and current_run is None))
-                #and context["1d"].iloc[-1]["ha_trending_green"] == 1.0
-                and context["1h"].iloc[-1]["ha_trending_green"] == 1.0
+            if (window.iloc[-1]["ha_trending_green"] == 1.0
+                and context["2h"].iloc[-1]["ha_trending_green"] == 1.0
+                #and context["30min"].iloc[-1]["ha_trending_green"] == 1.0
                 and current_run != TradeType.LONG):
                 current_run = TradeType.LONG
                 make_entry = True
                 self.logger.debug(f"Entering long trade!")
-            if ((window.iloc[-1]["ha_short_trend"] == 1.0 and window.iloc[-2]["ha_short_trend"] != 1.0
-                 or (window.iloc[-1]["ha_short_trend"] == 1.0 and current_run is None))
-                #and context["1d"].iloc[-1]["ha_trending_red"] == 1.0
-                and context["1h"].iloc[-1]["ha_trending_red"] == 1.0
+            if (window.iloc[-1]["ha_trending_red"] == 1.0 
+                and context["2h"].iloc[-1]["ha_trending_red"] == 1.0
+                #and context["30min"].iloc[-1]["ha_trending_red"] == 1.0
                 and current_run != TradeType.SHORT):
                 current_run = TradeType.SHORT
                 make_entry = True
@@ -178,7 +156,16 @@ class HiekinAshiStrategy(Strategy):
                                    or np.isnan(self.get_target(window, context, current_run))):
                 qty = max(self.max_budget // window.iloc[-1]["close"], self.min_quantity)
                 self.logger.debug(f"Taking position!")
-                self.cancel_active_orders(broker=broker)
+                quantity = self.cancel_active_orders(broker=broker,
+                                                     scrip=scrip,
+                                                     exchange=exchange,
+                                                     product=self.product)
+
+                self.perform_squareoff(broker=broker,
+                                       scrip=scrip,
+                                       exchange=exchange,
+                                       quantity=quantity)
+
                 entry_order = self.take_position(scrip=scrip,
                                                  exchange=exchange,
                                                  broker=broker,
@@ -186,7 +173,7 @@ class HiekinAshiStrategy(Strategy):
                                                  trade_type=current_run,
                                                  price=self.get_entry(window, current_run),
                                                  quantity=qty,
-                                                 tags=[f"hiekinashi_{current_run.value}"])
+                                                 product=self.product)
                 self.take_position(scrip=scrip,
                                    exchange=exchange,
                                    broker=broker,
@@ -194,7 +181,7 @@ class HiekinAshiStrategy(Strategy):
                                    trade_type=current_run,
                                    price=self.get_stoploss(window, context, current_run),
                                    quantity=qty,
-                                   tags=[f"hiekinashi_{current_run.value}"],
+                                   product=self.product,
                                    parent_order=entry_order)
                 self.take_position(scrip=scrip,
                                    exchange=exchange,
@@ -203,5 +190,5 @@ class HiekinAshiStrategy(Strategy):
                                    trade_type=current_run,
                                    price=self.get_target(window, context, current_run),
                                    quantity=qty,
-                                   tags=[f"hiekinashi_{current_run.value}"],
+                                   product=self.product,
                                    parent_order=entry_order)

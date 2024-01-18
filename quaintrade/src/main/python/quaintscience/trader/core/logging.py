@@ -6,6 +6,7 @@ from typing import Union
 from enum import Enum
 import os
 import platform
+import datetime
 import logging
 
 
@@ -408,6 +409,6 @@ class DefaultPythonLogger(Logger):
         logger = logging.LoggerAdapter(self._logger, self.context)
         if typ == "warn":
             typ = "warning"  # Python deprecation of warn
-        print(f"LOG | {typ}: {msg}", flush=True)
+        print(f"LOG [{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]| {typ}: {msg}", flush=True)
         #getattr(logger, typ)(msg)
         return self

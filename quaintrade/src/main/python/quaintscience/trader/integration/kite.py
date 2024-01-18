@@ -8,6 +8,7 @@ from functools import cache
 from typing import Union, Optional
 
 from kiteconnect import KiteConnect, KiteTicker
+from kiteconnect.exceptions import InputException
 import pandas as pd
 import datetime
 import time
@@ -201,33 +202,53 @@ class KiteBroker(KiteBaseMixin,
                  **kwargs):
         self.orders_cache = []
         self.positions_cache = []
+        self.rate_limit_time: float = 0.33
         Broker.__init__(self, *args, **kwargs)
         KiteBaseMixin.__init__(self, *args, **kwargs)
         kwargs["on_order_update"] = self.order_callback
         KiteStreamingMixin.__init__(self, *args, **kwargs)
 
+    def get_state(self) -> dict:
+        return {"gtt_orders": self.gtt_orders,
+                "extra": {"orders_cache": self.orders_cache,
+                          "positions_cache": self.positions_cache}}
+
     # Order management
 
+    """
     def cancel_pending_orders(self, refresh_cache: bool = True):
         for order in self.get_orders(refresh_cache=refresh_cache):
             if order.state == OrderState.PENDING:
-                self.cancel_order(order, refresh=False)
+                self.cancel_order(order, refresh_cache=refresh_cache)
         self.get_orders(refresh_cache=refresh_cache)
+    """
 
     def cancel_order(self, order: Order, refresh_cache: bool = True) -> Order:
         self.logger.info(f"Cancelling order with order_id {order.order_id}...")
         for existing_order in self.get_orders(refresh_cache=refresh_cache):
             if existing_order.order_id == order.order_id:
                 if existing_order.state == OrderState.PENDING:
-                    self.kite.cancel_order(variety=self.kite.VARIETY_REGULAR,
-                                        order_id=order.order_id)
-                    self.get_orders(refresh=refresh_cache)
+                    try:
+                        self.kite.cancel_order(variety=self.kite.VARIETY_REGULAR,
+                                            order_id=order.order_id)
+                        time.sleep(self.rate_limit_time)
+                    except InputException:
+                        self.logger.warn(f"Could not delete order {order.order_id}")
+                        storage = self.get_tradebook_storage()
+                        storage.store_order_execution(self.strategy, self.run_name,
+                                                        run_id=self.run_id,
+                                                        date=self.current_datetime(),
+                                                        order=order, event="OrderCancelledFailed")
+                        continue
+                    self.get_orders(refresh_cache=refresh_cache)
                     storage = self.get_tradebook_storage()
                     storage.store_order_execution(self.strategy, self.run_name,
+                                                  run_id=self.run_id,
                                                 date=self.current_datetime(),
                                                 order=order, event="OrderCancelled")
                 else:
-                    self.logger.info(f"Did not cancel order as it's state is {order.state}")
+                    self.logger.info(f"Did not cancel order as it's state is {existing_order.state} {type(order.state)}")
+                break
 
     def update_order(self, order: Order, refresh_cache: bool = True) -> Order:
         self.logger.info(f"Attempting update of order with order_id {order.order_id}...")
@@ -241,6 +262,7 @@ class KiteBroker(KiteBaseMixin,
                                                     quantity=int(order.quantity),
                                                     price=order.price,
                                                     order=order.trigger_price)
+                    time.sleep(self.rate_limit_time)
                     order.order_id = order_id
                     self.get_orders(refresh_cache=refresh_cache)
                     return order
@@ -282,56 +304,63 @@ class KiteBroker(KiteBaseMixin,
                         "product": self.__translate_product(order),
                         "validity": order.validity}
         if order.order_type in [OrderType.LIMIT, OrderType.SL_LIMIT]:
-            order_kwargs["price"] = order.limit_price
+            order_kwargs["price"] = round(order.limit_price, 1)
         if order.order_type in [OrderType.SL_LIMIT, OrderType.SL_MARKET]:
-            order_kwargs["trigger_price"] = order.trigger_price
+            order_kwargs["trigger_price"] = round(order.trigger_price, 1)
         self.logger.info(f"KITE: {order_kwargs}")
         order_id = self.kite.place_order(**order_kwargs)
         order.order_id = order_id
-        self.orders_cache.append(order)
+        with self.order_state_lock:
+            self.orders_cache.append(order)
         self.get_orders(refresh_cache=refresh_cache)
-        self.logger.info(f"Placed order with order_id {order.order_id} for "
-                            f"{order.scrip} / {order.exchange} "
-                            f"qty={order.quantity} @ {order.limit_price} "
-                            f"of type {order.order_type}")
+        self.logger.info(f"Placed order {order.transaction_type} "
+                         f"with order_id {order.order_id} for "
+                         f"{order.scrip} / {order.exchange} "
+                         f"qty={order.quantity} @ {order.limit_price} "
+                         f"of type {order.order_type} [tags={order.tags}]")
         return order
 
     def order_callback(self, ws, message):
         self.logger.info(f"Received order update {message}")
-        self.__update_order_in_cache(message)
-        self.gtt_order_callback()
+        self.__update_order_in_cache(message) # Locks order cache
+        self.__update_gtt_orders_using_dct(message) # Locks gtt
+        self.gtt_order_callback() # Locks order cache intermittently and locks gtt
 
     def get_positions(self, refresh_cache: bool = True) -> list[Position]:
         if refresh_cache:
             positions = self.kite.positions()
+            holdings = self.kite.holdings()
+            positions["day"].extend(holdings)
         else:
             positions = {"day": [], "net": []}
         for position in positions["day"]:
             found_position_in_cache = False
-            for existing_position in self.positions_cache:
-                # print(existing_position, position)
-                if (existing_position.scrip == position["tradingsymbol"]
-                    and existing_position.exchange == position["exchange"]
-                    and existing_position.product == self.__reverse_translate_product(position["product"])):
-                    found_position_in_cache = True
-                    existing_position.quantity = position["quantity"]
-                    existing_position.last_price = position["last_price"]
-                    existing_position.pnl = position["pnl"]
-                    existing_position.average_price = position["average_price"]
-                    existing_position.timestamp = self.current_datetime()
-                    break
-            if not found_position_in_cache:
-                new_position = Position(scrip_id=position["instrument_token"],
-                                        scrip=position["tradingsymbol"],
-                                        exchange=position["exchange"],
-                                        exchange_id=position["exchange"],
-                                        product=self.__reverse_translate_product(position["product"]),
-                                        last_price=position["last_price"],
-                                        pnl=position["pnl"],
-                                        quantity=position["quantity"],
-                                        timestamp=self.current_datetime(),
-                                        average_price=position["average_price"])
-                self.positions_cache.append(new_position)
+            with self.position_state_lock:
+                for existing_position in self.positions_cache:
+                    # print(existing_position, position)
+                    if (existing_position.scrip == position["tradingsymbol"]
+                        and existing_position.exchange == position["exchange"]
+                        and existing_position.product == self.__reverse_translate_product(position["product"])):
+                        found_position_in_cache = True
+                        existing_position.quantity = position["quantity"]
+                        existing_position.last_price = position["last_price"]
+                        existing_position.pnl = position["pnl"]
+                        existing_position.average_price = position["average_price"]
+                        existing_position.timestamp = self.current_datetime()
+                        break
+                if not found_position_in_cache:
+                    new_position = Position(scrip_id=position["instrument_token"],
+                                            scrip=position["tradingsymbol"],
+                                            exchange=position["exchange"],
+                                            exchange_id=position["exchange"],
+                                            product=self.__reverse_translate_product(position["product"]),
+                                            last_price=position["last_price"],
+                                            pnl=position["pnl"],
+                                            quantity=position["quantity"],
+                                            timestamp=self.current_datetime(),
+                                            average_price=position["average_price"])
+                    self.positions_cache.append(new_position)
+        self.save_state()
         return self.positions_cache
 
     def __reverse_translate_order_type(self, order_type: str):
@@ -376,58 +405,70 @@ class KiteBroker(KiteBaseMixin,
         cached_order.filled_quantity = order["filled_quantity"]
         cached_order.pending_quantity = order["pending_quantity"]
         cached_order.cancelled_quantity = order["cancelled_quantity"]
-        cached_order.state = order["status"]
+        cached_order.state = self.__reverse_translate_order_state(order["status"])
         cached_order.raw_dict = order
 
     def __update_order_in_cache(self,
                                 order: dict):
-        order["status"] = self.__reverse_translate_order_state(order["status"])
 
         found_in_cache = False
-        for cached_order in self.orders_cache:
-            if order["order_id"] == cached_order.order_id:
-                self.__update_order_from_dct(cached_order=cached_order, 
-                                             order=order)
-                found_in_cache = True
-                break
-        if not found_in_cache:
-            new_order = Order(order_id=order["order_id"],
-                                exchange_id=order["exchange"],
-                                scrip=order["tradingsymbol"],
-                                scrip_id=order["instrument_token"],
-                                exchange=order["exchange"],
-                                transaction_type=self.__reverse_translate_transaction_type(order["transaction_type"]),
-                                raw_dict=order,
-                                state=order["status"],
-                                timestamp=order["order_timestamp"],
-                                order_type = self.__reverse_translate_order_type(order["order_type"]),
-                                product = self.__reverse_translate_product(order["product"]),
-                                quantity = order["quantity"],
-                                trigger_price = order["trigger_price"],
-                                limit_price = order["price"],
-                                filled_quantity = order["filled_quantity"],
-                                pending_quantity = order["pending_quantity"],
-                                cancelled_quantity = order["cancelled_quantity"])
-            self.orders_cache.append(new_order)
-        for from_order, _ in self.gtt_orders:
-            if from_order.order_id == order["order_id"]:
-                self.__update_order_from_dct(from_order, order)
+        with self.order_state_lock:
+            for cached_order in self.orders_cache:
+                if order["order_id"] == cached_order.order_id:
+                    self.logger.debug(f"Updated cached order {order['order_id']}")
+                    self.__update_order_from_dct(cached_order=cached_order, 
+                                                order=order)
+                    found_in_cache = True
+                    break
+            if not found_in_cache:
+                self.logger.debug(f"Creating new order in cache for {order['order_id']}")
+                new_order = Order(order_id=order["order_id"],
+                                    exchange_id=order["exchange"],
+                                    scrip=order["tradingsymbol"],
+                                    scrip_id=order["instrument_token"],
+                                    exchange=order["exchange"],
+                                    transaction_type=self.__reverse_translate_transaction_type(order["transaction_type"]),
+                                    raw_dict=order,
+                                    state=self.__reverse_translate_order_state(order["status"]),
+                                    timestamp=order["order_timestamp"],
+                                    order_type = self.__reverse_translate_order_type(order["order_type"]),
+                                    product = self.__reverse_translate_product(order["product"]),
+                                    quantity = order["quantity"],
+                                    trigger_price = order["trigger_price"],
+                                    limit_price = order["price"],
+                                    filled_quantity = order["filled_quantity"],
+                                    pending_quantity = order["pending_quantity"],
+                                    cancelled_quantity = order["cancelled_quantity"])
+                self.orders_cache.append(new_order)
 
     def get_orders(self, refresh_cache=True) -> list[Order]:
         if refresh_cache:
             orders = self.kite.orders()
+            time.sleep(self.rate_limit_time)
         else:
             orders = []
         for order in orders:
             self.__update_order_in_cache(order)
+        if refresh_cache:
+            for order in orders:
+                self.__update_gtt_orders_using_dct(order)
+            self.cancel_invalid_child_orders()
+            self.cancel_invalid_group_orders()
+            self.save_state()
         return self.orders_cache
+
+    def __update_gtt_orders_using_dct(self, order: dict):
+        with self.gtt_state_lock:
+            for from_order, _ in self.gtt_orders:
+                if from_order.order_id == order["order_id"]:
+                    self.__update_order_from_dct(from_order, order)
 
     def start_order_change_streamer(self):
         self.start_streamer()
 
 
 class KiteStreamingDataProvider(KiteBaseMixin, StreamingDataProvider, KiteStreamingMixin):
-    
+
     ProviderName = "kite"
 
     def __init__(self, *args, **kwargs):

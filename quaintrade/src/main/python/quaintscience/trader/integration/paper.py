@@ -112,7 +112,6 @@ class PaperBroker(Broker):
         self.commission_func = commission_func
         self.orders = []
         self.positions = {}
-        self.gtt_orders = []
 
         self.data = {}
         self.idx = {}
@@ -128,6 +127,12 @@ class PaperBroker(Broker):
                             "pending": 0}
 
         super().__init__(*args, **kwargs)
+
+    def get_state(self) -> dict:
+        return {"gtt_orders": self.gtt_orders,
+                "extra": {"orders": self.orders,
+                          "positions": self.positions,
+                          "current_time": self.current_time}}
 
     def init(self):
         del self.data
@@ -321,7 +326,6 @@ class PaperBroker(Broker):
                          inside_a_recursion=False):
         # self.logger.debug(f"{self.current_time} entered __process_orders scrip={scrip} exchange={exchange}")
         for order in self.get_orders():
-
             key = get_key_from_scrip_and_exchange(order.scrip, order.exchange)
             order_scrip, order_exchange = get_scrip_and_exchange_from_key(key)
             if scrip is not None and exchange is not None:
@@ -367,14 +371,15 @@ class PaperBroker(Broker):
                         self.cancel_invalid_child_orders()
                 elif order.order_type == OrderType.MARKET:
                     self.__add_position(order, last_price=candle["close"], price=candle["close"])
-                    self.cancel_invalid_child_orders()
 
                 if order.state == OrderState.COMPLETED:
                     self.cancel_invalid_child_orders()
                     self.cancel_invalid_group_orders()
+                    self.update_gtt_orders_for(order)
                 else:
                     self.order_stats["pending"] += 1
 
+        print("GTT ORDFER LEN", len(self.gtt_orders))
         gtt_state_changed = self.gtt_order_callback()
 
         if gtt_state_changed and self.refresh_orders_immediately_on_gtt_state_change:
@@ -383,11 +388,11 @@ class PaperBroker(Broker):
                                   exchange=exchange,
                                   inside_a_recursion=True)
 
-        for position in self.positions:
-            key = get_key_from_scrip_and_exchange(position.scrip, position.exchange)
-            position.last_price = candle = self.data[key].iloc[self.idx[key]]["close"]
-            position.pnl = (position.last_price - position.average_price) * position.quantity
-        self.order_callback(self.get_orders())
+        #for position in self.positions:
+        #    key = get_key_from_scrip_and_exchange(position.scrip, position.exchange)
+        #    position.last_price = candle = self.data[key].iloc[self.idx[key]]["close"]
+        #    position.pnl = (position.last_price - position.average_price) * position.quantity
+        #self.order_callback(self.get_orders())
         orders = []
         for order in self.get_orders():
             if order.state == OrderState.COMPLETED:

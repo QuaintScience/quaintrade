@@ -46,3 +46,10 @@ class SqliteOHLCStorage(SqliteStorage, OHLCStorageMixin):
                                          cols=cols,
                                          index_col="date",
                                          conflict_resolution_type=conflict_resolution_type)
+
+    def clear_data(self, scrip: str, exchange: str, conflict_resolution_type: str = "IGNORE"):
+        table_name = self.create_tables(scrip, exchange,
+                                        conflict_resolution_type=conflict_resolution_type)
+        self.connection.execute(f"DROP TABLE IF EXISTS {table_name}")
+        table_name = self.create_tables(scrip, exchange,
+                                        conflict_resolution_type=conflict_resolution_type)

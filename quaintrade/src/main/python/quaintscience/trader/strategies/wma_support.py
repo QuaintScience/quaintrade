@@ -246,6 +246,4 @@ class WMASupportStrategy(StrategyExecutor):
                             self.cancel_active_order()
                             self.take_position(window, trade_type=TradeType.SHORT, tags=[f"{self.ma_type}_support_{self.ma_period}"])
 
-
         return None
-            

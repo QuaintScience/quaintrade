@@ -20,3 +20,7 @@ class OHLCStorageMixin():
             fromdate: Union[str, datetime.datetime],
             todate: Union[str, datetime.datetime]) -> pd.DataFrame:
         pass
+
+    @abstractmethod
+    def clear_data(self, scrip: str, exchange: str):
+        pass
