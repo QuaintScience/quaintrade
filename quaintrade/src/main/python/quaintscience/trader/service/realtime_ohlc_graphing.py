@@ -1,60 +1,54 @@
-import asyncio
-import os
-from typing import Iterator
-import time
+import datetime
+from functools import partial
+from configargparse import ArgParser
 
 import pandas as pd
 
-import mplfinance as mpf
-import matplotlib
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
+from ..core.graphing import live_ohlc_plot
+from ..core.ds import OHLCStorageType
+from .common import DataProviderService
 
 
-matplotlib.use('TkAgg')
+class OHLCRealtimeGrapher(DataProviderService):
 
-import configargparse
-
-from ..integration.kite import KiteManager
-from .common import TradeManagerService
-
-
-class OHLCRealtimeGrapher(TradeManagerService):
+    default_config_file = ".historic.trader.env"
 
     def __init__(self,
-                 *args, 
-                 interval="10m",
+                 *args,
+                 interval: str = "1min",
+                 context_days: int = 1,
                  **kwargs):
+        self.to_date = datetime.datetime.now()
+        self.from_date = self.to_date - datetime.timedelta(days=context_days)
         self.interval = interval
-        super().__init__(*args, login_needed=False, **kwargs)
+        super().__init__(*args, **kwargs)
+        
+    def __get_live_data(self, instrument):
+        self.to_date = datetime.datetime.now()
+        live_data = self.data_provider.get_data_as_df(scrip=instrument["scrip"],
+                                                      exchange=instrument["exchange"],
+                                                      interval=self.interval,
+                                                      from_date=self.from_date,
+                                                      to_date=self.to_date,
+                                                      storage_type=OHLCStorageType.LIVE)
+        historic_data = self.data_provider.get_data_as_df(scrip=instrument["scrip"],
+                                                          exchange=instrument["exchange"],
+                                                          interval=self.interval,
+                                                          from_date=self.from_date,
+                                                          to_date=self.to_date,
+                                                          storage_type=OHLCStorageType.PERM)
+        if len(historic_data) == 0:
+            data = pd.DataFrame(columns=["open", "high", "low", "close"], index=pd.DatetimeIndex([datetime.datetime.now()]), data=[{"open": 0., "high": 0., "low": 0., "close": 0., "volume": 0}])
+        
+        data = pd.concat([live_data, historic_data], axis=0) if len(live_data) > 0 else historic_data
 
-    def animate(self, ival):
-        df = list(self.manager.get_redis_tick_data_as_ohlc(from_redis=True).values())[0]
-        self.ax.clear()
-        mpf.plot(df, ax=self.ax,type='candle', style=self.candlestick_style)
+        return data
 
     def start(self):
-        self.candlestick_style = mpf.make_mpf_style(base_mpf_style='yahoo', rc={'font.size': 6})
-        self.fig, self.axes = mpf.plot(list(self.manager.get_redis_tick_data_as_ohlc(from_redis=True).values())[0],
-                                       returnfig=True,
-                                       type='candle',
-                                       title='Live Data',
-                                       style=self.candlestick_style)
-        self.ax = self.axes[0]
-        ani = animation.FuncAnimation(self.fig, self.animate, interval=250)
-        mpf.show()
+        live_ohlc_plot(get_live_ohlc_func=partial(self.__get_live_data,
+                                                  instrument=self.instruments[0]))
 
-    @staticmethod
-    def get_args():
-
-        p = configargparse.ArgParser(default_config_files=['.kite.env'])
-        p.add('--redis_server', help="Redis server host", env_var="REDIS_SERVER")
-        p.add('--redis_port', help="Redis server port", env_var="REDIS_PORT")
-        p.add('--cache_path', help="Kite data cache path", env_var="CACHE_PATH")
-        p.add('--instruments', help="Instruments in scrip:exchange,scrip:exchange format", env_var="INSTRUMENTS")
-        return p.parse_known_args()
-
-
-if __name__ == "__main__":
-    listener = OHLCRealtimeGrapher()
-    listener.start()
+    @classmethod
+    def enrich_arg_parser(cls, p: ArgParser):
+        DataProviderService.enrich_arg_parser(p)
+        p.add('--plotting_interval', help="Plotting Interval", env_var="PLOTTING_INTERVAL")

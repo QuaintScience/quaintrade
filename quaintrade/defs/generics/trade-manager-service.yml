@@ -1,0 +1,35 @@
+variables:
+  api_key: $OS$(API_KEY)|$ENVFILE$(API_KEY)
+  api_secret: $OS$(API_SECRET)|$ENVFILE$(API_SECRET)
+  request_token: $OS$(REQUEST_TOKEN)|$ENVFILE$(REQUEST_TOKEN)
+  access_token: $OS$(ACCESS_TOKEN)|ENVFILE(ACCESS_TOKEN)
+  redis_server: $OS$(REDIS_SERVER)|$ENVFILE$(REDIS_SERVER)|localhost
+  redis_port: $OS$(REDIS_PORT:INT)|$ENVFILE$(REDIS_PORT:INT)|6379
+  cache_path: $OS$(CACHE_PATH)|$ENVFILE$(CACHE_PATH)
+  from_date: $OS$(FROM_DATE:date)|ARG(FROM_DATE:date)
+  to_date: $ARG$(FROM_DATE:date)|$OS$(TO_DATE:date)
+  instruments: $ARG$(INSTRUMENTS)|$OS$(INSTRUMENTS)
+  provider: $ARG$(PROVIDER)|$OS$(PROVIDER)|kite
+  login_needed: $ARG$(LOGIN_NEEDED:bool)|false
+
+postprocess_variables:
+  instruments:
+    lambda: "[{'scrip': instrument.split(':'), 'exchange': instrument.split(':')} for instrument in x.split(',')]"
+
+classes:
+  TradeManagerService1:
+    class: quaintscience.trader.service.common.TradeManagerService
+    kwargs:
+      redis_server: $VAR$(redis_server)
+      redis_port: $VAR$(redis_port)
+      cache_path: $VAR$(cache_path)
+      api_key: $VAR$(api_key)
+      api_secret: $VAR$(api_secret)
+      request_token: $VAR$(request_token)
+      access_token: $VAR$(access_token)
+      instruments: $VAR$(instruments)
+      provider: $VAR$(provider)
+      login_needed: $VAR$(login_needed)
+
+entry_points:
+  TradeManagerService1: start

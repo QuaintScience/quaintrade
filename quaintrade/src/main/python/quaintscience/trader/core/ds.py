@@ -1,6 +1,12 @@
 from enum import Enum
 from dataclasses import dataclass
 import datetime
+from typing import Optional
+
+
+from .util import (default_dataclass_field,
+                   current_datetime_field,
+                   new_id_field)
 
 
 class OrderType(Enum):
@@ -30,22 +36,21 @@ class OrderState(Enum):
     CANCELLED = "cancelled"
     PENDING = "pending"
     COMPLETED = "completed"
+    REJECTED = "rejected"
 
 
 @dataclass
 class Order:
-    order_id: str
     scrip_id: str
     exchange_id: str
-    transaction_type: TransactionType
     scrip: str
     exchange: str
-    raw_dict: dict
-    timestamp: datetime.datetime
-    order_type: OrderType
-    product: TradingProduct
-    quantity: int
-    purchase_price: float
+    order_id: str = new_id_field()
+    transaction_type: TransactionType = TransactionType.BUY
+    timestamp: datetime.datetime = current_datetime_field()
+    order_type: OrderType = OrderType.MARKET
+    product: TradingProduct = TradingProduct.MIS
+    quantity: int = 1    
     validity: str = "DAY"
     state: OrderState = OrderState.PENDING
     trigger_price: float = None
@@ -53,26 +58,45 @@ class Order:
     filled_quantity: float = 0
     pending_quantity: float = 0
     cancelled_quantity: float = 0
+    price: float = 0
+    raw_dict: dict = default_dataclass_field({})
+    tags: list = default_dataclass_field([])
+    parent_order_id: Optional[str] = None
+    group_id: Optional[str] = None
+   
+    def __hash__(self):
+        return hash(self.scrip, self.exchange, self.product.value, self.order_id)
 
+    def __eq__(self, other: object):
+        if not isinstance(other, Position):
+            return False
+        if (self.scrip == other.scrip
+            and self.exchange == other.exchange
+            and self.product == other.product
+            and self.order_id == other.order_id):
+            return True
+        return False
 
 @dataclass
 class Position:
-    position_id: str
-    timestamp: datetime.datetime
     scrip_id: str
     scrip: str
     exchange_id: str
     exchange: str
-    product: TradingProduct
-    quantity: int
-    average_price: float
-    last_price: float
-    pnl: float
-    day_change: float
-    raw_dict: dict
+    position_id: str = new_id_field()
+    product: TradingProduct = TradingProduct.MIS
+    timestamp: datetime.datetime = current_datetime_field()
+    quantity: int = 0
+    average_price: float = 0.
+    last_price: float = 0.
+    pnl: float = 0.
+    day_change: float = 0.
+    charges: float = 0.
+    raw_dict: dict = default_dataclass_field({})
+    stats: dict = default_dataclass_field({})
 
     def __hash__(self):
-        return hash(self.scrip, self.exchange, self.product)
+        return hash(self.scrip, self.exchange, self.product.value)
 
     def __eq__(self, other: object):
         if not isinstance(other, Position):
@@ -84,6 +108,21 @@ class Position:
         return False
 
 
-class ExecutionType(Enum):
-    BACKTESTING = "backtesting"
+class CandleType(Enum):
+
+    OHLC = "ohlc"
+    HEIKIN_ASHI = "heikin_ashi"
+
+
+class OHLCStorageType(Enum):
+
     LIVE = "live"
+    PERM = "perm"
+
+
+class PositionType(Enum):
+
+    ENTRY = "entry"
+    STOPLOSS = "stoploss"
+    TARGET = "target"
+    SQUAREOFF = "squareoff"

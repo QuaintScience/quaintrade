@@ -6,6 +6,7 @@ from typing import Union
 from enum import Enum
 import os
 import platform
+import datetime
 import logging
 
 
@@ -36,10 +37,11 @@ class Logger(ABC):  # pylint: disable=too-many-instance-attributes
     """Logger Base"""
 
     def __init__(self, name,  # pylint: disable=too-many-arguments
+                 *args,
                  default_log_level=None,
                  handlers=None,
                  default_opts=None,
-                 default_context=None):
+                 default_context=None, **kwargs):
         if default_log_level is None:
             default_log_level = LogLevel.DEBUG
         if isinstance(default_log_level, str):
@@ -57,6 +59,7 @@ class Logger(ABC):  # pylint: disable=too-many-instance-attributes
         self.default_context = default_context
         self.init()
         self.post_init()
+        super().__init__(*args, **kwargs)
 
     def init(self) -> Logger:
         """Initialize Logger"""
@@ -369,7 +372,6 @@ class LoggerMixin:  # pylint: disable=too-few-public-methods
         if logger is None:
             logger = DefaultPythonLogger("")
         self.logger = logger
-        super().__init__()
 
 
 class DefaultPythonLogger(Logger):
@@ -407,6 +409,6 @@ class DefaultPythonLogger(Logger):
         logger = logging.LoggerAdapter(self._logger, self.context)
         if typ == "warn":
             typ = "warning"  # Python deprecation of warn
-        print(f"LOG | {typ}: {msg}")
+        print(f"LOG [{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]| {typ}: {msg}", flush=True)
         #getattr(logger, typ)(msg)
         return self

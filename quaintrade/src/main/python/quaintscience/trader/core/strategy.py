@@ -1,293 +1,345 @@
 from abc import ABC, abstractmethod
 from typing import Optional, Union
 import copy
+import os
+import pickle
+from functools import partial
 
 import pandas as pd
 
 from .logging import LoggerMixin
-from .ds import Order, TradeType, OrderType, TransactionType, ExecutionType
+from .ds import (Order,
+                 TradeType,
+                 OrderState,
+                 OrderType,
+                 TransactionType,
+                 TradingProduct)
 from .indicator import IndicatorPipeline
 
-from ..integration.common import TradeManager
+from .roles import Broker
+from .ds import PositionType
 
+class Strategy(ABC, LoggerMixin):
 
-class StrategyExecutor(ABC, LoggerMixin):
-
-    NON_TRADING_FIRST_HOUR = [{"from": {"hour": 9, "minute": 0},
-                               "to": {"hour" 9, "minute": 59}}]
-    NON_TRADING_AFTERNOON = [{"from": {"hour": 2, "minute": 30},
-                              "to": {"hour" 3, "minute": 15}}]
+    NON_TRADING_FIRST_HOUR = [{"from": {"hour": 9,
+                                        "minute": 0},
+                               "to": {"hour": 9,
+                                      "minute": 15}}]
+    NON_TRADING_AFTERNOON = [{"from": {"hour": 15,
+                                       "minute": 00},
+                              "to": {"hour": 15,
+                                     "minute": 59}}]
 
     def __init__(self,
                  indicator_pipeline: IndicatorPipeline,
-                 buy_order_template: Order,
-                 sell_order_template: Order,
-                 trade_manager: TradeManager,
+                 *args,
+                 default_interval: str = "3min",
                  non_trading_timeslots: list[dict[str, str]] = None,
                  intraday_squareoff: bool = True,
                  squareoff_hour: int = 15,
-                 squareoff_minute: int = 10,
-                 execution_type: ExecutionType = ExecutionType.BACKTESTING,
-                 moving_window_size: int = 2,
-                 *args, **kwargs):
+                 squareoff_minute: int = 00,
+                 plottables: Optional[dict] = None,
+                 default_tags: Optional[list] = None,
+                 context_required: Optional[list[str]] = None,
+                 max_budget: float = 10000,
+                 min_quantity: int = 1,
+                 long_position_tag: Optional[str] = None,
+                 short_position_tag: Optional[str] = None,
+                 **kwargs):
+        
         self.indicator_pipeline = indicator_pipeline
-        self.buy_order_template = buy_order_template
-        self.sell_order_template = sell_order_template
         self.intraday_squareoff = intraday_squareoff
         self.squareoff_hour = squareoff_hour
         self.squareoff_minute = squareoff_minute
         if non_trading_timeslots is None:
             non_trading_timeslots = []
         self.non_trading_timeslots = non_trading_timeslots
-        self.trade_manager = trade_manager
-        self.execution_type = execution_type
-        self.moving_window_size = moving_window_size
-        self.order_journal = []
-
+        self.default_interval = default_interval
+        if plottables is None:
+            plottables = {"indicator_fields": []}
+        if default_tags is None:
+            default_tags = []
+        if context_required is None:
+            context_required = []
+        self.plottables = plottables
+        self.default_tags = default_tags
+        self.context_required = context_required
+        self.min_quantity = min_quantity
+        self.max_budget = max_budget
+        if long_position_tag is None:
+            long_position_tag = f"{self.__class__.__name__}_long"
+        if short_position_tag is None:
+            short_position_tag = f"{self.__class__.__name__}_short"
+        self.long_position_tag = long_position_tag
+        self.short_position_tag = short_position_tag
         super().__init__(*args, **kwargs)
 
-    def perform_squareoff(self, window: pd.DataFrame):
-        if self.execution_type == ExecutionType.BACKTESTING:
-            self.trade_manager.set_backtesting_time(window.iloc[-1].index.to_pydatetime())
-        if (window.iloc[-1].index.dt.hour >= self.squareoff_hour and
-            window.iloc[-1].index.dt.minute >= self.squareoff_minute):
-            self.trade_manager.cancel_pending_orders()
-            positions = self.trade_manager.get_positions()
-            for position in positions:
-                if position.quantity > 0:
-                    self.trade_manager.express_market_order(scrip=position.scrip,
-                                                            exchange=position.exchange,
-                                                            quantity=position.quantity,
-                                                            transaction_type=TransactionType.SELL)
-                if position.quantity < 0:
-                    self.trade_manager.express_market_order(scrip=position.scrip,
-                                                            exchange=position.exchange,
-                                                            quantity=-position.quantity,
-                                                            trade_type=TransactionType.BUY)
+    @property
+    def strategy_name(self):
+        return f"{self.__class__.__name__}"
 
-    def can_trade(self, window: pd.DataFrame):
+    def cancel_active_orders(self, broker: Broker,
+                             scrip: Optional[str] = None,
+                             exchange: Optional[str] = None,
+                             product: Optional[TradingProduct] = None):
+        quantity = 0
+        visited_parent_ids = set()
+        for order in broker.get_orders(refresh_cache=True):
+            if (order.state == OrderState.PENDING
+                and (self.long_position_tag in order.tags
+                     or self.short_position_tag in order.tags)):
+                if product is not None and order.product != product:
+                    continue
+                if scrip is not None and order.scrip != scrip:
+                    continue
+                if exchange is not None and order.exchange != exchange:
+                    continue
+                if (order.parent_order_id not in visited_parent_ids
+                    and ("target" in order.tags or "stoploss" in order.tags)):
+                    quantity += -order.quantity if order.transaction_type == TransactionType.BUY else order.quantity
+                broker.cancel_order(order, refresh_cache=True)
+                broker.delete_gtt_orders_for(order)
+                storage = broker.get_tradebook_storage()
+                storage.store_order_execution(strategy=self.strategy_name,
+                                              run_name=broker.run_name,
+                                              run_id=broker.run_id,
+                                              date=broker.current_datetime(),
+                                              order=order,
+                                              event="OrderCancelled")
+                if order.parent_order_id is not None:
+                    visited_parent_ids.add(order.parent_order_id)
+        broker.cancel_invalid_child_orders()
+        broker.cancel_invalid_group_orders()
+        broker.get_orders(refresh_cache=True)
+        return quantity
+
+    def get_current_run(self, broker: Broker,
+                        scrip: str, exchange: str):
+        for order in broker.get_orders(refresh_cache=True):
+            if (order.state == OrderState.PENDING
+                and self.long_position_tag in order.tags
+                and order.scrip == scrip
+                and order.exchange == exchange):
+                return TradeType.LONG
+            elif (order.state == OrderState.PENDING
+                and self.short_position_tag in order.tags
+                and order.scrip == scrip
+                and order.exchange == exchange):
+                return TradeType.SHORT
+
+    def perform_squareoff(self, broker: Broker,
+                          scrip: Optional[str] = None,
+                          exchange: Optional[str] = None,
+                          quantity: Optional[int] = None,
+                          product: Optional[TradingProduct] = None):
+
+        positions = broker.get_positions()
+        for position in positions:
+            if scrip is not None and exchange is not None:
+                if position.scrip != scrip or position.exchange != exchange:
+                    continue
+            if product is not None and position.product != product:
+                continue
+            squareoff_transaction = None
+
+            if quantity is None:
+                if position.quantity > 0:
+                    squareoff_transaction = TransactionType.SELL
+                elif position.quantity < 0:
+                    squareoff_transaction = TransactionType.BUY
+            else:
+                if quantity > 0:
+                    if position.quantity >= quantity and product in [TradingProduct.NRML, TradingProduct.CNC]:
+                        self.logger.info(f"Did not square off {scrip} / {exchange} type {product}"
+                                         f" as position qty {position.quantity} < sq qty {quantity}")
+                        continue
+                    squareoff_transaction = TransactionType.SELL
+                elif quantity < 0:
+                    squareoff_transaction = TransactionType.BUY
+
+            squareoff_quantity = abs(position.quantity) if quantity is None else abs(quantity)
+
+            if squareoff_transaction is not None:
+                broker.place_express_order(scrip=position.scrip,
+                                           exchange=position.exchange,
+                                           quantity=squareoff_quantity,
+                                           transaction_type=squareoff_transaction,
+                                           order_type=OrderType.MARKET,
+                                           tags=["squareoff_order"],
+                                           strategy=self.strategy_name,
+                                           run_name=broker.run_name,
+                                           run_id=broker.run_id)
+                self.logger.info(f"Squared off {position.quantity} in {position.scrip} with {squareoff_transaction}")
+
+    def perform_intraday_squareoff(self,
+                                   broker: Broker,
+                                   window: pd.DataFrame):
+        if (window.iloc[-1].name.hour >= self.squareoff_hour and
+            window.iloc[-1].name.minute >= self.squareoff_minute
+            and self.intraday_squareoff):
+            self.cancel_active_orders(broker,
+                                      product=TradingProduct.MIS)
+            self.perform_squareoff(broker)
+            return True
+        return False
+
+    def can_trade(self, window: pd.DataFrame, context: dict[str, pd.DataFrame]):
+        return self.__can_trade_in_given_timeslot(window) and self.__can_trade_with_context(context)
+
+    def __can_trade_with_context(self, context: dict[str, pd.DataFrame]):
+        for key in self.context_required:
+            if key not in context or len(context[key]) == 0:
+                self.logger.info(f"Context {key} is empty. So not trading...")
+                return False
+        return True
+
+    def __can_trade_in_given_timeslot(self, window: pd.DataFrame):
         row = window.iloc[-1]
         for non_trading_timeslot in self.non_trading_timeslots:
-            if (row.index.dt.hour > non_trading_timeslot["from"]["hour"]
-                or (row.index.dt.hour == non_trading_timeslot["from"]["hour"] and
-                    row.index.dt.minute >= non_trading_timeslot["from"]["minute"])):
-                if (row.index.dt.hour < non_trading_timeslot["to"]["hour"]
-                    or (row.index.dt.hour == non_trading_timeslot["to"]["hour"] and
-                    row.index.dt.minute <= non_trading_timeslot["to"]["minute"])):
+            if (row.name.hour > non_trading_timeslot["from"]["hour"]
+                or (row.name.hour == non_trading_timeslot["from"]["hour"] and
+                    row.name.minute >= non_trading_timeslot["from"]["minute"])):
+                if (row.name.hour < non_trading_timeslot["to"]["hour"]
+                    or (row.name.hour == non_trading_timeslot["to"]["hour"] and
+                    row.name.minute <= non_trading_timeslot["to"]["minute"])):
                     return False
         return True
-    
+
+    def take_position(self,
+                      scrip: str,
+                      exchange: str,
+                      broker: Broker,
+                      position_type: PositionType,
+                      trade_type: TradeType,
+                      price: float,
+                      quantity: int = 1,
+                      product: TradingProduct = TradingProduct.MIS,
+                      use_sl_market_order: bool = False,
+                      tags: Optional[list] = None,
+                      group_id: Optional[str] = None,
+                      parent_order: Optional[Order] = None) -> Order:
+
+        if tags is None:
+            tags = []
+
+        all_tags = copy.deepcopy(self.default_tags)
+        all_tags.extend(tags)
+        all_tags = list(set(all_tags))
+        all_tags.append(position_type.value)
+
+        if trade_type == TradeType.LONG:
+            all_tags.append(self.long_position_tag)
+        elif trade_type == TradeType.SHORT:
+            all_tags.append(self.short_position_tag)
+        else:
+            raise ValueError(f"Don't know how to handle {trade_type}")
+        order = None
+
+        parent_id = None
+        if parent_order is not None:
+            parent_id = parent_order.order_id
+
+        order_template = partial(broker.create_express_order,
+                                 scrip=scrip,
+                                 exchange=exchange,
+                                 quantity=quantity,
+                                 product=product,
+                                 group_id=group_id,
+                                 parent_order_id=parent_id)
+
+        if position_type == PositionType.ENTRY:
+
+            if trade_type == TradeType.LONG:
+                transaction_type = TransactionType.BUY
+            else:
+                transaction_type = TransactionType.SELL
+
+            limit_order_type = OrderType.SL_LIMIT if not use_sl_market_order else OrderType.SL_MARKET
+            order = order_template(transaction_type=transaction_type,
+                                   order_type=limit_order_type,
+                                   trigger_price=price,
+                                   limit_price=price,
+                                   tags=all_tags)
+            order = broker.place_order(order)
+        elif position_type == PositionType.STOPLOSS or position_type == PositionType.TARGET:
+
+            if trade_type == TradeType.LONG:
+                transaction_type = TransactionType.SELL
+            else:
+                transaction_type = TransactionType.BUY
+
+            if position_type == PositionType.STOPLOSS:
+                limit_order_type = OrderType.SL_LIMIT if not use_sl_market_order else OrderType.SL_MARKET
+            else:
+                limit_order_type = OrderType.LIMIT
+
+            order = order_template(transaction_type=transaction_type,
+                                   order_type=limit_order_type,
+                                   trigger_price=price,
+                                   limit_price=price,
+                                   tags=all_tags)
+            order = broker.place_gtt_order(parent_order, order)
+        else:
+            raise ValueError(f"Cannot take position for {position_type}")
+        self.logger.info(f"Strategy: Take Position: Order placed: {order}")
+        return order
+
+
+    def take_predefined_position(self,
+                                 scrip: Union[str, dict[PositionType, str]],
+                                 exchange: str,
+                                 broker: Broker,
+                                 trade_type: TradeType,
+                                 entry_price: float,
+                                 stoploss_price: float,
+                                 target_price: float,
+                                 quantity: int = 1,
+                                 product: TradingProduct = TradingProduct.MIS,
+                                 use_sl_market_order: bool = False,
+                                 tags: Optional[list] = None,
+                                 group_id: Optional[str] = None):
+        
+        take_position = partial(self.take_position,
+                                scrip=scrip,
+                                exchange=exchange,
+                                broker=broker,
+                                trade_type=trade_type,
+                                quantity=quantity,
+                                product=product,
+                                use_sl_market_order=use_sl_market_order,
+                                tags=tags,
+                                group_id=group_id)
+
+        entry_order = take_position(position_type=PositionType.ENTRY,
+                                    price=entry_price)
+        stoploss_order = take_position(position_type=PositionType.STOPLOSS,
+                                       price=stoploss_price,
+                                       parent_order=entry_order)
+        target_order = take_position(position_type=PositionType.TARGET,
+                                     price=target_price,
+                                     parent_order=entry_order)
+        return {"entry": entry_order, "stoploss": stoploss_order, "target": target_order}
+
+    def compute_indicators(self, df: pd.DataFrame):
+        df, _, _ = self.indicator_pipeline.compute(df)
+        return df
+
+    def apply(self, broker: Broker,
+              scrip: str,
+              exchange: str,
+              window: pd.DataFrame,
+              context: dict[str, pd.DataFrame]) -> None:
+        self.apply_impl(broker=broker,
+                        scrip=scrip,
+                        exchange=exchange,
+                        window=window,
+                        context=context)            
+        self.perform_intraday_squareoff(broker=broker, window=window)
+
     @abstractmethod
-    def get_entry_price(self, window: pd.DataFrame, trade_type: TradeType):
+    def apply_impl(self, broker: Broker,
+                   scrip: str,
+                   exchange: str,
+                   window: pd.DataFrame,
+                   context: dict[str, pd.DataFrame]) -> None:
         pass
-
-    @abstractmethod
-    def get_stoploss(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        pass
-
-    @abstractmethod
-    def get_target(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        pass
-
-    def take_position(self, window: pd.DataFrame, trade_type: TradeType):
-        if self.execution_type == ExecutionType.BACKTESTING:
-            self.trade_manager.set_backtesting_time(window.iloc[-1].index.to_pydatetime())
-        entry_order = None
-        if trade_type == TradeType.LONG:
-            entry_order = copy.deepcopy(self.buy_order_template)
-        else:
-            entry_order = copy.deepcopy(self.sell_order_template)
-        entry_order.order_type = OrderType.LIMIT
-        entry_order.limit_price = self.get_entry_price(window=window, trade_type=TradeType.BUY)
-        entry_order = self.trade_manager.place_order(entry_order)
-
-        stoploss_order = None
-        if trade_type == TradeType.LONG:
-            stoploss_order = copy.deepcopy(self.sell_order_template)
-        else:
-            stoploss_order = copy.deepcopy(self.buy_order_template)
-        stoploss_order.order_type = OrderType.SL_LIMIT
-        stoploss_order.trigger_price = self.get_stoploss(window=window, trade_type=TradeType.BUY)
-        stoploss_order.limit_price = self.get_stoploss(window=window, trade_type=TradeType.BUY)
-
-        stoploss_order = self.trade_manager.place_sl_on_entry(entry_order, stoploss_order)
-        self.order_journal.append({"entry": entry_order,
-                                   "sl": stoploss_order,
-                                   "timestamp": window.iloc[-1].index})
-
-    @abstractmethod
-    def trade(self,
-              df: pd.DataFrame,
-              stream: bool = False) -> list[Order]:
-        if not stream:
-            for window in df.rolling(self.moving_window_size):
-                
-
-
-class PriceEntryMixin(ABC):
-
-    @abstractmethod
-    def get_entry_price(self, window: pd.DataFrame, trade_type: TradeType):
-        pass
-
-
-class NextPsychologicalPriceEntryMixin(PriceEntryMixin):
-
-    def __init__(self,
-                 price_column: str,
-                 *args,
-                 psychological_number: float = 10,
-                 extra: float = 1,
-                 **kwargs):
-        self.psychological_number = psychological_number
-        self.price_column = price_column
-        self.extra = extra
-        super().__init__(*args, **kwargs)
-
-    def get_entry_price(self, window: pd.DataFrame, trade_type: TradeType):
-        x = window.iloc[-1][self.price_column]
-        if trade_type == TradeType.BUY:
-            return (x - x % self.psychological_number) + self.psychological_number + self.extra
-        else:
-            return (x - x % self.psychological_number)
-
-
-class CandleBasedPriceEntryMixin(PriceEntryMixin):
-
-    def __init__(self,
-                 price_column: str,
-                 *args,
-                 idx: int = -1,
-                 extra: float = 1,
-                 **kwargs):
-        self.price_column = price_column
-        self.extra = extra
-        self.idx = idx
-        super().__init__(*args, **kwargs)
-
-    def get_entry_price(self, window: pd.DataFrame, trade_type: TradeType):
-        x = window.iloc[self.idx][self.price_column]
-        if trade_type == TradeType.LONG:
-            return x + self.extra
-        else:
-            return x - self.extra
-
-
-
-class StopLossAndTargetMixin(ABC):
-
-    def __init__(self, *args, is_trailing: bool = False, **kwargs):
-        self.is_trailing = is_trailing
-        super().__init__(*args, **kwargs)
-
-    @abstractmethod
-    def get_stoploss(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        pass
-
-    @abstractmethod
-    def get_target(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        pass
-
-
-class AbsoluteStopLossAndTargetMixin(StopLossAndTargetMixin):
-
-    def __init__(self,
-                 absolute_stoploss_value: float,
-                 absolute_target_value: float,
-                 *args,
-                 **kwargs):
-        self.absolute_stoploss_value = absolute_stoploss_value
-        self.absolute_target_value = absolute_target_value
-        super().__init__(*args, **kwargs)
-
-    def get_stoploss(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        return self.absolute_stoploss_value
-
-    def get_target(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        return self.absolute_target_value
-
-
-class RelativeStopLossAndTargetMixin(StopLossAndTargetMixin):
-
-    def __init__(self,
-                 relative_stoploss_value: float,
-                 relative_target_value: float,
-                 price_column: str,
-                 *args,
-                 **kwargs):
-        self.relative_stoploss_value = relative_stoploss_value
-        self.relative_target_value = relative_target_value
-        self.price_column = price_column
-        super().__init__(*args, **kwargs)
-
-    def get_stoploss(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        if trade_type == TradeType.LONG:
-            return window.iloc[-1][self.price_column] - self.relative_stoploss_value
-        else:
-            return window.iloc[-1][self.price_column] + self.relative_stoploss_value
-    
-    def get_target(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        if trade_type == TradeType.LONG:
-            return window.iloc[-1][self.price_column] + self.relative_target_value
-        else:
-            return window.iloc[-1][self.price_column] - self.relative_target_value
-
-
-class CandleBasedStopLossAndTargetMixin(StopLossAndTargetMixin):
-
-    def __init__(self,
-                 entry_column: str,
-                 stoploss_column: str,
-                 *args,
-                 entry_candle_idx: int = -1,
-                 stoploss_candle_idx: int = -1,
-                 extra: float = 1.0,
-                 target_multiplier: float = 2.0,
-                 **kwargs):
-        self.entry_column = entry_column
-        self.stoploss_column = stoploss_column
-        self.extra = extra
-        self.target_multiplier = target_multiplier
-        self.entry_candle_idx = entry_candle_idx
-        self.stoploss_candle_idx = stoploss_candle_idx
-        super().__init__(*args, **kwargs)
-
-    def get_stoploss(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        if trade_type == TradeType.LONG:
-            return window.iloc[self.stoploss_candle_idx][self.stoploss_column] - self.extra
-        else:
-            return window.iloc[self.stoploss_candle_idx][self.stoploss_column] + self.extra
-    
-    def get_target(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        abs_val = self.target_multiplier * abs(window.iloc[self.entry_candle_idx][self.entry_column] - window.iloc[self.stoploss_candle_idx][self.stoploss_column])
-        if trade_type == TradeType.LONG:
-            return window.iloc[self.entry_candle_idx][self.entry_column] + abs_val
-        else:
-            return window.iloc[self.entry_candle_idx][self.entry_column] - abs_val
-
-
-class IndicatorValueBasedStopLossAndTargetMixin(StopLossAndTargetMixin):
-
-    def __init__(self,
-                 absolute_target_value: float,
-                 stoploss_indicator_column: str,
-                 price_column: str,
-                 *args,
-                 extra: float = 1.0,
-                 **kwargs):
-
-        self.absolute_target_value = absolute_target_value
-        self.stoploss_indicator_column = stoploss_indicator_column
-        self.price_column = price_column
-        self.extra = extra
-        super().__init__(*args, **kwargs)
-
-    def get_stoploss(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        if trade_type == TradeType.LONG:
-            return window.iloc[-1][self.stoploss_indicator_column] - self.extra
-        else:
-            return window.iloc[-1][self.stoploss_indicator_column] + self.extra
-
-    def get_target(self, window: pd.DataFrame, trade_type: TradeType) -> float:
-        return self.absolute_target_value
- 
