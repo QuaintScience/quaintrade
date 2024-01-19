@@ -9,17 +9,34 @@ class ManagerMixin():
         pass
 
     @abstractmethod
-    def get_trade_service_providers(self, provider_type: Optional[str] = None):
+    def get_data_providers(self):
         pass
 
     @abstractmethod
-    def store_trade_service_provider(self,
-                                     name: str,
-                                     ProviderClass: str,
-                                     auth_cache_filepath: str,
-                                     storage_class: str = "quaintscience.trader.core.persistence.SqliteOHLCStorage",
-                                     auth_credentials: Optional[dict] = None,                          
-                                     custom_kwargs: Optional[dict] = None):
+    def store_data_provider(self,
+                            name: str,
+                            ProviderClass: str,
+                            auth_cache_filepath: str,
+                            StorageClass: str = "quaintscience.trader.core.persistence.sqlite.ohlc.SqliteOHLCStorage",
+                            TradingBookStorageClass: str = "quaintscience.trader.core.persistence.tradebook.SqliteTradeBookStorage",
+                            auth_credentials: Optional[dict] = None,
+                            thread_id: str = "default",
+                            run_name: Optional[str] = None,
+                            custom_kwargs: Optional[dict] = None):
+        pass
+
+    @abstractmethod
+    def get_brokers(self):
+        pass
+
+    @abstractmethod
+    def store_broker(self,
+                     name: str,
+                     ProviderClass: str,
+                     auth_cache_filepath: str,
+                     StorageClass: str = "quaintscience.trader.core.persistence.SqliteOHLCStorage",
+                     auth_credentials: Optional[dict] = None,                          
+                     custom_kwargs: Optional[dict] = None):
         pass
 
     @abstractmethod
@@ -32,7 +49,6 @@ class ManagerMixin():
                        StrategyClass: str,
                        strategy_kwargs: Optional[dict] = None):
         pass
-
 
     @abstractmethod
     def get_backtesting_templates(self):
@@ -50,7 +66,8 @@ class ManagerMixin():
                                    plot_results: str = False,
                                    window_size: int = 5,
                                    live_trading_mode: bool = False,
-                                   clear_tradebook_for_scrip_and_exchange: bool = False):
+                                   clear_tradebook_for_scrip_and_exchange: bool = False,
+                                   custom_kwargs: Optional[dict] = None):
         pass
 
     @abstractmethod
@@ -63,21 +80,23 @@ class ManagerMixin():
                              run_id: str,
                              start_time: datetime.datetime,
                              end_time: datetime.datetime,
-                             result: str):
+                             result: dict):
         pass
 
     @abstractmethod
-    def get_live_traders(self):
+    def get_live_templates(self):
         pass
 
     @abstractmethod
-    def put_live_trader(self,
-                        name: str,
-                        data_provider_name: str,
-                        broker_name: str,
-                        data_context_size: int = 60,
-                        online_mode: bool = True,
-                        bot_custom_kwargs: Optional[dict] = None):
+    def put_live_template(self,
+                          name: str,
+                          data_provider_name: str,
+                          broker_name: str,
+                          strategy_name: str,
+                          interval: str,
+                          data_context_size: int,
+                          online_mode: bool,
+                          custom_kwargs: dict):
         pass
 
     @abstractmethod
@@ -86,8 +105,10 @@ class ManagerMixin():
 
     @abstractmethod
     def store_live_trader_stats(self,
-                              live_trader_name: str,
-                              start_time: datetime.datetime,
-                              end_time: datetime.datetime,
-                              instruments: list[str]):
+                                live_trader_name: str,
+                                start_time: datetime.datetime,
+                                end_time: datetime.datetime,
+                                instruments: list[str],
+                                run_id: str,
+                                result: dict):
         pass

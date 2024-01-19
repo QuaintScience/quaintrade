@@ -1,5 +1,6 @@
 from abc import abstractmethod, ABC
 from typing import Union, Optional
+from threading import Lock
 import sqlite3
 import datetime
 
@@ -13,13 +14,15 @@ class SqliteStorage(Storage):
 
     def __init__(self, *args, **kwargs):
         self.cache = {}
+        self.write_lock = Lock()
         super().__init__(*args, **kwargs)
 
     def init_cache_for(self, *args,
                        conflict_resolution_type: str = "REPLACE"):
         key = self.get_table_name(*args)
-        self.create_tables(*args,
-                           conflict_resolution_type=conflict_resolution_type)
+        with self.write_lock:
+            self.create_tables(*args,
+                            conflict_resolution_type=conflict_resolution_type)
         if key not in self.cache:
             self.cache[key] = {}
             for k in self.table_names:
@@ -30,17 +33,18 @@ class SqliteStorage(Storage):
         for key, all_data in self.cache.items():
             for table_suffix, data in all_data.items():
                 if len(data) > 0:
-                    self.logger.info(f"Writing cache for {key} / {table_suffix} with {len(data)} to {self.path}")
+                    self.logger.debug(f"Writing cache for {key} / {table_suffix} with {len(data)} to {self.path}")
                     df = pd.DataFrame(data)
-                    df.to_sql(f"{key}__{table_suffix}",
-                            con=self.connection,
-                            if_exists="append",
-                            index=False)
+                    with self.write_lock:
+                        df.to_sql(f"{key}__{table_suffix}",
+                                con=self.connection,
+                                if_exists="append",
+                                index=False)
         self.cache = {}
 
     def connect(self):
-        self.logger.info(f"Connecting to {self.path}")
-        self.connection = sqlite3.connect(self.path)
+        self.logger.debug(f"Connecting to {self.path}")
+        self.connection = sqlite3.connect(self.path, check_same_thread=False)
 
     def get_table_name(self, *args):
         return "__".join([sanitize(str(arg)) for arg in args])
@@ -80,17 +84,19 @@ class SqliteStorage(Storage):
                            conflict_resolution_type=conflict_resolution_type)
         if table_name_suffixes is None:
             table_name_suffixes = []
-        if cols is None or len(cols) == 0:
-            raise ValueError("Cols not specified to fetch data")
-
         table_name = self.create_tables(*args)
-
-        from_date, to_date = self.__date_parse(from_date, to_date)
         if len(table_name_suffixes) > 0:
             table_name = f"{table_name}__{'__'.join(table_name_suffixes)}"
+        if cols is None or len(cols) == 0:
+            self.logger.info(f"Inferring column names for {table_name}")
+            cursor = self.connection.execute(f"SELECT * from {table_name} LIMIT 1;")
+            cols = list(map(lambda x: x[0], cursor.description))
+            self.logger.info(f"Inferred col names for {table_name}: {', '.join(cols)}")
+
+        from_date, to_date = self.__date_parse(from_date, to_date)
         self.logger.debug(f"Reading {data_name} from {from_date} to {to_date} from {table_name}...")
 
-        if "date" not in cols:
+        if "date" not in cols and not skip_time_stamps:
             cols.append("date")
         filters = ""
         if col_filters is None:
@@ -117,7 +123,8 @@ class SqliteStorage(Storage):
             sql = (f"SELECT {', '.join(cols)} FROM "
                    f"{table_name}")
         self.logger.debug(f"Executing {sql}")
-        data = self.connection.execute(sql).fetchall()
+        with self.write_lock:
+            data = self.connection.execute(sql).fetchall()
         data = pd.DataFrame(data, columns=cols)
         if index_col is not None:
             data.index = data[index_col]

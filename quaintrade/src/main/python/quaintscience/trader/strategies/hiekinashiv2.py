@@ -10,6 +10,7 @@ from ..core.indicator import (IndicatorPipeline,
                               HeikinAshiIndicator,
                               BBANDSIndicator,
                               ATRIndicator,
+                              RSIIndicator,
                               SMAIndicator,
                               SlopeIndicator,
                               DonchainIndicator)
@@ -27,6 +28,7 @@ class HiekinAshiStrategy(Strategy):
                  donchain_period: int = 15,
                  bb_period: int = 15,
                  atr_period: int = 50,
+                 rsi_period: int = 14,
                  **kwargs):
         self.st_period = st_period
         self.st_multiplier = st_multiplier
@@ -34,11 +36,20 @@ class HiekinAshiStrategy(Strategy):
         self.bb_period = bb_period
         self.donchain_period = donchain_period
         self.atr_period = atr_period
+        self.rsi_period = rsi_period
         self.product = product
+
+        self.long_context = "2h"
+        self.long_context2 = "1h"
+        self.long_context3 = "45min"
+        self.rsi_context = "30min"
+        self.rsi_upper_threshold = 60
+        self.rsi_lower_threshold = 40
+        self.rsi_col = f"RSI_{self.rsi_period}"
         indicators = indicators=[(HeikinAshiIndicator(), None, None),
                                  #(SupertrendIndicator(period=self.st_period,
                                  #                     multiplier=self.st_multiplier), None, None),
-                                 #(SMAIndicator(period=self.ma_period), None, None),
+                                 (RSIIndicator(period=self.rsi_period), None, None),
                                  (BBANDSIndicator(period=self.bb_period), None, None),
                                  (ATRIndicator(period=self.atr_period), None, None),
                                  #(DonchainIndicator(period=self.donchain_period), None, None)
@@ -51,7 +62,9 @@ class HiekinAshiStrategy(Strategy):
                                                      #{"field": "ha_non_trending", "panel": 4},
                                                      f"BBandUpper_{self.bb_period}",
                                                      f"BBandLower_{self.bb_period}",
-                                                     {"field": f"ATR_{self.atr_period}", "panel": 5},
+                                                     #{"field": f"ATR_{self.atr_period}", "panel": 5},
+                                                     
+                                                     {"field": self.rsi_col, "panel": 4, "context": self.rsi_context},
                                                      #f"supertrend_{self.st_period}_{self.st_multiplier:.1f}",
                                                      #f"SMA_{self.ma_period}",
                                                      #f"donchainUpper_{self.donchain_period}",
@@ -61,17 +74,17 @@ class HiekinAshiStrategy(Strategy):
         non_trading_timeslots.extend(Strategy.NON_TRADING_FIRST_HOUR)
         non_trading_timeslots.extend(Strategy.NON_TRADING_AFTERNOON)
         kwargs["non_trading_timeslots"] = non_trading_timeslots
-        kwargs["context_required"] = ["2h", "1h"]
+        kwargs["context_required"] = list(set([self.long_context, self.long_context2,
+                                               self.long_context3, self.rsi_context]))
 
         self.entry_threshold = 0.2
-
         """
         self.sl_factor = 2
         self.target_factor = 2.5
         """
 
         self.sl_factor = 3
-        self.target_factor = 7
+        self.target_factor = 5
 
         #self.sl_factor = 10
         #self.target_factor = 10
@@ -127,9 +140,9 @@ class HiekinAshiStrategy(Strategy):
                          f" L={window.iloc[-1]['low']}"
                          f" C={window.iloc[-1]['close']}"
                          f" {' '.join(colvals)}")
-        self.logger.info(f"1h"
-                         f'green {context["1h"].iloc[-1]["ha_trending_green"]}'
-                         f' red {context["1h"].iloc[-1]["ha_trending_red"]}')
+        self.logger.info(f"{self.long_context} "
+                         f'green {context[self.long_context].iloc[-1]["ha_trending_green"]}'
+                         f' red {context[self.long_context].iloc[-1]["ha_trending_red"]}')
         current_run = self.get_current_run(broker,
                                            scrip,
                                            exchange)
@@ -137,14 +150,22 @@ class HiekinAshiStrategy(Strategy):
         if self.can_trade(window, context):
             make_entry = False
             if (window.iloc[-1]["ha_trending_green"] == 1.0
-                and context["2h"].iloc[-1]["ha_trending_green"] == 1.0
+                #and context[self.long_context].iloc[-1]["ha_trending_green"] == 1.0
+                #and context[self.long_context2].iloc[-1]["ha_trending_green"] == 1.0
+                and context[self.long_context3].iloc[-1]["ha_trending_green"] == 1.0
+                #and (context[self.rsi_context].iloc[-1][self.rsi_col] > self.rsi_upper_threshold
+                #     or context[self.rsi_context].iloc[-1][self.rsi_col] < self.rsi_lower_threshold)
                 #and context["30min"].iloc[-1]["ha_trending_green"] == 1.0
                 and current_run != TradeType.LONG):
                 current_run = TradeType.LONG
                 make_entry = True
                 self.logger.debug(f"Entering long trade!")
             if (window.iloc[-1]["ha_trending_red"] == 1.0 
-                and context["2h"].iloc[-1]["ha_trending_red"] == 1.0
+                #and context[self.long_context].iloc[-1]["ha_trending_red"] == 1.0
+                #and context[self.long_context2].iloc[-1]["ha_trending_red"] == 1.0
+                and context[self.long_context3].iloc[-1]["ha_trending_red"] == 1.0
+                #and (context[self.rsi_context].iloc[-1][self.rsi_col] > self.rsi_upper_threshold
+                #     or context[self.rsi_context].iloc[-1][self.rsi_col] < self.rsi_lower_threshold)
                 #and context["30min"].iloc[-1]["ha_trending_red"] == 1.0
                 and current_run != TradeType.SHORT):
                 current_run = TradeType.SHORT
@@ -160,7 +181,6 @@ class HiekinAshiStrategy(Strategy):
                                                      scrip=scrip,
                                                      exchange=exchange,
                                                      product=self.product)
-
                 self.perform_squareoff(broker=broker,
                                        scrip=scrip,
                                        exchange=exchange,
@@ -174,21 +194,24 @@ class HiekinAshiStrategy(Strategy):
                                                  price=self.get_entry(window, current_run),
                                                  quantity=qty,
                                                  product=self.product)
-                self.take_position(scrip=scrip,
-                                   exchange=exchange,
-                                   broker=broker,
-                                   position_type=PositionType.STOPLOSS,
-                                   trade_type=current_run,
-                                   price=self.get_stoploss(window, context, current_run),
-                                   quantity=qty,
-                                   product=self.product,
-                                   parent_order=entry_order)
-                self.take_position(scrip=scrip,
-                                   exchange=exchange,
-                                   broker=broker,
-                                   position_type=PositionType.TARGET,
-                                   trade_type=current_run,
-                                   price=self.get_target(window, context, current_run),
-                                   quantity=qty,
-                                   product=self.product,
-                                   parent_order=entry_order)
+                if entry_order is None:
+                    print(f"Placing order failed. skipping gtts; this happens if price movement is too fast.")
+                else:
+                    self.take_position(scrip=scrip,
+                                    exchange=exchange,
+                                    broker=broker,
+                                    position_type=PositionType.STOPLOSS,
+                                    trade_type=current_run,
+                                    price=self.get_stoploss(window, context, current_run),
+                                    quantity=qty,
+                                    product=self.product,
+                                    parent_order=entry_order)
+                    self.take_position(scrip=scrip,
+                                    exchange=exchange,
+                                    broker=broker,
+                                    position_type=PositionType.TARGET,
+                                    trade_type=current_run,
+                                    price=self.get_target(window, context, current_run),
+                                    quantity=qty,
+                                    product=self.product,
+                                    parent_order=entry_order)

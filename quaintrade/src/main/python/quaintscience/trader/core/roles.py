@@ -160,7 +160,7 @@ class DataProvider(TradingServiceProvider):
                            conflict_resolution_type=conflict_resolution_type)
 
         data = self.postprocess_data(data, interval)
-        self.logger.info(f"Read {len(data)} rows.")
+        self.logger.debug(f"Read {len(data)} rows.")
         return data
 
 
@@ -452,7 +452,7 @@ class Broker(TradingServiceProvider):
 
     def get_tradebook_storage(self) -> TradeBookStorageMixin:
         if not hasattr(self, "tradebook_storage"):
-            self.logger.info("Connecting to new Tradebook storage")
+            self.logger.debug("Connecting to new Tradebook storage")
             db_path = self.get_tradebook_db_path()
             self.tradebook_storage = self.TradingBookStorageClass(db_path)
         return self.tradebook_storage
@@ -472,7 +472,7 @@ class Broker(TradingServiceProvider):
                             self.logger.info(f"Cancelling order {other_order.order_id}/"
                                             f"{other_order.scrip}/{other_order.exchange}/"
                                             f"{other_order.transaction_type}/{other_order.order_type}"
-                                            f"{','.join(other_order.tags)} due OCO (Sibling)")
+                                            f"{','.join(other_order.tags)} due OCO (Sibling of {order.order_id})")
                             self.cancel_order(other_order, refresh_cache=False)
                             self.delete_gtt_orders_for(other_order)
         if state_changed:
@@ -482,7 +482,7 @@ class Broker(TradingServiceProvider):
         for order in self.get_orders(refresh_cache=False):
             state_changed = False
             if (order.group_id is not None
-                and order.state == OrderState.COMPLETED):
+                and order.state != OrderState.PENDING):
                 #self.logger.info(f"Searching for group members of "
                 #                 f"{order.order_id} (group_id={order.group_id})")
                 for other_order in self.get_orders(refresh_cache=False):
@@ -494,7 +494,7 @@ class Broker(TradingServiceProvider):
                         self.logger.info(f"Cancelling order {other_order.order_id[:4]}/"
                                          f"{other_order.scrip}/{other_order.exchange}/"
                                          f"{other_order.transaction_type}/{other_order.order_type}"
-                                         f"{','.join(other_order.tags)} due OCO (Group)")
+                                         f"{','.join(other_order.tags)} due OCO (Group of {order.group_id})")
                         self.cancel_order(other_order, refresh_cache=False)
                         self.delete_gtt_orders_for(other_order)
             if state_changed:
@@ -719,7 +719,7 @@ class Broker(TradingServiceProvider):
                 if (entry_order.state == OrderState.COMPLETED
                     and other_order.state == OrderState.PENDING):
                     if entry_order.product == TradingProduct.MIS:
-                        self.logger.debug("Placing MIS GTT Order for {entry_order.order_id} {other_order.tags}}")
+                        self.logger.info(f"Placing MIS GTT Order for {entry_order.order_id} {other_order.tags}")
                         self.place_order(other_order, refresh_cache=False)
                         # print(other_order)
                         gtt_state_changed = True
@@ -736,6 +736,7 @@ class Broker(TradingServiceProvider):
         self.get_orders(refresh_cache=refresh_cache)
         self.cancel_invalid_child_orders()
         self.cancel_invalid_group_orders()
+        self.get_orders(refresh_cache=refresh_cache)
         self.save_state()
         return gtt_state_changed
 

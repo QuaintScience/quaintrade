@@ -45,6 +45,7 @@ class Strategy(ABC, LoggerMixin):
                  min_quantity: int = 1,
                  long_position_tag: Optional[str] = None,
                  short_position_tag: Optional[str] = None,
+                 trigger_price_cushion: float = 0.002,
                  **kwargs):
         
         self.indicator_pipeline = indicator_pipeline
@@ -72,6 +73,7 @@ class Strategy(ABC, LoggerMixin):
             short_position_tag = f"{self.__class__.__name__}_short"
         self.long_position_tag = long_position_tag
         self.short_position_tag = short_position_tag
+        self.trigger_price_cushion = trigger_price_cushion
         super().__init__(*args, **kwargs)
 
     @property
@@ -95,8 +97,9 @@ class Strategy(ABC, LoggerMixin):
                 if exchange is not None and order.exchange != exchange:
                     continue
                 if (order.parent_order_id not in visited_parent_ids
+                    and order.parent_order_id is not None
                     and ("target" in order.tags or "stoploss" in order.tags)):
-                    quantity += -order.quantity if order.transaction_type == TransactionType.BUY else order.quantity
+                    quantity += order.quantity if order.transaction_type == TransactionType.SELL else -order.quantity
                 broker.cancel_order(order, refresh_cache=True)
                 broker.delete_gtt_orders_for(order)
                 storage = broker.get_tradebook_storage()
@@ -130,10 +133,10 @@ class Strategy(ABC, LoggerMixin):
     def perform_squareoff(self, broker: Broker,
                           scrip: Optional[str] = None,
                           exchange: Optional[str] = None,
-                          quantity: Optional[int] = None,
-                          product: Optional[TradingProduct] = None):
+                          product: Optional[TradingProduct] = None,
+                          quantity: Optional[int] = None):
 
-        positions = broker.get_positions()
+        positions = broker.get_positions(refresh_cache=True)
         for position in positions:
             if scrip is not None and exchange is not None:
                 if position.scrip != scrip or position.exchange != exchange:
@@ -149,7 +152,7 @@ class Strategy(ABC, LoggerMixin):
                     squareoff_transaction = TransactionType.BUY
             else:
                 if quantity > 0:
-                    if position.quantity >= quantity and product in [TradingProduct.NRML, TradingProduct.CNC]:
+                    if position.quantity < quantity and product in [TradingProduct.NRML, TradingProduct.CNC]:
                         self.logger.info(f"Did not square off {scrip} / {exchange} type {product}"
                                          f" as position qty {position.quantity} < sq qty {quantity}")
                         continue
@@ -251,22 +254,26 @@ class Strategy(ABC, LoggerMixin):
 
             if trade_type == TradeType.LONG:
                 transaction_type = TransactionType.BUY
+                limit_price = price * (1 + self.trigger_price_cushion)
             else:
                 transaction_type = TransactionType.SELL
+                limit_price = price * (1 - self.trigger_price_cushion)
 
             limit_order_type = OrderType.SL_LIMIT if not use_sl_market_order else OrderType.SL_MARKET
             order = order_template(transaction_type=transaction_type,
                                    order_type=limit_order_type,
                                    trigger_price=price,
-                                   limit_price=price,
+                                   limit_price=limit_price,
                                    tags=all_tags)
             order = broker.place_order(order)
         elif position_type == PositionType.STOPLOSS or position_type == PositionType.TARGET:
 
             if trade_type == TradeType.LONG:
                 transaction_type = TransactionType.SELL
+                limit_price = price * (1 - self.trigger_price_cushion)
             else:
                 transaction_type = TransactionType.BUY
+                limit_price = price * (1 + self.trigger_price_cushion)
 
             if position_type == PositionType.STOPLOSS:
                 limit_order_type = OrderType.SL_LIMIT if not use_sl_market_order else OrderType.SL_MARKET
@@ -276,7 +283,7 @@ class Strategy(ABC, LoggerMixin):
             order = order_template(transaction_type=transaction_type,
                                    order_type=limit_order_type,
                                    trigger_price=price,
-                                   limit_price=price,
+                                   limit_price=limit_price,
                                    tags=all_tags)
             order = broker.place_gtt_order(parent_order, order)
         else:
