@@ -176,6 +176,7 @@ class BrokerService(Service):
         p.add('--broker_reset_auth_cache', help="Reset broker auth cache", env_var="BROKER_RESET_AUTH_CACHE", action="store_true")
         p.add('--broker_auth_credentials', help="Broker auth Credentials", env_var="BROKER_AUTH_CREDENTIALS", type=yaml.safe_load)
         p.add('--broker_auth_cache_filepath', help="Broker auth credentials cache filepath", env_var="BROKER_AUTH_CACHE_FILEPATH")
+        p.add('--broker_custom_kwargs', help="Broker custom kwargs", env_var="BROKER_CUSTOM_KWARGS", type=yaml.safe_load)
 
 
 class BotService(DataProviderService, BrokerService):

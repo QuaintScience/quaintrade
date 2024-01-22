@@ -437,9 +437,13 @@ class ChoppinessIndicator(Indicator):
     def __init__(self,
                  *args,
                  period: int = 14,
+                 atr_length: int = 1,
+                 drift: int = 1,
                  **kwargs):
         self.period = period
-        kwargs["setting_attrs"] = ["period"]
+        self.atr_length = atr_length
+        self.drift = drift
+        kwargs["setting_attrs"] = ["period", "atr_length", "drift"]
         super().__init__(*args, **kwargs)
 
     def compute_impl(self, df: pd.DataFrame,
@@ -447,9 +451,10 @@ class ChoppinessIndicator(Indicator):
                 settings: Optional[dict] = None) -> pd.DataFrame:
         if output_column_name is None or len(output_column_name) == 0:
             output_column_name = {"choppiness": f"choppiness_{settings['period']}"}
-        df[output_column_name["choppiness"]] = pd_ta.choppiness(high=df["high"], low=df["low"], close=df["close"],
-                                                                length=settings['period'],
-                                                                multiplier=settings['multiplier'])[f"CHOPPINESS_{settings['period']}"]
+        df[output_column_name["choppiness"]] = pd_ta.chop(high=df["high"], low=df["low"], close=df["close"],
+                                                          length=settings['period'],
+                                                          atr_length=settings['atr_length'],
+                                                          drift=settings['drift'])
         return df, output_column_name, settings
     
 

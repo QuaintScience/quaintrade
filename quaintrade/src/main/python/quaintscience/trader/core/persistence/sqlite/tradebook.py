@@ -87,7 +87,8 @@ class SqliteTradeBookStorage(SqliteStorage, TradeBookStorageMixin):
                                           "run_name": run_name,
                                           "run_id": run_id,
                                           "date": date})
-       
+        if len(self.cache[key]["events"]) > 1000:
+            self.commit()
 
     def store_order_execution(self,
                               strategy: str,
@@ -122,6 +123,8 @@ class SqliteTradeBookStorage(SqliteStorage, TradeBookStorageMixin):
                                           "run_id": run_id,
                                           "run_name": run_name,
                                           "date": date})
+        if len(self.cache[key]["orders"]) > 1000:
+            self.commit()
 
     def store_position_state(self,
                              strategy: str,
@@ -146,6 +149,8 @@ class SqliteTradeBookStorage(SqliteStorage, TradeBookStorageMixin):
                                              "pnl": position.pnl,
                                              "charges": position.charges,
                                              "date": date})
+        if len(self.cache[key]["positions"]) > 1000:
+            self.commit()
 
     def get_orders_for_run(self,
                            strategy: str,

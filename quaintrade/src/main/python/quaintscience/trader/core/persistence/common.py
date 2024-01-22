@@ -23,3 +23,6 @@ class Storage(ABC, LoggerMixin):
         pass
 
 
+    @abstractmethod
+    def commit(self):
+        pass

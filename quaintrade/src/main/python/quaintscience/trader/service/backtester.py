@@ -30,6 +30,7 @@ class BackTesterService(BotService):
         self.window_size = window_size
         self.live_trading_mode = live_trading_mode
         self.clear_tradebook_for_scrip_and_exchange = clear_tradebook_for_scrip_and_exchange
+        print(kwargs)
         if self.live_trading_mode:
             kwargs["data_provider_login"] = True
             kwargs["data_provider_init"] = True
@@ -41,13 +42,18 @@ class BackTesterService(BotService):
         kwargs["broker_login"] = False
         kwargs["broker_init"] = True
         kwargs["broker_skip_order_streamer"] = True
-        kwargs["broker_custom_kwargs"] = {"instruments": self.instruments,
-                                          "data_provider": self.data_provider,
-                                          "historic_context_from": self.from_date,
-                                          "historic_context_to": self.to_date,
-                                          "interval": self.interval,
-                                          "refresh_orders_immediately_on_gtt_state_change": refresh_orders_immediately_on_gtt_state_change,
-                                          "refresh_data_on_every_time_change": False}
+        broker_kwargs_overrides = {"instruments": self.instruments,
+                                   "data_provider": self.data_provider,
+                                   "historic_context_from": self.from_date,
+                                   "historic_context_to": self.to_date,
+                                   "interval": self.interval,
+                                   "refresh_orders_immediately_on_gtt_state_change": refresh_orders_immediately_on_gtt_state_change,
+                                   "refresh_data_on_every_time_change": False}
+        if "broker_custom_kwargs" in kwargs and isinstance(kwargs["broker_custom_kwargs"], dict):
+            kwargs["broker_custom_kwargs"].update(broker_kwargs_overrides)
+        else:
+            kwargs["broker_custom_kwargs"] = broker_kwargs_overrides
+        print(kwargs["broker_custom_kwargs"])
         BotService.__init__(self,
                             *args,
                             **kwargs)

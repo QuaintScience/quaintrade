@@ -456,6 +456,7 @@ class KiteBroker(KiteBaseMixin,
                 self.orders_cache.append(new_order)
 
     def get_orders(self, refresh_cache=True) -> list[Order]:
+
         if refresh_cache:
             orders = self.kite.orders()
             time.sleep(self.rate_limit_time)

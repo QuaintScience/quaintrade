@@ -26,11 +26,51 @@ from .util import (resample_candle_data,
                    get_scrip_and_exchange_from_key,
                    sanitize,
                    new_id)
+from .reflection import dynamically_load_class
 
 from .persistence.sqlite.ohlc import SqliteOHLCStorage
 from .persistence.ohlc import OHLCStorageMixin
 from .persistence.tradebook import TradeBookStorageMixin
 from .persistence.sqlite.tradebook import SqliteTradeBookStorage
+
+
+
+def nse_commission_func(order: Order, brokerage_percentage: float = 0.03, max_commission: float = 20):
+    charges = 0.
+    if max_commission > 0:
+        brokerage = min((brokerage_percentage / 100) * order.price * order.quantity, max_commission)
+    else:
+        brokerage = (brokerage_percentage / 100) * order.price * order.quantity
+    stt = 0.
+    if order.product == TradingProduct.MIS:
+        if order.transaction_type == TransactionType.SELL:
+            stt = (0.025 / 100) * order.price * order.quantity # STT
+    else:
+        stt = (0.1 / 100) * order.price * order.quantity # STT
+    transaction_charges = (0.00325 / 100) * order.price * order.quantity # Transaction charges NSE
+    sebi_charges = (order.price * order.quantity / 10000000) * 10
+    stamp_charges = 0.
+    if order.transaction_type == TransactionType.BUY:
+        stamp_charges = (0.015 / 100) * (order.price * order.quantity / 10000000)
+    gst = (18 / 100) * (brokerage + sebi_charges + transaction_charges)
+    
+    brokerage = round(brokerage, 2)
+    stt = round(stt, 2)
+    transaction_charges = round(transaction_charges, 2)
+    sebi_charges = round(sebi_charges, 2)
+    stamp_charges = round(stamp_charges, 2)
+    gst = round(gst, 2)
+    
+    total = round(brokerage + stt + transaction_charges + sebi_charges + stamp_charges + gst, 2)
+    print(f"Brokerage: {brokerage} "
+          f"| STT: {stt} "
+          f"| TransactionCharges: {transaction_charges} "
+          f"| SEBICharges: {sebi_charges} "
+          f"| Stamp: {stamp_charges} "
+          f"| GST: {gst} "
+          f"| Total : {total}")
+    return total
+
 
 
 def CallbackHandleFactory(context):
@@ -391,8 +431,11 @@ class Broker(TradingServiceProvider):
                  run_name: Optional[str] = None,
                  thread_id: str = "1",
                  disable_state_persistence: bool = False,
+                 commission_func: Optional[callable] = None,
                  **kwargs):
         LoggerMixin.__init__(self, *args, **kwargs)
+        if isinstance(TradingBookStorageClass, str):
+            TradingBookStorageClass = dynamically_load_class(TradingBookStorageClass)
         self.TradingBookStorageClass = TradingBookStorageClass
         self.audit_records_path = audit_records_path
         self.strategy = strategy
@@ -405,6 +448,10 @@ class Broker(TradingServiceProvider):
         self.state_file_lock = Lock()
         self.disable_state_persistence = disable_state_persistence
         self.gtt_orders = []
+        self.trade_pnl = {}
+        if commission_func is None:
+            commission_func = nse_commission_func
+        self.commission_func = commission_func
         super().__init__(*args, **kwargs)
         self.load_state()
 
@@ -448,7 +495,7 @@ class Broker(TradingServiceProvider):
         if self.TradingBookStorageClass == SqliteTradeBookStorage:
             return os.path.join(root, f"tradebook-{self.thread_id}.sqlite")
         else:
-            raise ValueError(f"Cannot handle storage type {self.TradingBookStorageClass}")
+            return os.path.join(root, f"tradebook-{self.thread_id}")
 
     def get_tradebook_storage(self) -> TradeBookStorageMixin:
         if not hasattr(self, "tradebook_storage"):

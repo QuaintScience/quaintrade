@@ -1,6 +1,7 @@
 from typing import Union, Optional
 import datetime
 import time
+import os
 from functools import partial
 
 import pandas as pd
@@ -34,6 +35,7 @@ class Bot(LoggerMixin):
                  live_trading_market_end_hour: int = 15,
                  live_trading_market_end_minute: int = 30,
                  backtesting_print_tables: bool = True,
+                 backtest_results_folder: str = "backtest-results",
                  **kwargs):
         super().__init__(*args, **kwargs)
         self.broker = broker
@@ -47,6 +49,7 @@ class Bot(LoggerMixin):
         self.live_trading_market_start_minute = live_trading_market_start_minute
         self.live_trading_market_end_minute = live_trading_market_end_minute
         self.backtesting_print_tables = backtesting_print_tables
+        self.backtest_results_folder = backtest_results_folder
         self.live_data_cache = {}
 
     def do(self,
@@ -212,6 +215,60 @@ class Bot(LoggerMixin):
                 self.logger.info("--------------Tables After Strategy Computation End-------------")
 
         self.broker.get_tradebook_storage().commit()
+
+        self.logger.info("===================== Stats ========================")
+        pnl_data = []
+        for k, v in self.broker.trade_pnl.items():
+            pnl_data.append([k, self.broker.trade_timestamps[k][0], self.broker.trade_timestamps[k][1], v])
+        accuracy = sum([1 for v in self.broker.trade_pnl.values() if v > 0]) / len(self.broker.trade_pnl)
+        max_drawdown = 0.
+        curr_drawdown = 0.
+        running_sum = 0.
+        lowest_point = 0.
+        max_profit_streak = 0
+        max_loss_streak = 0
+        loss_streak = 0
+        profit_streak = 0
+        for k, v in self.broker.trade_pnl.items():
+            running_sum += v
+            lowest_point = min(v, lowest_point)
+            if v > 0:
+                if curr_drawdown < 0:
+                    max_drawdown = min(max_drawdown, curr_drawdown)
+                    max_loss_streak = max(loss_streak, max_loss_streak)
+                    curr_drawdown = 0.
+                    loss_streak = 0
+                profit_streak += 1
+            else:
+                curr_drawdown += v
+                loss_streak += 1
+                max_profit_streak = max(profit_streak, max_profit_streak)
+                profit_streak = 0
+        if curr_drawdown < 0:
+            max_drawdown = min(max_drawdown, curr_drawdown)
+        max_profit_streak = max(profit_streak, max_profit_streak)
+        max_loss_streak = max(loss_streak, max_loss_streak)
+        os.makedirs(self.backtest_results_folder, exist_ok=True)
+        fname = f"backtest-{scrip}:{exchange}-{self.strategy.__class__.__name__}-{interval}-{from_date.strftime('%Y%m%d')}-{to_date.strftime('%Y%m%d')}.txt"
+        with open(os.path.join(self.backtest_results_folder, fname), 'w') as fid:
+            print(tabulate(pnl_data, headers=["order_id", "entry_time", "exit_time", "pnl"]), file=fid)
+            print(f"Found {len(self.broker.trade_pnl)} trades.", file=fid)
+            print(f"Accuracy: {accuracy}", file=fid)
+            print(f"Max Drawdown: {max_drawdown}", file=fid)
+            print(f"Lowest point: {lowest_point}", file=fid)
+            print(f"Longest Loss Streak: {max_loss_streak}", file=fid)
+            print(f"Longest Profit Streak: {max_profit_streak}", file=fid)
+            print(f"Final Pnl: {running_sum}", file=fid)
+            print(f"Largest loss: {min(self.broker.trade_pnl.values())}", file=fid)
+        print(tabulate(pnl_data, headers=["order_id", "entry_time", "exit_time", "pnl"]))
+        self.logger.info(f"Found {len(self.broker.trade_pnl)} trades.")
+        self.logger.info(f"Accuracy: {accuracy}")
+        self.logger.info(f"Max Drawdown: {max_drawdown}")
+        self.logger.info(f"Lowest point: {lowest_point}")
+        self.logger.info(f"Longest Loss Streak: {max_loss_streak}")
+        self.logger.info(f"Longest Profit Streak: {max_profit_streak}")
+        self.logger.info(f"Final Pnl: {running_sum}")
+        self.logger.info(f"Largest loss: {min(self.broker.trade_pnl.values())}")
 
         if plot_results:
             storage = self.broker.get_tradebook_storage()

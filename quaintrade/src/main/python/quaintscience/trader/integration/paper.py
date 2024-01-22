@@ -9,50 +9,13 @@ from ..core.ds import (Order,
                        Position,
                        OrderType,
                        OHLCStorageType,
-                       OrderState, TradingProduct,
+                       OrderState,
                        TransactionType)
 from ..core.roles import Broker, HistoricDataProvider
 from ..core.util import (default_dataclass_field,
                          get_key_from_scrip_and_exchange,
                          get_scrip_and_exchange_from_key)
 from .common import get_instrument_for_provider
-
-
-def nse_commission_func(order: Order, brokerage_percentage: float = 0.03, max_commission: float = 20):
-    charges = 0.
-    if max_commission > 0:
-        brokerage = min((brokerage_percentage / 100) * order.price * order.quantity, max_commission)
-    else:
-        brokerage = (brokerage_percentage / 100) * order.price * order.quantity
-    stt = 0.
-    if order.product == TradingProduct.MIS:
-        if order.transaction_type == TransactionType.SELL:
-            stt = (0.025 / 100) * order.price * order.quantity # STT
-    else:
-        stt = (0.1 / 100) * order.price * order.quantity # STT
-    transaction_charges = (0.00325 / 100) * order.price * order.quantity # Transaction charges NSE
-    sebi_charges = (order.price * order.quantity / 10000000) * 10
-    stamp_charges = 0.
-    if order.transaction_type == TransactionType.BUY:
-        stamp_charges = (0.015 / 100) * (order.price * order.quantity / 10000000)
-    gst = (18 / 100) * (brokerage + sebi_charges + transaction_charges)
-    
-    brokerage = round(brokerage, 2)
-    stt = round(stt, 2)
-    transaction_charges = round(transaction_charges, 2)
-    sebi_charges = round(sebi_charges, 2)
-    stamp_charges = round(stamp_charges, 2)
-    gst = round(gst, 2)
-    
-    total = round(brokerage + stt + transaction_charges + sebi_charges + stamp_charges + gst, 2)
-    print(f"Brokerage: {brokerage} "
-          f"| STT: {stt} "
-          f"| TransactionCharges: {transaction_charges} "
-          f"| SEBICharges: {sebi_charges} "
-          f"| Stamp: {stamp_charges} "
-          f"| GST: {gst} "
-          f"| Total : {total}")
-    return total
 
 
 @dataclass(kw_only=True)
@@ -85,7 +48,7 @@ class PaperBroker(Broker):
                  interval: str = "10min",
                  refresh_orders_immediately_on_gtt_state_change: bool = False,
                  refresh_data_on_every_time_change: bool = False,
-                 commission_func: Optional[callable] = None,
+                 max_history_days: int = 1,
                  **kwargs):
 
         self.data_provider = data_provider
@@ -107,9 +70,6 @@ class PaperBroker(Broker):
         self.refresh_orders_immediately_on_gtt_state_change = refresh_orders_immediately_on_gtt_state_change
 
         self.refresh_data_on_every_time_change = refresh_data_on_every_time_change
-        if commission_func is None:
-            commission_func = nse_commission_func
-        self.commission_func = commission_func
         self.orders = []
         self.positions = {}
 
@@ -121,7 +81,8 @@ class PaperBroker(Broker):
         self.events = []
 
         self.pnl_history = []
-
+        self.trade_timestamps = {}
+        self.max_history_days = max_history_days
         self.order_stats = {"completed": 0,
                             "cancelled": 0,
                             "pending": 0}
@@ -160,7 +121,20 @@ class PaperBroker(Broker):
         if self.refresh_data_on_every_time_change:
             self.init()
 
+        if (self.current_datetime() is not None
+            and self.current_datetime().day != dt.day
+            and (dt - self.current_datetime()).days >= self.max_history_days):
+            orders = []
+            for order in self.get_orders():
+                if (order.state == OrderState.COMPLETED
+                    or order.state == OrderState.CANCELLED):
+                    continue
+                orders.append(order)
+            self.orders = orders
+            print(f"Cleaned orders {len(self.orders)}")
+
         for instrument in self.data.keys():
+
             to_idx = self.data[instrument].index.get_indexer([dt], method="nearest")[0]
             if self.data[instrument].iloc[to_idx].name < dt:
                 to_idx += 1
@@ -272,7 +246,43 @@ class PaperBroker(Broker):
         if price is None:
             price = order.limit_price
         order.price = price
-        
+        order.timestamp = self.current_datetime()
+        if not hasattr(self, "pnlcnt"):
+            self.pnlcnt = 0
+        if order.parent_order_id is not None:
+            self.pnlcnt += 1
+            for other_order in self.get_orders():
+                if (other_order.order_id == order.parent_order_id
+                    and "entry" in other_order.tags):
+                    other_charges, this_charges = 0., 0.
+                    if self.commission_func is not None:
+                        other_charges = self.commission_func(other_order)
+                        this_charges = self.commission_func(order)
+                    self.trade_pnl[other_order.order_id] = (order.price - other_order.price if other_order.transaction_type == TransactionType.BUY else other_order.price - order.price) * order.quantity
+                    self.trade_pnl[other_order.order_id] -= other_charges
+                    self.trade_pnl[other_order.order_id] -= this_charges
+                    self.trade_timestamps[other_order.order_id] = [other_order.timestamp, order.timestamp]
+        elif "squareoff_order" in order.tags:
+            latest_order = None
+            for other_order in self.get_orders():
+                if ("entry" in other_order.tags
+                    and other_order.state == OrderState.COMPLETED):
+                    if latest_order is not None and other_order.timestamp > latest_order.timestamp:
+                        latest_order = other_order
+                    elif latest_order is None:
+                        latest_order = other_order
+            if latest_order is not None:
+                other_order = latest_order
+                other_charges, this_charges = 0., 0.
+                if self.commission_func is not None:
+                    other_charges = self.commission_func(other_order)
+                    this_charges = self.commission_func(order)
+                self.trade_pnl[other_order.order_id] = (order.price - other_order.price if other_order.transaction_type == TransactionType.BUY else other_order.price - order.price) * order.quantity
+                self.trade_pnl[other_order.order_id] -= other_charges
+                self.trade_pnl[other_order.order_id] -= this_charges
+                self.trade_timestamps[other_order.order_id] = [other_order.timestamp, order.timestamp]
+
+
         self.logger.info(f"Order {order.transaction_type.value} {order.order_id[:4]}/{order.scrip}/"
                          f"{order.exchange}/{order.order_type.value} [tags={order.tags}] @ {order.price} x {order.quantity} executed.")
         """
@@ -393,12 +403,6 @@ class PaperBroker(Broker):
         #    position.last_price = candle = self.data[key].iloc[self.idx[key]]["close"]
         #    position.pnl = (position.last_price - position.average_price) * position.quantity
         #self.order_callback(self.get_orders())
-        orders = []
-        for order in self.get_orders():
-            if order.state == OrderState.COMPLETED:
-                continue
-            orders.append(order)
-        self.orders = orders
 
     def order_callback(self, *args, **kwargs):
         self.cancel_invalid_child_orders()

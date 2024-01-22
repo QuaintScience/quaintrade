@@ -111,7 +111,7 @@ def plot_backtesting_results(df: pd.DataFrame,
         else:
             if "context" in field:
                 context_data = context[field["context"]][field["field"]].resample(interval).ffill()
-                print("CONTEXT DATA", context_data, interval)
+                # print("CONTEXT DATA", context_data, interval)
                 # context_data = context_data[df.index]
                 df = df.merge(context_data, how='left', left_index=True, right_index=True, suffixes=(None, f"_{field['context']}"))
                 event_plots.append(mpf.make_addplot(df.get(f"{field['field']}_{field['context']}"),
@@ -132,7 +132,7 @@ def plot_backtesting_results(df: pd.DataFrame,
         kwargs["hlines"] = hlines
 
     kwargs.update(mpf_custom_kwargs)
-    print(kwargs)
+    # print(kwargs)
     fig, axes = mpf.plot(df,
                          **kwargs)
     mpf.show()
