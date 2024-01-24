@@ -45,6 +45,7 @@ class DummyTradeBookStorage(TradeBookStorageMixin):
 
     def get_events(self, strategy: str,
                    run_name: str,
+                   run_id: str,
                    scrip: Optional[str] = None,
                    exchange: Optional[str] = None,
                    transaction_type: Optional[TransactionType] = None,

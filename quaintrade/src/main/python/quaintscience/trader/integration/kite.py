@@ -109,6 +109,7 @@ class KiteStreamingMixin():
                  on_connect: Optional[callable] = None,
                  on_close: Optional[callable] = None,
                  on_order_update: Optional[callable] = None,
+                 on_error: Optional[callable] = None,
                  **kwargs):
         if on_message is None and on_order_update is None:
             raise ValueError("Streaming cannot work when both on_message and on_orders is None.")
@@ -116,6 +117,7 @@ class KiteStreamingMixin():
         self.on_connect_callable = on_connect
         self.on_close_callable = on_close
         self.on_order_update_callable = on_order_update
+        self.on_error_callable = on_error
 
     def start_streamer(self):
         self.kws = KiteTicker(self.auth_credentials["API_KEY"],
@@ -128,6 +130,8 @@ class KiteStreamingMixin():
             self.kws.on_connect = self.on_connect_callable
         if self.on_close_callable is not None:
             self.kws.on_close = self.on_close_callable
+        if self.on_error_callable is not None:
+            self.kws.on_error = self.on_error_callable
         self.logger.info("Starting streamer....")
         self.ticker_thread = Thread(target=self.kws.connect,
                                     kwargs={"threaded": True})
@@ -206,6 +210,7 @@ class KiteBroker(KiteBaseMixin,
         Broker.__init__(self, *args, **kwargs)
         KiteBaseMixin.__init__(self, *args, **kwargs)
         kwargs["on_order_update"] = self.order_callback
+        kwargs["on_error"] = self.error_callback
         KiteStreamingMixin.__init__(self, *args, **kwargs)
 
     def get_state(self) -> dict:
@@ -326,10 +331,13 @@ class KiteBroker(KiteBaseMixin,
 
     def order_callback(self, ws, message):
         self.logger.info(f"Received order update {message}")
-        self.get_orders(refresh_cache=True)
+        # self.get_orders(refresh_cache=True) # Commented as gtt_order_callback does this anyway.
         # self.__update_order_in_cache(message) # Locks order cache
         # self.__update_gtt_orders_using_dct(message) # Locks gtt
-        self.gtt_order_callback() # Locks order cache intermittently and locks gtt
+        self.gtt_order_callback(refresh_cache=True) # Locks order cache intermittently and locks gtt
+
+    def error_callback(self, *args, **kwargs):
+        self.gtt_order_callback(refresh_cache=True) # Locks order cache intermittently and locks gtt
 
     def get_positions(self, refresh_cache: bool = True) -> list[Position]:
         if refresh_cache:

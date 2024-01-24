@@ -575,6 +575,59 @@ class BreakoutIndicator(Indicator):
         return df, output_column_name, settings
 
 
+class IchimokuIndicator(Indicator):
+
+    def __init__(self,
+                 *args,
+                 tenkan_period: int = 9,
+                 kijun_period: int = 26,
+                 senkou_span_b_period: int = 52,
+                 chikou_offset: int = -22,
+                 **kwargs):
+        self.tenkan_period = tenkan_period
+        self.kijun_period = kijun_period
+        self.senkou_span_b_period = senkou_span_b_period
+        self.chikou_offset = chikou_offset
+        kwargs["setting_attrs"] = ["tenkan_period", "kijun_period",
+                                   "senkou_span_b_period", "chikou_offset"]
+        super().__init__(*args, **kwargs)
+    
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_name: str | dict[str, str] | None = None,
+                     settings: dict | None = None) -> pd.DataFrame:
+        # Tenkan-sen (Conversion Line): (9-period high + 9-period low)/2))
+        period9_high = df["high"].rolling(window=settings["tenkan_period"]).max()
+        period9_low = df["low"].rolling(window=settings["tenkan_period"]).min()
+        tenkan_sen = (period9_high + period9_low) / 2
+
+        # Kijun-sen (Base Line): (26-period high + 26-period low)/2))
+        period26_high = df["high"].rolling(window=settings["kijun_period"]).max()
+        period26_low = df["low"].rolling(window=settings["kijun_period"]).min()
+        kijun_sen = (period26_high + period26_low) / 2
+
+        # Senkou Span A (Leading Span A): (Conversion Line + Base Line)/2))
+        senkou_span_a = ((tenkan_sen + kijun_sen) / 2).shift(26)
+
+        # Senkou Span B (Leading Span B): (52-period high + 52-period low)/2))
+        period52_high = df["high"].rolling(window=settings["senkou_span_b_period"]).max()
+        period52_low = df["low"].rolling(window=settings["senkou_span_b_period"]).min()
+        senkou_span_b = ((period52_high + period52_low) / 2).shift(26)
+
+        # The most current closing price plotted 22 time periods behind (optional)
+        chikou_span = df["close"].shift(settings["chikou_offset"]) # 22 according to investopedia
+
+        df["tenkan_sen"] = tenkan_sen
+        df["kijun_sen"] = kijun_sen
+        df["senkou_span_a"] = senkou_span_a
+        df["senkou_span_b"] = senkou_span_b
+        df["chikou_span"] = chikou_span
+        output_column_name = {"tenkan_sen": "tenkan_sen",
+                              "kijun_sen": "kijun_sen",
+                              "senkou_span_a": "senkou_span_a",
+                              "senkou_span_b": "senkou_span_b",
+                              "chikou_span": "chikou_span"}
+        return df, output_column_name, settings
+
 class HeikinAshiIndicator(Indicator):
 
     def __init__(self, *args, **kwargs):

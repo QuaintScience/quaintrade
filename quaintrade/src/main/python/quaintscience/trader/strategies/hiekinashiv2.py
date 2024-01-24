@@ -78,7 +78,7 @@ class HiekinAshiStrategyV2(Strategy):
         kwargs["context_required"] = list(set([self.long_context, self.long_context2,
                                                self.long_context3, self.rsi_context]))
 
-        self.entry_threshold = 0.1
+        self.entry_threshold = 0.2
         """
         self.sl_factor = 2
         self.target_factor = 2.5

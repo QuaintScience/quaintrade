@@ -29,7 +29,7 @@ class Bot(LoggerMixin):
                  *args,
                  live_data_context_size: int = 60,
                  online_mode: bool = False,
-                 timeslot_offset_seconds: float = -2.0,
+                 timeslot_offset_seconds: float = -1.0,
                  live_trading_market_start_hour: int = 9,
                  live_trading_market_start_minute: int = 15,
                  live_trading_market_end_hour: int = 15,
@@ -196,8 +196,10 @@ class Bot(LoggerMixin):
                                                 interval=interval,
                                                 blend_live_data=False)
 
+        print("Backtest Data")
+        print(data)
         ts = None
-        for ii in range(1, len(data) - window_size + 1, 1):
+        for ii in range(0, len(data) - window_size + 1, 1):
             window = data.iloc[ii: ii + window_size]
             if ts is None or ts.day != window.iloc[-1].name.day:
                 self.logger.info(f"Trading on {window.iloc[-1].name.day}")
@@ -220,7 +222,14 @@ class Bot(LoggerMixin):
         pnl_data = []
         for k, v in self.broker.trade_pnl.items():
             pnl_data.append([k, self.broker.trade_timestamps[k][0], self.broker.trade_timestamps[k][1], v])
-        accuracy = sum([1 for v in self.broker.trade_pnl.values() if v > 0]) / len(self.broker.trade_pnl)
+        cnts = [1 for v in self.broker.trade_pnl.values() if v > 0]
+        if len(cnts) > 0:
+            cnts = sum(cnts)
+        else:
+            cnts = 0
+        accuracy = 0.
+        if len(self.broker.trade_pnl) > 0:
+            accuracy = cnts / len(self.broker.trade_pnl)
         max_drawdown = 0.
         curr_drawdown = 0.
         running_sum = 0.
@@ -259,7 +268,7 @@ class Bot(LoggerMixin):
             print(f"Longest Loss Streak: {max_loss_streak}", file=fid)
             print(f"Longest Profit Streak: {max_profit_streak}", file=fid)
             print(f"Final Pnl: {running_sum}", file=fid)
-            print(f"Largest loss: {min(self.broker.trade_pnl.values())}", file=fid)
+            print(f"Largest loss: {min(self.broker.trade_pnl.values()) if len(self.broker.trade_pnl) > 0 else 0}", file=fid)
         print(tabulate(pnl_data, headers=["order_id", "entry_time", "exit_time", "pnl"]))
         self.logger.info(f"Found {len(self.broker.trade_pnl)} trades.")
         self.logger.info(f"Accuracy: {accuracy}")
@@ -268,7 +277,7 @@ class Bot(LoggerMixin):
         self.logger.info(f"Longest Loss Streak: {max_loss_streak}")
         self.logger.info(f"Longest Profit Streak: {max_profit_streak}")
         self.logger.info(f"Final Pnl: {running_sum}")
-        self.logger.info(f"Largest loss: {min(self.broker.trade_pnl.values())}")
+        self.logger.info(f"Largest loss: {min(self.broker.trade_pnl.values()) if len(self.broker.trade_pnl) > 0 else 0}")
 
         if plot_results:
             storage = self.broker.get_tradebook_storage()
@@ -277,34 +286,38 @@ class Bot(LoggerMixin):
                                                       run_id=self.broker.run_id,
                                                       from_date=from_date,
                                                       to_date=to_date)
-            positions = positions[(positions["scrip"] == scrip) & (positions["exchange"] == exchange)]
-            data = data.merge(positions, on="date", how='left')
+            if positions is not None:
+                positions = positions[(positions["scrip"] == scrip) & (positions["exchange"] == exchange)]
+                data = data.merge(positions, on="date", how='left')
 
-            data["pnl"].fillna(0., inplace=True)
-            #import ipdb
-            #ipdb.set_trace()
-            daily_pnl = data["pnl"].resample('1d').apply('last').resample(interval).ffill().fillna(0.)
-            data = data.merge(daily_pnl, how='left', left_index=True, right_index=True)
-            data["daily_pnl"] = data["pnl_y"]
-            data["pnl"] = data["pnl_x"]
-            data.drop(["pnl_x", "pnl_y"], axis=1, inplace=True)
+                data["pnl"].fillna(0., inplace=True)
+                #import ipdb
+                #ipdb.set_trace()
+                daily_pnl = data["pnl"].resample('1d').apply('last').resample(interval).ffill().fillna(0.)
+                data = data.merge(daily_pnl, how='left', left_index=True, right_index=True)
+                data["daily_pnl"] = data["pnl_y"]
+                data["pnl"] = data["pnl_x"]
+                data.drop(["pnl_x", "pnl_y"], axis=1, inplace=True)
 
-            monthly_pnl = data["pnl"].resample('1M').apply('last').resample(interval).ffill().fillna(0.)
-            data = data.merge(monthly_pnl, how='left', left_index=True, right_index=True)
-            data["monthly_pnl"] = data["pnl_y"].fillna(0.)
-            data["pnl"] = data["pnl_x"]
-            data.drop(["pnl_x", "pnl_y"], axis=1, inplace=True)
-            print(data)
-
-            self.strategy.plottables["indicator_fields"].append({"field": "pnl", "panel": 1})
-            self.strategy.plottables["indicator_fields"].append({"field": "daily_pnl", "panel": 1})
-            self.strategy.plottables["indicator_fields"].append({"field": "monthly_pnl", "panel": 1})
+                monthly_pnl = data["pnl"].resample('1M').apply('last').resample(interval).ffill().fillna(0.)
+                data = data.merge(monthly_pnl, how='left', left_index=True, right_index=True)
+                data["monthly_pnl"] = data["pnl_y"].fillna(0.)
+                data["pnl"] = data["pnl_x"]
+                data.drop(["pnl_x", "pnl_y"], axis=1, inplace=True)
+                print(data)
+                self.strategy.plottables["indicator_fields"].append({"field": "pnl", "panel": 1})
+                self.strategy.plottables["indicator_fields"].append({"field": "daily_pnl", "panel": 1})
+                self.strategy.plottables["indicator_fields"].append({"field": "monthly_pnl", "panel": 1})
             events = storage.get_events(self.broker.strategy, self.broker.run_name, run_id=self.broker.run_id)
-            events = events[(events["scrip"] == scrip) & (events["exchange"] == exchange)]
+            if events is not None:
+                events = events[(events["scrip"] == scrip) & (events["exchange"] == exchange)]
             plot_backtesting_results(data, context=context, interval=interval, events=events,
                                      indicator_fields=self.strategy.plottables["indicator_fields"])
 
     def get_trading_timeslots(self, interval):
+        if interval == "2min" and self.live_trading_market_start_minute == 15:
+            self.live_trading_market_start_minute = 14
+
         d = datetime.datetime.now().replace(hour=self.live_trading_market_start_hour,
                                             minute=self.live_trading_market_start_minute,
                                             second=0,
@@ -322,9 +335,11 @@ class Bot(LoggerMixin):
             raise ValueError(f"Dont know how to handle {interval}")
         while d + datetime.timedelta(minutes=x) < d.replace(hour=self.live_trading_market_end_hour,
                                                             minute=self.live_trading_market_end_minute):
-            next_timeslot = d + datetime.timedelta(minutes=x) + datetime.timedelta(seconds=self.timeslot_offset_seconds)
+            next_timeslot = d + datetime.timedelta(minutes=x)
+            next_exectime = next_timeslot + datetime.timedelta(seconds=self.timeslot_offset_seconds)
+            next_timeslot = next_timeslot.replace(second=0) - datetime.timedelta(seconds=1)
             if next_timeslot > start_datetime:
-                res.append(next_timeslot)
+                res.append((next_timeslot, next_exectime))
             x+= interval
         
         return res
@@ -342,13 +357,15 @@ class Bot(LoggerMixin):
         self.broker.strategy = self.strategy.strategy_name
         self.broker.run_name = "live"
         self.broker.run_id = new_id()
-        to_date = datetime.datetime.now().replace(hour=23, minute=59, second=0, microsecond=0)
+        #to_date = datetime.datetime.now().replace(hour=23, minute=59, second=0, microsecond=0)
+        to_date = running_for_timeslot
         from_date = to_date - datetime.timedelta(days=self.live_data_context_size)
         from_date = from_date.replace(hour=0, minute=0, second=0, microsecond=0)
         print(f"Live trade task {from_date} {to_date}")
         data_provider_instruments = get_instruments_for_provider(instruments,
                                                                  self.data_provider.__class__)
         broker_instruments = get_instrument_for_provider(instruments, self.broker.__class__)
+        self.broker.gtt_order_callback(refresh_cache=True)
         for ii, instrument in enumerate(data_provider_instruments):
             scrip, exchange = instrument["scrip"], instrument["exchange"]
             context, data = self.__get_context_data(scrip=scrip,
@@ -358,6 +375,7 @@ class Bot(LoggerMixin):
                                                     interval=interval,
                                                     blend_live_data=True)
             context = self.pick_relevant_context(context, datetime.datetime.now())
+
             self.do(window=data,
                     context=context,
                     scrip=broker_instruments[ii]["scrip"],
@@ -368,15 +386,14 @@ class Bot(LoggerMixin):
              instruments: list[dict[str, str]],
              interval: Optional[str] = None):
 
-        self.do_live_trade_task(instruments=instruments, interval=interval)
-        for dt in self.get_trading_timeslots(interval):
+        for timeslot, exectime in self.get_trading_timeslots(interval):
                 func = partial(self.do_live_trade_task,
                                instruments=instruments,
                                interval=interval,
-                               running_for_timeslot=dt)
-                run_name = f"run-{self.strategy.__class__.__name__}-at-{dt.strftime('%H:%M')}"
-                schedule.every().day.at(dt.strftime("%H:%M:%S")).do(func).tag(run_name)
-
+                               running_for_timeslot=timeslot)
+                run_name = f"run-{self.strategy.__class__.__name__}-at-{exectime.strftime('%H:%M')}"
+                schedule.every().day.at(exectime.strftime("%H:%M:%S")).do(func).tag(run_name)
+                
         self.print_pending_trading_timeslots()
 
         while True:

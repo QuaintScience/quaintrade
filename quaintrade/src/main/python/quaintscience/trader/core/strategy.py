@@ -182,7 +182,7 @@ class Strategy(ABC, LoggerMixin):
             and self.intraday_squareoff):
             self.cancel_active_orders(broker,
                                       product=TradingProduct.MIS)
-            self.perform_squareoff(broker)
+            self.perform_squareoff(broker, product=TradingProduct.MIS)
             return True
         return False
 
