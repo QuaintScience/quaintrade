@@ -9,7 +9,7 @@ import schedule
 from tabulate import tabulate
 
 
-from .ds import OHLCStorageType
+from .ds import OHLCStorageType, TradingProduct
 from .util import resample_candle_data, get_key_from_scrip_and_exchange, new_id
 from .logging import LoggerMixin
 from .roles import Broker, HistoricDataProvider
@@ -36,6 +36,7 @@ class Bot(LoggerMixin):
                  live_trading_market_end_minute: int = 30,
                  backtesting_print_tables: bool = True,
                  backtest_results_folder: str = "backtest-results",
+                 backtest_type: str = "standard",
                  **kwargs):
         super().__init__(*args, **kwargs)
         self.broker = broker
@@ -50,6 +51,8 @@ class Bot(LoggerMixin):
         self.live_trading_market_end_minute = live_trading_market_end_minute
         self.backtesting_print_tables = backtesting_print_tables
         self.backtest_results_folder = backtest_results_folder
+        self.backtest_type = backtest_type
+        self.one_time_download_done = False
         self.live_data_cache = {}
 
     def do(self,
@@ -66,11 +69,11 @@ class Bot(LoggerMixin):
 
     def get_context(self, data: pd.DataFrame):
 
-        data = self.strategy.compute_indicators(data)
+        data = self.strategy.indicator_pipeline["window"].compute(data)[0]
         context = {}
-        for ctx in self.strategy.context_required:
+        for ctx, pipeline in self.strategy.indicator_pipeline["context"].items():
             ctx_data = resample_candle_data(data, ctx)
-            ctx_data = self.strategy.indicator_pipeline.compute(ctx_data)[0]
+            ctx_data = pipeline.compute(ctx_data)[0]
             context[ctx] = ctx_data
         return context
 
@@ -85,17 +88,44 @@ class Bot(LoggerMixin):
         key = get_key_from_scrip_and_exchange(scrip, exchange)
         self.live_data_cache[key] = data
 
+    def __one_time_context_download(self,
+                                    scrip: str,
+                                    exchange: str,
+                                    to_date: Union[str, datetime.datetime]):
+        to_date = to_date.replace(hour=self.live_trading_market_end_hour,
+                                  minute=self.live_trading_market_end_minute,
+                                  second=0,
+                                  microsecond=0)
+        from_date = to_date - datetime.timedelta(days=7)
+        from_date = from_date.replace(hour=self.live_trading_market_start_hour,
+                                      minute=self.live_trading_market_start_minute)
+        if self.online_mode and not self.one_time_download_done:
+            self.logger.info("Fetching one-time latest data from data provider...")
+            self.data_provider.download_historic_data(scrip=scrip,
+                                                      exchange=exchange,
+                                                      interval="1min",
+                                                      from_date=from_date,
+                                                      to_date=to_date,
+                                                      finegrained=True)
+
     def __get_context_data(self,
                            scrip: str,
                            exchange: str,
                            from_date: Union[str, datetime.datetime],
                            to_date: Union[str, datetime.datetime],
                            interval: Optional[str] = None,
-                           blend_live_data: bool = False):
-        to_date_day_begin = to_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                           blend_live_data: bool = False,
+                           prefer_live_data: bool = False):
+        to_date_day_begin = to_date.replace(hour=self.live_trading_market_start_hour,
+                                            minute=self.live_trading_market_start_minute,
+                                            second=0,
+                                            microsecond=0)
+        self.__one_time_context_download(scrip=scrip,
+                                         exchange=exchange,
+                                         to_date=to_date_day_begin)
         interval = self.strategy.default_interval if interval is None else interval
         if blend_live_data and self.online_mode:
-            self.logger.info(f"Fetching latest data from data provider...")
+            self.logger.info("Fetching latest data from data provider...")
             self.data_provider.download_historic_data(scrip=scrip,
                                                       exchange=exchange,
                                                       interval="1min",
@@ -122,9 +152,12 @@ class Bot(LoggerMixin):
                                                              storage_type=OHLCStorageType.PERM,
                                                              download_missing_data=False)
             data_updates["date"] = data_updates.index
-            print(data_updates)    
-            if len(data_updates) > 0:
-                data = pd.concat([data_updates, data],
+            print("Data updates using historic data provider")
+            print(data_updates)
+            if data is None:
+                data = data_updates
+            elif len(data_updates) > 0:
+                data = pd.concat([data, data_updates],
                                   axis=0,
                                   ignore_index=True,
                                   sort=False).drop_duplicates(["date"], keep='last')
@@ -136,6 +169,7 @@ class Bot(LoggerMixin):
                                                         storage_type=OHLCStorageType.LIVE)
 
         live_data["date"] = live_data.index
+        print("Live data")
         print(live_data)
         if len(data) == 0:
             self.logger.warn(f"Did not find historic data. Using only live data...")
@@ -143,12 +177,23 @@ class Bot(LoggerMixin):
         elif len(live_data) > 0:
             self.logger.info(f"Found a combination of live and historic data")
             data = pd.concat([live_data, data],
-                                axis=0,
-                                ignore_index=True,
-                                sort=False).drop_duplicates(["date"], keep='last')
+                             axis=0,
+                             ignore_index=True,
+                             sort=False).drop_duplicates(["date"],
+                                                         keep='last')
+            
+            if prefer_live_data:
+                print("Preferring live data for last slot")
+                data = pd.concat([data,
+                                  live_data.iloc[[-1]]],
+                                  axis=0,
+                                  ignore_index=True,
+                                  sort=False).drop_duplicates(subset='date', keep='last')
+
         data = data.set_index(data["date"])
         data.drop(["date"], axis=1, inplace=True)
         data.sort_index(inplace=True)
+        print("Final data")
         print(data)
         self.logger.info(f"First {data.iloc[0].name} - Latest {data.iloc[-1].name}")
         context = self.get_context(data)
@@ -189,32 +234,72 @@ class Bot(LoggerMixin):
         data_provider_instrument = get_instrument_for_provider({"scrip": scrip,
                                                                 "exchange": exchange},
                                                                 self.data_provider.__class__)
-        context, data = self.__get_context_data(scrip=data_provider_instrument["scrip"],
-                                                exchange=data_provider_instrument["exchange"],
-                                                from_date=from_date,
-                                                to_date=to_date,
-                                                interval=interval,
-                                                blend_live_data=False)
+        
 
-        print("Backtest Data")
-        print(data)
-        ts = None
-        for ii in range(0, len(data) - window_size + 1, 1):
-            window = data.iloc[ii: ii + window_size]
-            if ts is None or ts.day != window.iloc[-1].name.day:
-                self.logger.info(f"Trading on {window.iloc[-1].name.day}")
-            ts = window.iloc[-1].name
-            now_tick = window.iloc[-1].name.to_pydatetime()
-            
-            self.broker.set_current_time(now_tick, traverse=True)
+        context, data = None, None
+        if self.backtest_type == "standard":
+            self.logger.info(f"Standard back test")
+            context, data = self.__get_context_data(scrip=data_provider_instrument["scrip"],
+                                                    exchange=data_provider_instrument["exchange"],
+                                                    from_date=from_date,
+                                                    to_date=to_date,
+                                                    interval=interval,
+                                                    blend_live_data=False)
 
-            this_context = self.pick_relevant_context(context, now_tick)
-            self.do(window=window, context=this_context, scrip=scrip, exchange=exchange)
-            if self.backtesting_print_tables:
-                self.logger.info("--------------Tables After Strategy Computation Start-------------")
-                self.broker.get_orders_as_table()
-                self.broker.get_positions_as_table()
-                self.logger.info("--------------Tables After Strategy Computation End-------------")
+            print("Backtest Data")
+            print(data)
+            print("Context")
+            print(context)
+            ts = None
+            for ii in range(0, len(data) - window_size + 1, 1):
+                window = data.iloc[ii: ii + window_size]
+                if ts is None or ts.day != window.iloc[-1].name.day:
+                    self.logger.info(f"Trading on {window.iloc[-1].name.day}")
+                ts = window.iloc[-1].name
+                now_tick = window.iloc[-1].name.to_pydatetime()
+                try:
+                    self.broker.set_current_time(now_tick, traverse=True)
+
+                    this_context = self.pick_relevant_context(context, now_tick)
+                    self.do(window=window, context=this_context, scrip=scrip, exchange=exchange)
+                    if self.backtesting_print_tables:
+                        self.logger.info("--------------Tables After Strategy Computation Start-------------")
+                        self.broker.get_orders_as_table()
+                        self.broker.get_positions_as_table()
+                        self.logger.info("--------------Tables After Strategy Computation End-------------")
+                except ValueError:
+                    self.logger.warn(f"{now_tick} Time exceeded in broker")
+                    self.strategy.perform_squareoff(self.broker, scrip=scrip, exchange=exchange,
+                                                    product=TradingProduct.MIS)
+                    self.broker.set_current_time(self.broker.current_datetime(), traverse=True)
+
+        elif self.backtest_type == "live_simulation":
+            self.logger.info(f"Live simulation backtest")
+            timeslots = self.get_trading_timeslots(interval)
+            self.broker.set_current_time(timeslots[0][1], traverse=False)
+            for timeslot, exec_time  in timeslots:
+                print(f"============== Start {timeslot} ================")
+                from_date = to_date - datetime.timedelta(days=self.live_data_context_size)
+                from_date = from_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                context, data = self.__get_context_data(scrip=data_provider_instrument["scrip"],
+                                                        exchange=data_provider_instrument["exchange"],
+                                                        from_date=from_date,
+                                                        to_date=timeslot,
+                                                        interval=interval,
+                                                        blend_live_data=True,
+                                                        prefer_live_data=True)
+                print(f"timeslot {timeslot} data")
+                print(data)
+                this_context = self.pick_relevant_context(context, timeslot)
+                try:
+                    self.broker.set_current_time(exec_time, traverse=True)
+                except ValueError:
+                    continue
+                self.do(window=data,
+                        context=this_context,
+                        scrip=scrip,
+                        exchange=exchange)
+                print(f"============== End {timeslot} ================")
 
         self.broker.get_tradebook_storage().commit()
 
@@ -293,7 +378,8 @@ class Bot(LoggerMixin):
                 data["pnl"].fillna(0., inplace=True)
                 #import ipdb
                 #ipdb.set_trace()
-                daily_pnl = data["pnl"].resample('1d').apply('last').resample(interval).ffill().fillna(0.)
+                daily_pnl = data["pnl"].resample('1d').apply('last').resample(interval,
+                                                                              origin=datetime.datetime.fromisoformat('1970-01-01 09:15:00')).ffill().fillna(0.)
                 data = data.merge(daily_pnl, how='left', left_index=True, right_index=True)
                 data["daily_pnl"] = data["pnl_y"]
                 data["pnl"] = data["pnl_x"]
@@ -315,8 +401,6 @@ class Bot(LoggerMixin):
                                      indicator_fields=self.strategy.plottables["indicator_fields"])
 
     def get_trading_timeslots(self, interval):
-        if interval == "2min" and self.live_trading_market_start_minute == 15:
-            self.live_trading_market_start_minute = 14
 
         d = datetime.datetime.now().replace(hour=self.live_trading_market_start_hour,
                                             minute=self.live_trading_market_start_minute,

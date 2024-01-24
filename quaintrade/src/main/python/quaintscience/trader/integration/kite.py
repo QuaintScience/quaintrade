@@ -417,6 +417,10 @@ class KiteBroker(KiteBaseMixin,
             return OrderState.PENDING
         elif order_state == "OPEN":
             return OrderState.PENDING
+        elif order_state == "OPEN PENDING":
+            return OrderState.PENDING
+        elif order_state == "VALIDATION PENDING":
+            return OrderState.PENDING
         else:
             raise ValueError(f"Unknown Order State {order_state}")
 

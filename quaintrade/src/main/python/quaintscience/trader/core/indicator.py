@@ -575,6 +575,27 @@ class BreakoutIndicator(Indicator):
         return df, output_column_name, settings
 
 
+class MajorityRuleIndicator(Indicator):
+
+    def __init__(self, *args,
+                 period: int = 14,
+                 **kwargs):
+        self.period = period
+        kwargs["setting_attrs"] = ["period"]
+        super().__init__(self, *args, **kwargs)
+    
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_name: str | dict[str, str] | None = None,
+                     settings: dict | None = None) -> pd.DataFrame:
+        if output_column_name is None or len(output_column_name) == 0:
+            output_column_name = {"majority_rule": f"majority_rule_{settings['period']}"}
+        res = (df["close"] - df["open"] > 0).rolling(window=settings["period"]).sum()
+        res = res / settings["period"]
+        #res[np.isnan(res)] = 0.
+        #res[np.isinf(res)] = 1.
+        df[output_column_name["majority_rule"]] = res
+        return df, output_column_name, settings
+
 class IchimokuIndicator(Indicator):
 
     def __init__(self,

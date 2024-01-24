@@ -136,11 +136,10 @@ class PaperBroker(Broker):
         for instrument in self.data.keys():
 
             to_idx = self.data[instrument].index.get_indexer([dt], method="nearest")[0]
+            if to_idx + 1 >= len(self.data[instrument]):
+                raise ValueError("Time exceeds last item in data for {instrument}")
             if self.data[instrument].iloc[to_idx].name < dt:
                 to_idx += 1
-
-            if to_idx >= len(self.data[instrument]):
-                raise ValueError("Time exceeds last item in data for {instrument}")
 
             if not traverse:
                 self.current_time = dt

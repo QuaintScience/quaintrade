@@ -81,7 +81,7 @@ def new_id_field():
 
 
 def resample_candle_data(data, interval):
-    data = data.resample(interval).apply({'open': 'first',
+    data = data.resample(interval, origin=datetime.datetime.fromisoformat('1970-01-01 09:15:00')).apply({'open': 'first',
                                           'high': 'max',
                                           'low': 'min',
                                           'close': 'last'})

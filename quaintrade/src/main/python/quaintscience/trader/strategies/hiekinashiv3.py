@@ -12,7 +12,8 @@ from ..core.indicator import (IndicatorPipeline,
                               ATRIndicator,
                               RSIIndicator,
                               ChoppinessIndicator,
-                              SlopeIndicator,
+                              ADXIndicator,
+                              MajorityRuleIndicator,
                               SupertrendIndicator)
 from ..core.roles import Broker
 
@@ -30,6 +31,8 @@ class HiekinAshiStrategyV3(Strategy):
                  atr_period: int = 14,
                  rsi_period: int = 14,
                  choppiness_period: int = 14,
+                 adx_period: int = 14,
+                 majority_rule_period: int = 14,
                  **kwargs):
         self.st_period = st_period
         self.st_multiplier = st_multiplier
@@ -38,39 +41,48 @@ class HiekinAshiStrategyV3(Strategy):
         self.donchain_period = donchain_period
         self.atr_period = atr_period
         self.rsi_period = rsi_period
+        self.adx_period = adx_period
+        self.majority_rule_period = majority_rule_period
         self.product = product
         self.choppiness_period = choppiness_period
-        self.long_context = "30min"
-        self.long_context2 = "75min"
-        self.long_context3 = "2h"
-        self.rsi_context = "30min"
+        self.short_context1 = "15min"
+        self.short_context2 = "30min"
+        self.long_context1 = "45min"
+        self.long_context2 = "60min"
+        self.long_context3 = "75min"
+
         self.rsi_upper_threshold = 60
         self.rsi_lower_threshold = 40
         self.rsi_col = f"RSI_{self.rsi_period}"
         self.atr_col = f"ATR_{self.atr_period}"
         self.st_col = f"supertrend_{self.st_period}_{self.st_multiplier:.1f}"
+        self.adx_col = f"ADX_{self.adx_period}"
+        self.majority_col = f"majority_rule_{self.majority_rule_period}"
         self.choppiness_col = f"choppiness_{self.choppiness_period}"
         indicators = indicators=[(HeikinAshiIndicator(), None, None),
+                                 (ADXIndicator(period=self.adx_period), None, None),
                                  (SupertrendIndicator(period=self.st_period,
                                                       multiplier=self.st_multiplier), None, None),
                                  (RSIIndicator(period=self.rsi_period), None, None),
                                  (BBANDSIndicator(period=self.bb_period), None, None),
                                  (ATRIndicator(period=self.atr_period), None, None),
-                                 (ChoppinessIndicator(period=self.choppiness_period), None, None)
+                                 (MajorityRuleIndicator(period=self.majority_rule_period), None, None)
                                  ]
         
         kwargs["indicator_pipeline"] = IndicatorPipeline(indicators=indicators)
         kwargs["plottables"] = {"indicator_fields": [{"field": "ha_long_trend", "panel": 2},
-                                                     {"field": "ha_trending_green", "panel": 2, "context": self.long_context2},
+                                                     {"field": "ha_trending_green", "panel": 2, "context": self.long_context3},
                                                      {"field": "ha_short_trend", "panel": 3},
-                                                     {"field": "ha_trending_red", "panel": 3, "context": self.long_context2},
+                                                     {"field": "ha_trending_red", "panel": 3, "context": self.long_context3},
                                                      #{"field": "ha_non_trending", "panel": 4},
                                                      f"BBandUpper_{self.bb_period}",
                                                      f"BBandLower_{self.bb_period}",
-                                                     {"field": self.st_col, "panel": 0, "context": self.long_context},
+                                                     {"field": self.st_col, "panel": 0, "context": self.short_context1},
+                                                     {"field": self.st_col, "panel": 0, "context": self.short_context2},
                                                      #{"field": f"ATR_{self.atr_period}", "panel": 5},
                                                      
-                                                     {"field": self.choppiness_col, "panel": 4, "context": self.long_context2},
+                                                     {"field": self.majority_col, "panel": 4},
+                                                     {"field": self.majority_col, "panel": 4, "context": self.long_context3},
                                                      #f"supertrend_{self.st_period}_{self.st_multiplier:.1f}",
                                                      #f"SMA_{self.ma_period}",
                                                      #f"donchainUpper_{self.donchain_period}",
@@ -80,8 +92,11 @@ class HiekinAshiStrategyV3(Strategy):
         non_trading_timeslots.extend(Strategy.NON_TRADING_FIRST_HOUR)
         non_trading_timeslots.extend(Strategy.NON_TRADING_AFTERNOON)
         kwargs["non_trading_timeslots"] = non_trading_timeslots
-        kwargs["context_required"] = list(set([self.long_context, self.long_context2,
-                                               self.long_context3, self.rsi_context]))
+        kwargs["context_required"] = list(set([self.short_context1,
+                                               self.short_context2,
+                                               self.long_context1,
+                                               self.long_context2,
+                                               self.long_context3]))
 
         self.entry_threshold = 0.1
         """
@@ -146,9 +161,9 @@ class HiekinAshiStrategyV3(Strategy):
                          f" L={window.iloc[-1]['low']}"
                          f" C={window.iloc[-1]['close']}"
                          f" {' '.join(colvals)}")
-        self.logger.info(f"{self.long_context} "
-                         f'green {context[self.long_context].iloc[-1]["ha_trending_green"]}'
-                         f' red {context[self.long_context].iloc[-1]["ha_trending_red"]}')
+        self.logger.info(f"{self.long_context3} "
+                         f'green {context[self.long_context3].iloc[-1]["ha_trending_green"]}'
+                         f' red {context[self.long_context3].iloc[-1]["ha_trending_red"]}')
 
         current_run = self.get_current_run(broker,
                                            scrip,
@@ -157,45 +172,60 @@ class HiekinAshiStrategyV3(Strategy):
         self.logger.info(f"Current Run: {current_run}")
         if self.can_trade(window, context):
             make_entry = False
-            if (window.iloc[-1]["ha_long_trend"] == 1.0 
+            if (window.iloc[-1]["ha_long_trend"] == 1.0
                 # and window.iloc[-2]["ha_long_trend"] == 0.0
                 #and context[self.long_context].iloc[-1]["ha_trending_green"] == 1.0
+                and context[self.long_context3].iloc[-1]["ha_trending_green"] == 1.0
+                and context[self.long_context3].iloc[-1]["ha_non_trending"] != 1.0
+                
                 and context[self.long_context2].iloc[-1]["ha_trending_green"] == 1.0
-                #and context[self.long_context3].iloc[-1]["ha_trending_green"] == 1.0
-                #and (context[self.rsi_context].iloc[-1][self.rsi_col] > self.rsi_upper_threshold
-                #     or context[self.rsi_context].iloc[-1][self.rsi_col] < self.rsi_lower_threshold)
-                #and context["30min"].iloc[-1]["ha_trending_green"] == 1.0
-                #and context[self.long_context3].iloc[-1][self.choppiness_col] < 50
+                and context[self.long_context2].iloc[-1]["ha_non_trending"] != 1.0
+
+                and context[self.long_context1].iloc[-1]["ha_trending_green"] == 1.0
+                and context[self.long_context1].iloc[-1]["ha_non_trending"] != 1.0
+                
+                and context[self.long_context3].iloc[:-3][self.adx_col].max() > 30
+                and context[self.long_context2].iloc[:-3][self.adx_col].max() > 20
+                and context[self.long_context1].iloc[:-3][self.adx_col].max() > 20
+
+                #and context[self.short_context1].iloc[-1][self.majority_col] > 0.6
+
                 and current_run != TradeType.LONG):
                 current_run = TradeType.LONG
                 make_entry = True
-                self.logger.debug(f"Entering long trade!")
-            if (window.iloc[-1]["ha_short_trend"] == 1.0 
+                self.logger.debug("Entering long trade!")
+
+            if (window.iloc[-1]["ha_short_trend"] == 1.0
                  # and window.iloc[-2]["ha_short_trend"] == 0.0
                 #and context[self.long_context].iloc[-1]["ha_trending_red"] == 1.0
+                and context[self.long_context3].iloc[-1]["ha_trending_red"] == 1.0
+                and context[self.long_context3].iloc[-1]["ha_non_trending"] != 1.0
+                
                 and context[self.long_context2].iloc[-1]["ha_trending_red"] == 1.0
-                #and context[self.long_context3].iloc[-1]["ha_trending_red"] == 1.0
-                #and (context[self.rsi_context].iloc[-1][self.rsi_col] > self.rsi_upper_threshold
-                #     or context[self.rsi_context].iloc[-1][self.rsi_col] < self.rsi_lower_threshold)
-                #and context["30min"].iloc[-1]["ha_trending_red"] == 1.0
-                #and context[self.long_context3].iloc[-1][self.choppiness_col] < 50
+                and context[self.long_context2].iloc[-1]["ha_non_trending"] != 1.0
+
+                and context[self.long_context1].iloc[-1]["ha_trending_red"] == 1.0
+                and context[self.long_context1].iloc[-1]["ha_non_trending"] != 1.0
+                
+                and context[self.long_context3].iloc[:-3][self.adx_col].max() > 30
+                and context[self.long_context2].iloc[:-3][self.adx_col].max() > 20
+                and context[self.long_context1].iloc[:-3][self.adx_col].max() > 20
+                
+                #and context[self.short_context1].iloc[-1][self.majority_col] < 0.4
+
                 and current_run != TradeType.SHORT):
                 current_run = TradeType.SHORT
                 make_entry = True
-                self.logger.debug(f"Entering short trade!")
+                self.logger.debug("Entering short trade!")
 
-            if context[self.long_context].iloc[:-4][self.st_col].nunique() == 1:
-                make_entry = False
+            #if context[self.long_context].iloc[:-4][self.st_col].nunique() == 1:
+            #    make_entry = False
 
             if make_entry and not (np.isnan(self.get_entry(window, current_run))
                                    or np.isnan(self.get_stoploss(window, context, current_run))
                                    or np.isnan(self.get_target(window, context, current_run))):
                 qty = max(self.max_budget // window.iloc[-1]["close"], self.min_quantity)
-                risk_factor = 1.0
-                if current_run == TradeType.SHORT and context[self.long_context].iloc[-1][self.st_col] > window.iloc[-1]["high"]:
-                    risk_factor = 0.5
-                if current_run == TradeType.LONG and context[self.long_context].iloc[-1][self.st_col] < window.iloc[-1]["low"]:
-                    risk_factor  = 0.5
+
                 self.logger.debug(f"Taking position!")
                 quantity = self.cancel_active_orders(broker=broker,
                                                      scrip=scrip,

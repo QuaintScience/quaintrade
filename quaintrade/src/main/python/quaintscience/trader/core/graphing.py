@@ -1,7 +1,7 @@
 from functools import partial
 from typing import Optional, Union
 import copy
-
+import datetime
 import numpy as np
 import pandas as pd
 
@@ -86,37 +86,47 @@ def plot_backtesting_results(df: pd.DataFrame,
         sell_events_df = sell_events_df[["sell_signals"]]
         if len(sell_events_df) > 0:
             events_exist = True
-        df = df.merge(sell_events_df, how='left', left_index=True, right_index=True)
+            df = df.merge(sell_events_df, how='left', left_index=True, right_index=True)
 
         buy_events_df = copy.deepcopy(events[events["transaction_type"] == TransactionType.BUY])
         buy_events_df["buy_signals"] = buy_events_df["price"]
         buy_events_df = buy_events_df[["buy_signals"]]
         if len(buy_events_df):
             events_exist = True
-
-        df = df.merge(buy_events_df, on="date", how='left')
+            df = df.merge(buy_events_df, on="date", how='left')
 
     event_plots = []
+    
     if events_exist:
-        if events is not None and len(events) > 0:
-            event_plots.append(mpf.make_addplot(df["sell_signals"], type='scatter', marker=r'$\downarrow$', color='k'))
-            event_plots.append(mpf.make_addplot(df["buy_signals"], type='scatter', marker=r'$\uparrow$', color='k'))
-        event_plots.extend(custom_addplots)
-    
+
+        event_plots.append(mpf.make_addplot(df["sell_signals"],
+                                            type='scatter',
+                                            marker=r'$\downarrow$',
+                                            color='k'))
+        event_plots.append(mpf.make_addplot(df["buy_signals"],
+                                            type='scatter',
+                                            marker=r'$\uparrow$',
+                                            color='k'))
+
+    event_plots.extend(custom_addplots)
+
     num_panels = 1
-    
+    print("Indicator Fields", indicator_fields)
+
     for field in indicator_fields:
         if isinstance(field, str):
             event_plots.append(mpf.make_addplot(df[field]))
         else:
             if "context" in field:
-                context_data = context[field["context"]][field["field"]].resample(interval).ffill()
-                # print("CONTEXT DATA", context_data, interval)
-                # context_data = context_data[df.index]
+                context_data = context[field["context"]][field["field"]].resample(interval, origin=datetime.datetime.fromisoformat('1970-01-01 09:15:00')).ffill()
                 df = df.merge(context_data, how='left', left_index=True, right_index=True, suffixes=(None, f"_{field['context']}"))
+                print(field)
+                print(df)
                 event_plots.append(mpf.make_addplot(df.get(f"{field['field']}_{field['context']}"),
                                                     panel=field.get("panel", 1)))
             else:
+                print(field)
+                print(df)
                 event_plots.append(mpf.make_addplot(df[field.get("field")],
                                                     panel=field.get("panel", 1)))
             num_panels = max(num_panels, field.get("panel", 0) + 1)

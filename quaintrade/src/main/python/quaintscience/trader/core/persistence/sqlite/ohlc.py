@@ -36,16 +36,24 @@ class SqliteOHLCStorage(SqliteStorage, OHLCStorageMixin):
     def get(self, scrip: str, exchange: str,
             from_date: Union[str, datetime.datetime],
             to_date: Union[str, datetime.datetime],
-            conflict_resolution_type: str) -> pd.DataFrame:
+            conflict_resolution_type: str,
+            autofix: bool = True) -> pd.DataFrame:
         cols = ["date", "open", "high", "low",
                 "close", "volume", "oi"]
-        return self.get_timestamped_data(scrip, exchange,
+        data = self.get_timestamped_data(scrip, exchange,
                                          table_name_suffixes=[],
                                          from_date=from_date,
                                          to_date=to_date,
                                          cols=cols,
                                          index_col="date",
                                          conflict_resolution_type=conflict_resolution_type)
+        if autofix:
+            self.logger.warn(f'Fixing {sum(data["low"] == 0) + sum(data["high"] == 0)} rows...')
+            data.loc[data["low"] == 0., "low"] = data[data["low"] == 0.].apply(lambda x: min(x["open"], x["close"]), axis=1)
+            data.loc[data["high"] == 0., "high"] = data[data["high"] == 0.].apply(lambda x: max(x["open"], x["close"]), axis=1)
+            #print("fixed data")
+            #print(data)
+        return data
 
     def clear_data(self, scrip: str, exchange: str, conflict_resolution_type: str = "IGNORE"):
         table_name = self.create_tables(scrip, exchange,

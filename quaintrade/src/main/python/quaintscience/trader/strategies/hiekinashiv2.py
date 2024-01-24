@@ -47,36 +47,28 @@ class HiekinAshiStrategyV2(Strategy):
         self.rsi_lower_threshold = 40
         self.rsi_col = f"RSI_{self.rsi_period}"
         self.atr_col = f"ATR_{self.atr_period}"
-        indicators = indicators=[(HeikinAshiIndicator(), None, None),
-                                 #(SupertrendIndicator(period=self.st_period,
-                                 #                     multiplier=self.st_multiplier), None, None),
-                                 (RSIIndicator(period=self.rsi_period), None, None),
-                                 (BBANDSIndicator(period=self.bb_period), None, None),
-                                 (ATRIndicator(period=self.atr_period), None, None),
-                                 #(DonchainIndicator(period=self.donchain_period), None, None)
-                                 ]
-        kwargs["indicator_pipeline"] = IndicatorPipeline(indicators=indicators)
+        indicators = IndicatorPipeline([(HeikinAshiIndicator(), None, None),
+                                        (ATRIndicator(period=self.atr_period), None, None)])
+        basic_indicators = IndicatorPipeline([(HeikinAshiIndicator(), None, None)])
+        kwargs["indicator_pipeline"] = {"window": indicators,
+                                        "context": {self.long_context: basic_indicators,
+                                                    self.long_context2: basic_indicators,
+                                                    self.long_context3: basic_indicators}}
         kwargs["plottables"] = {"indicator_fields": [{"field": "ha_long_trend", "panel": 2},
-                                                     {"field": "ha_trending_green", "panel": 2, "context": self.long_context2},
+                                                     {"field": "ha_trending_green",
+                                                      "panel": 2,
+                                                      "context": self.long_context2},
                                                      {"field": "ha_short_trend", "panel": 3},
-                                                     {"field": "ha_trending_red", "panel": 3, "context": self.long_context2},
-                                                     #{"field": "ha_non_trending", "panel": 4},
-                                                     f"BBandUpper_{self.bb_period}",
-                                                     f"BBandLower_{self.bb_period}",
-                                                     #{"field": f"ATR_{self.atr_period}", "panel": 5},
-                                                     
-                                                     {"field": self.rsi_col, "panel": 4, "context": self.rsi_context},
-                                                     #f"supertrend_{self.st_period}_{self.st_multiplier:.1f}",
-                                                     #f"SMA_{self.ma_period}",
-                                                     #f"donchainUpper_{self.donchain_period}",
-                                                     #f"donchainLower_{self.donchain_period}",
+                                                     {"field": "ha_trending_red",
+                                                      "panel": 3,
+                                                      "context": self.long_context2},
                                                      ]}
         non_trading_timeslots = []
         non_trading_timeslots.extend(Strategy.NON_TRADING_FIRST_HOUR)
         non_trading_timeslots.extend(Strategy.NON_TRADING_AFTERNOON)
         kwargs["non_trading_timeslots"] = non_trading_timeslots
-        kwargs["context_required"] = list(set([self.long_context, self.long_context2,
-                                               self.long_context3, self.rsi_context]))
+        #kwargs["context_required"] = list(set([self.long_context, self.long_context2,
+        #                                       self.long_context3, self.rsi_context]))
 
         self.entry_threshold = 0.2
         """
@@ -118,7 +110,7 @@ class HiekinAshiStrategyV2(Strategy):
             return window.iloc[-1]["low"] - self.target_factor * window.iloc[-1][self.atr_col]
 
     def get_stoploss(self, window: pd.DataFrame, context: dict[str, pd.DataFrame], trade_type: TradeType):
-        
+
         if trade_type == TradeType.LONG:
             return window.iloc[-1]["low"] - self.sl_factor * window.iloc[-1][self.atr_col]
         else:
@@ -141,16 +133,16 @@ class HiekinAshiStrategyV2(Strategy):
                          f" L={window.iloc[-1]['low']}"
                          f" C={window.iloc[-1]['close']}"
                          f" {' '.join(colvals)}")
-        self.logger.info(f"{self.long_context} "
-                         f'green {context[self.long_context].iloc[-1]["ha_trending_green"]}'
-                         f' red {context[self.long_context].iloc[-1]["ha_trending_red"]}')
+        self.logger.info(f"{self.long_context2} "
+                         f'green {context[self.long_context2].iloc[-1]["ha_trending_green"]}'
+                         f' red {context[self.long_context2].iloc[-1]["ha_trending_red"]}')
         current_run = self.get_current_run(broker,
                                            scrip,
                                            exchange)
         self.logger.info(f"Current Run: {current_run}")
         if self.can_trade(window, context):
             make_entry = False
-            if (window.iloc[-1]["ha_long_trend"] == 1.0 
+            if (window.iloc[-1]["ha_long_trend"] == 1.0
                 # and window.iloc[-2]["ha_long_trend"] == 0.0
                 #and context[self.long_context].iloc[-1]["ha_trending_green"] == 1.0
                 and context[self.long_context2].iloc[-1]["ha_trending_green"] == 1.0
@@ -162,7 +154,7 @@ class HiekinAshiStrategyV2(Strategy):
                 current_run = TradeType.LONG
                 make_entry = True
                 self.logger.debug(f"Entering long trade!")
-            if (window.iloc[-1]["ha_short_trend"] == 1.0 
+            if (window.iloc[-1]["ha_short_trend"] == 1.0
                  # and window.iloc[-2]["ha_short_trend"] == 0.0
                 #and context[self.long_context].iloc[-1]["ha_trending_red"] == 1.0
                 and context[self.long_context2].iloc[-1]["ha_trending_red"] == 1.0

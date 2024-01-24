@@ -335,12 +335,16 @@ class StreamingDataProvider(DataProvider):
     def __init__(self, *args,
                  save_frequency: int = 5,
                  clear_live_data_cache: bool = True,
+                 market_start_hour: int = 9,
+                 market_start_minute: int = 15,
                  **kwargs):
         self.kill_tick_thread = False
         self.clear_live_data_cache = clear_live_data_cache
         self.cache = defaultdict(dict)
         self.tick_counter = defaultdict(int)
         self.save_frequency = save_frequency
+        self.market_start_hour = market_start_hour
+        self.market_start_minute = market_start_minute
         super().__init__(*args, **kwargs)
 
     def clear_live_storage(self, instruments: list):
@@ -392,6 +396,10 @@ class StreamingDataProvider(DataProvider):
                 *args,
                 **kwargs):
         token = str(token)
+        if (ltt.hour < self.market_start_hour or
+            (ltt.hour == self.market_start_hour and ltt.minute < self.market_start_minute)):
+            self.logger.warn(f"Found data from a datetime that's before market start {ltt}")
+            return
         key = ltt.strftime("%Y%m%d %H:%M")
         key = str(key)
         

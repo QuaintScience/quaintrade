@@ -327,10 +327,6 @@ class Strategy(ABC, LoggerMixin):
                                      parent_order=entry_order)
         return {"entry": entry_order, "stoploss": stoploss_order, "target": target_order}
 
-    def compute_indicators(self, df: pd.DataFrame):
-        df, _, _ = self.indicator_pipeline.compute(df)
-        return df
-
     def apply(self, broker: Broker,
               scrip: str,
               exchange: str,

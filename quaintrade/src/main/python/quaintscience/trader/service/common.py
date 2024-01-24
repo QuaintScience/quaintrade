@@ -223,4 +223,4 @@ class BotService(DataProviderService, BrokerService):
         p.add("--bot_backtesting_print_tables", action="store_true", help="Print tables for every tick in backtesting", env_var="BOT_BACKTESTING_PRINT_TABLES")
         p.add("--bot_online_mode", action="store_true", help="Run bot in online mode (get data during live trading)", env_var="BOT_ONLINE_MODE")
         p.add('--strategy_kwargs', help="kwargs to instantiate the strategy", env_var="STRATEGY_KWARGS", type=yaml.safe_load)
-        p.add('--bot_kwargs', help="kwargs to instantiate the bot", env_var="BOT_KWARGS", type=yaml.safe_load)
+        p.add('--bot_custom_kwargs', help="kwargs to instantiate the bot", env_var="BOT_CUSTOM_KWARGS", type=yaml.safe_load)
