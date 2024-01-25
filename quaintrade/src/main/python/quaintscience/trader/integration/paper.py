@@ -1,7 +1,7 @@
 import datetime
 from typing import Optional
 from dataclasses import dataclass
-
+import copy
 import pandas as pd
 from tabulate import tabulate
 
@@ -17,6 +17,9 @@ from ..core.util import (default_dataclass_field,
                          get_scrip_and_exchange_from_key)
 from .common import get_instrument_for_provider
 
+
+class PaperTraderTimeExceededException(Exception):
+    pass
 
 @dataclass(kw_only=True)
 class PaperPosition(Position):
@@ -137,7 +140,7 @@ class PaperBroker(Broker):
 
             to_idx = self.data[instrument].index.get_indexer([dt], method="nearest")[0]
             if to_idx + 1 >= len(self.data[instrument]):
-                raise ValueError("Time exceeds last item in data for {instrument}")
+                raise PaperTraderTimeExceededException("Time exceeds last item in data for {instrument}")
             if self.data[instrument].iloc[to_idx].name < dt:
                 to_idx += 1
 
@@ -373,10 +376,10 @@ class PaperBroker(Broker):
                         #if change:
                         #    print(order, candle)
                         if candle["high"] >= order.limit_price:
-                             self.__add_position(order,
-                                                 last_price=candle["close"],
-                                                 price=max(order.limit_price,
-                                                           candle["low"]))
+                            self.__add_position(order,
+                                                last_price=candle["close"],
+                                                price=max(order.limit_price,
+                                                          candle["low"]))
                         self.cancel_invalid_child_orders()
                 elif order.order_type == OrderType.MARKET:
                     self.__add_position(order, last_price=candle["close"], price=candle["close"])
@@ -412,11 +415,12 @@ class PaperBroker(Broker):
         return self.orders
 
     def update_order(self, order: Order,
+                     local_update: bool = False,
                      refresh_cache: bool = True) -> Order:
         found = False
         for ii, other_order in enumerate(self.orders):
             if other_order.order_id == order.order_id:
-                self.orders[ii] = order
+                self.orders[ii] = copy.deepcopy(order)
                 found = True
         if not found:
             raise KeyError(f"Order {order} not found.")

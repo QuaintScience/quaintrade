@@ -83,7 +83,9 @@ class Strategy(ABC, LoggerMixin):
     def cancel_active_orders(self, broker: Broker,
                              scrip: Optional[str] = None,
                              exchange: Optional[str] = None,
-                             product: Optional[TradingProduct] = None):
+                             product: Optional[TradingProduct] = None,
+                             delete_order_tags: Optional[list[str]] = None) -> int:
+
         quantity = 0
         visited_parent_ids = set()
         for order in broker.get_orders(refresh_cache=True):
@@ -100,15 +102,27 @@ class Strategy(ABC, LoggerMixin):
                     and order.parent_order_id is not None
                     and ("target" in order.tags or "stoploss" in order.tags)):
                     quantity += order.quantity if order.transaction_type == TransactionType.SELL else -order.quantity
-                broker.cancel_order(order, refresh_cache=True)
-                broker.delete_gtt_orders_for(order)
-                storage = broker.get_tradebook_storage()
-                storage.store_order_execution(strategy=self.strategy_name,
-                                              run_name=broker.run_name,
-                                              run_id=broker.run_id,
-                                              date=broker.current_datetime(),
-                                              order=order,
-                                              event="OrderCancelled")
+
+                delete_order = False
+                if delete_order_tags is not None:
+                    for tag in delete_order_tags:
+                        if tag in order.tags:
+                            self.logger.debug(f"Deleting order {order.order_id} as it has tag {tag}")
+                            delete_order = True
+                            break
+                else:
+                    self.logger.debug(f"Deleting order {order.order_id} as no delete order tags are specified")
+                    delete_order = True
+                if delete_order:
+                    broker.cancel_order(order, refresh_cache=True)
+                    broker.delete_gtt_orders_for(order)
+                    storage = broker.get_tradebook_storage()
+                    storage.store_order_execution(strategy=self.strategy_name,
+                                                run_name=broker.run_name,
+                                                run_id=broker.run_id,
+                                                date=broker.current_datetime(),
+                                                order=order,
+                                                event="OrderCancelled")
                 if order.parent_order_id is not None:
                     visited_parent_ids.add(order.parent_order_id)
         broker.cancel_invalid_child_orders()
@@ -117,24 +131,110 @@ class Strategy(ABC, LoggerMixin):
         return quantity
 
     def get_current_run(self, broker: Broker,
-                        scrip: str, exchange: str):
-        for order in broker.get_orders(refresh_cache=True):
-            if (order.state == OrderState.PENDING
-                and self.long_position_tag in order.tags
-                and order.scrip == scrip
-                and order.exchange == exchange):
+                        scrip: str,
+                        exchange: str,
+                        refresh_cache: bool = True) -> TradeType:
+        current_target_order = self.get_current_position_order(broker,
+                                                               scrip=scrip,
+                                                               exchange=exchange,
+                                                               product=self.product,
+                                                               position_name="target",
+                                                               refresh_order_cache=refresh_cache,
+                                                               states=[OrderState.PENDING])
+        current_stoploss_order = self.get_current_position_order(broker,
+                                                                 scrip=scrip,
+                                                                 exchange=exchange,
+                                                                 product=self.product,
+                                                                 position_name="target",
+                                                                 refresh_order_cache=False,
+                                                                 states=[OrderState.PENDING])
+        if current_target_order is not None:
+            if self.long_position_tag in current_target_order.tags:
                 return TradeType.LONG
-            elif (order.state == OrderState.PENDING
-                and self.short_position_tag in order.tags
-                and order.scrip == scrip
-                and order.exchange == exchange):
+            elif self.short_position_tag in current_target_order.tags:
                 return TradeType.SHORT
+        if current_stoploss_order is not None:
+            if self.long_position_tag in current_stoploss_order.tags:
+                return TradeType.LONG
+            elif self.short_position_tag in current_stoploss_order.tags:
+                return TradeType.SHORT
+
+        for order in broker.get_orders(refresh_cache=False):
+            if (order.state == OrderState.PENDING
+                and order.scrip == scrip
+                and order.exchange == exchange
+                and "entry" in order.tags):
+                if self.long_position_tag in order.tags:
+                    return TradeType.LONG
+                elif self.short_position_tag in order.tags:
+                    return TradeType.SHORT
+
+
+    def get_current_position_order(self,
+                                   broker: Broker,
+                                   scrip: str,
+                                   exchange: str,
+                                   product: TradingProduct,
+                                   position_name: str,
+                                   refresh_order_cache: bool = True,
+                                   states: list[OrderState] = None) -> Optional[Order]:
+        if states is None:
+            states = [OrderState.PENDING, OrderState.COMPLETED]
+        latest_order = None
+        for order in broker.get_orders(refresh_cache=refresh_order_cache):
+            if (order.state in states
+                and order.product == product
+                and order.scrip == scrip
+                and order.exchange == exchange
+                and (self.long_position_tag in order.tags
+                     or self.short_position_tag in order.tags)
+                and position_name in order.tags):
+                if latest_order is None or latest_order.timestamp < order.timestamp:
+                    latest_order = order
+        return latest_order
+
+    def update_stoploss_order(self,
+                              broker: Broker,
+                              scrip: str,
+                              exchange: str,
+                              product: TradingProduct,
+                              trigger_price: float,
+                              refresh_order_cache: bool = True):
+        
+        entry_order = self.get_current_position_order(broker=broker,
+                                                      scrip=scrip,
+                                                      exchange=exchange,
+                                                      product=product,
+                                                      position="entry",
+                                                      refresh_order_cache=False)
+        stoploss_order = self.get_child_order(broker, entry_order, "stoploss")
+        if stoploss_order is None:
+            self.logger.warn("Could not find stoploss order for {entry_order}")
+        stoploss_order.trigger_price = trigger_price
+        if stoploss_order.transaction_type == TransactionType.SELL:
+                stoploss_order.limit_price = trigger_price * (1 - self.trigger_price_cushion)
+        else:
+            stoploss_order.limit_price = trigger_price * (1 + self.trigger_price_cushion)
+        broker.update_order(stoploss_order, refresh_cache=refresh_order_cache)
+    
+    def get_child_order(self,
+                        broker: Broker,
+                        entry_order: Order,
+                        tag: str) -> Optional[Order]:
+        for order in broker.get_orders(refresh_cache=False):
+            if (order.parent_order_id is not None
+                and order.parent_order_id == entry_order.order_id
+                and (self.long_position_tag in order.tags
+                     or self.short_position_tag in order.tags)
+                and tag in order.tags):
+                return order
+
 
     def perform_squareoff(self, broker: Broker,
                           scrip: Optional[str] = None,
                           exchange: Optional[str] = None,
                           product: Optional[TradingProduct] = None,
-                          quantity: Optional[int] = None):
+                          quantity: Optional[int] = None) -> None:
 
         positions = broker.get_positions(refresh_cache=True)
         for position in positions:
@@ -176,7 +276,7 @@ class Strategy(ABC, LoggerMixin):
 
     def perform_intraday_squareoff(self,
                                    broker: Broker,
-                                   window: pd.DataFrame):
+                                   window: pd.DataFrame) -> None:
         if (window.iloc[-1].name.hour >= self.squareoff_hour and
             window.iloc[-1].name.minute >= self.squareoff_minute
             and self.intraday_squareoff):
@@ -186,7 +286,7 @@ class Strategy(ABC, LoggerMixin):
             return True
         return False
 
-    def can_trade(self, window: pd.DataFrame, context: dict[str, pd.DataFrame]):
+    def can_trade(self, window: pd.DataFrame, context: dict[str, pd.DataFrame]) -> bool:
         return self.__can_trade_in_given_timeslot(window) and self.__can_trade_with_context(context)
 
     def __can_trade_with_context(self, context: dict[str, pd.DataFrame]):

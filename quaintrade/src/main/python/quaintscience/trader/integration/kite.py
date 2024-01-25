@@ -255,20 +255,30 @@ class KiteBroker(KiteBaseMixin,
                     self.logger.info(f"Did not cancel order as it's state is {existing_order.state} {type(order.state)}")
                 break
 
-    def update_order(self, order: Order, refresh_cache: bool = True) -> Order:
+    def update_order(self, order: Order,
+                     local_update: bool = False,
+                     refresh_cache: bool = True) -> Order:
         self.logger.info(f"Attempting update of order with order_id {order.order_id}...")
         for existing_order in self.get_orders(refresh_cache=refresh_cache):
             if existing_order.order_id == order.order_id:
-
-                if existing_order.state == OrderState.PENDING:
+                if local_update:
+                    existing_order.tags = order.tags
+                    existing_order.parent_order_id = order.parent_order_id
+                    existing_order.group_id = order.group_id
+                
+                if existing_order.state == OrderState.PENDING and not local_update:
                     self.logger.info(f"Found order with order_id {order.order_id} for updation...")
                     order_id = self.kite.modify_order(variety=self.kite.VARIETY_REGULAR,
-                                                    order_id=order.order_id,
-                                                    quantity=int(order.quantity),
-                                                    price=order.price,
-                                                    order=order.trigger_price)
+                                                      order_id=order.order_id,
+                                                      quantity=int(order.quantity),
+                                                      trigger_price=round(order.trigger_price, 1),
+                                                      price=round(order.price, 1))
                     time.sleep(self.rate_limit_time)
-                    order.order_id = order_id
+                    if order_id != order.order_id:
+                        self.logger.warn(f"Order ID changed from {order.order_id} to {order_id} after update.")
+                        order.order_id = order_id
+                        with self.order_state_lock:
+                            self.orders_cache.append(order)
                     self.get_orders(refresh_cache=refresh_cache)
                     return order
             else:

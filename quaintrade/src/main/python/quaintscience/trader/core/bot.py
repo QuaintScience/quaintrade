@@ -1,6 +1,7 @@
 from typing import Union, Optional
 import datetime
 import time
+import traceback
 import os
 from functools import partial
 
@@ -16,7 +17,7 @@ from .roles import Broker, HistoricDataProvider
 from .strategy import Strategy
 from .graphing import plot_backtesting_results
 
-from ..integration.paper import PaperBroker
+from ..integration.paper import PaperBroker, PaperTraderTimeExceededException
 from ..integration.common import get_instruments_for_provider, get_instrument_for_provider
 
 
@@ -259,7 +260,6 @@ class Bot(LoggerMixin):
                 now_tick = window.iloc[-1].name.to_pydatetime()
                 try:
                     self.broker.set_current_time(now_tick, traverse=True)
-
                     this_context = self.pick_relevant_context(context, now_tick)
                     self.do(window=window, context=this_context, scrip=scrip, exchange=exchange)
                     if self.backtesting_print_tables:
@@ -267,11 +267,8 @@ class Bot(LoggerMixin):
                         self.broker.get_orders_as_table()
                         self.broker.get_positions_as_table()
                         self.logger.info("--------------Tables After Strategy Computation End-------------")
-                except ValueError:
-                    self.logger.warn(f"{now_tick} Time exceeded in broker")
-                    self.strategy.perform_squareoff(self.broker, scrip=scrip, exchange=exchange,
-                                                    product=TradingProduct.MIS)
-                    self.broker.set_current_time(self.broker.current_datetime(), traverse=True)
+                except PaperTraderTimeExceededException:
+                    self.logger.warn(f"Could not set time in paper broker to {now_tick}")
 
         elif self.backtest_type == "live_simulation":
             self.logger.info(f"Live simulation backtest")
@@ -293,7 +290,8 @@ class Bot(LoggerMixin):
                 this_context = self.pick_relevant_context(context, timeslot)
                 try:
                     self.broker.set_current_time(exec_time, traverse=True)
-                except ValueError:
+                except PaperTraderTimeExceededException:
+                    self.logger.warn(f"Could not set time in paper broker to {exec_time}")
                     continue
                 self.do(window=data,
                         context=this_context,

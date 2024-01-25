@@ -62,7 +62,7 @@ def nse_commission_func(order: Order, brokerage_percentage: float = 0.03, max_co
     gst = round(gst, 2)
     
     total = round(brokerage + stt + transaction_charges + sebi_charges + stamp_charges + gst, 2)
-    print(f"Brokerage: {brokerage} "
+    print(f"Brokerage: {brokerage} for {order.order_id[:4]} {order.transaction_type}"
           f"| STT: {stt} "
           f"| TransactionCharges: {transaction_charges} "
           f"| SEBICharges: {sebi_charges} "
@@ -543,8 +543,7 @@ class Broker(TradingServiceProvider):
                 for other_order in self.get_orders(refresh_cache=False):
                     if (other_order.group_id == order.group_id
                         and other_order.order_id != order.order_id
-                        and other_order.state == OrderState.PENDING
-                        and "entry" in other_order.tags):
+                        and other_order.state == OrderState.PENDING):
                         state_changed = True
                         self.logger.info(f"Cancelling order {other_order.order_id[:4]}/"
                                          f"{other_order.scrip}/{other_order.exchange}/"
@@ -575,7 +574,7 @@ class Broker(TradingServiceProvider):
             printable_orders.append(["GTT",
                                      to_order.order_id[:4],
                                      from_order.order_id[:4],
-                                     to_order.group_id[:4] if order.group_id is not None else "",
+                                     to_order.group_id[:4] if to_order.group_id is not None else "",
                                      to_order.scrip,
                                      to_order.exchange,
                                      to_order.transaction_type,
@@ -620,6 +619,7 @@ class Broker(TradingServiceProvider):
 
     @abstractmethod
     def update_order(self, order: Order,
+                     local_update: bool = False,
                      refresh_cache: bool = True) -> Order:
         pass
     """
