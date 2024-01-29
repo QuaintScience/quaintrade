@@ -9,6 +9,7 @@ from ..core.strategy import Strategy
 from ..core.indicator import (IndicatorPipeline,
                               HeikinAshiIndicator,
                               BBANDSIndicator,
+                              ADXIndicator,
                               ATRIndicator,
                               RSIIndicator,
                               SMAIndicator,
@@ -30,6 +31,7 @@ class HiekinAshiStrategyV2(Strategy):
                  bb_period: int = 15,
                  atr_period: int = 14,
                  rsi_period: int = 14,
+                 adx_period: int = 14,
                  **kwargs):
         self.st_period = st_period
         self.st_multiplier = st_multiplier
@@ -38,19 +40,23 @@ class HiekinAshiStrategyV2(Strategy):
         self.donchain_period = donchain_period
         self.atr_period = atr_period
         self.rsi_period = rsi_period
+        self.adx_period = adx_period
         self.product = product
 
         self.long_context = "2h"
-        self.long_context2 = "75min"
-        self.long_context3 = "45min"
+        self.long_context2 = "60min"
+        self.long_context3 = "40min"
         self.rsi_context = "30min"
         self.rsi_upper_threshold = 60
         self.rsi_lower_threshold = 40
         self.rsi_col = f"RSI_{self.rsi_period}"
         self.atr_col = f"ATR_{self.atr_period}"
+        self.adx_col = f"ADX_{self.atr_period}"
         indicators = IndicatorPipeline([(HeikinAshiIndicator(), None, None),
+                                        (ADXIndicator(period=self.adx_period), None, None),
                                         (ATRIndicator(period=self.atr_period), None, None)])
-        basic_indicators = IndicatorPipeline([(HeikinAshiIndicator(), None, None)])
+        basic_indicators = IndicatorPipeline([(HeikinAshiIndicator(), None, None),
+                                              (ADXIndicator(period=self.adx_period), None, None),])
         kwargs["indicator_pipeline"] = {"window": indicators,
                                         "context": {self.long_context: basic_indicators,
                                                     self.long_context2: basic_indicators,
@@ -77,8 +83,8 @@ class HiekinAshiStrategyV2(Strategy):
         self.target_factor = 2.5
         """
 
-        self.sl_factor = 4
-        self.target_factor = 15
+        self.sl_factor = 2
+        self.target_factor = 5
 
         #self.sl_factor = 10
         #self.target_factor = 10
@@ -174,8 +180,9 @@ class HiekinAshiStrategyV2(Strategy):
             clear_entry_orders = None
 
             if (window.iloc[-1]["ha_long_trend"] == 1.0
-                and context[self.long_context2].iloc[-1]["ha_trending_green"] == 1.0
-                and context[self.long_context2].iloc[-1]["ha_non_trending"] != 1.0):
+                and context[self.long_context2].iloc[-1]["ha_long_trend"] == 1.0
+                #and window.iloc[-1][self.adx_col] >= 20
+                ):
                 if (current_run == TradeType.SHORT
                     or current_run is None):
                     if (current_entry_order is None
@@ -188,8 +195,9 @@ class HiekinAshiStrategyV2(Strategy):
                     clear_entry_orders = TradeType.SHORT
 
             if (window.iloc[-1]["ha_short_trend"] == 1.0
-                and context[self.long_context2].iloc[-1]["ha_trending_red"] == 1.0
-                and context[self.long_context2].iloc[-1]["ha_non_trending"] != 1.0):
+                and context[self.long_context2].iloc[-1]["ha_short_trend"] == 1.0
+                #and window.iloc[-1][self.adx_col] >= 20
+                ):
                 if (current_run == TradeType.LONG
                     or current_run is None):
                     if (current_entry_order is None
@@ -211,7 +219,9 @@ class HiekinAshiStrategyV2(Strategy):
                           and self.short_position_tag in current_entry_order.tags))):
                     self.logger.info(f"Cancelling current non-fructified entry order {current_entry_order}.")
                     current_entry_order.group_id = None
-                    broker.update_order(current_entry_order, local=True, refresh_cache=False)
+                    broker.update_order(current_entry_order,
+                                        local_update=True,
+                                        refresh_cache=False)
                     broker.cancel_order(current_entry_order)
 
             elif (next_run is not None
@@ -261,7 +271,8 @@ class HiekinAshiStrategyV2(Strategy):
                                                  product=self.product,
                                                  group_id=new_group_id)
                 if entry_order is None:
-                    print(f"Placing order failed. skipping gtts; this happens if price movement is too fast.")
+                    print("Placing order failed. skipping gtts; "
+                          "this happens if price movement is too fast.")
                 else:
                     self.take_position(scrip=scrip,
                                     exchange=exchange,
@@ -306,8 +317,8 @@ class HiekinAshiStrategyV2_5(Strategy):
         self.product = product
 
         self.long_context = "2h"
-        self.long_context2 = "75min"
-        self.long_context3 = "45min"
+        self.long_context2 = "30min"
+        self.long_context3 = "2h"
         self.rsi_context = "30min"
         self.rsi_upper_threshold = 60
         self.rsi_lower_threshold = 40
@@ -343,7 +354,7 @@ class HiekinAshiStrategyV2_5(Strategy):
         """
 
         self.sl_factor = 2
-        self.target_factor = 3
+        self.target_factor = 10
 
         #self.sl_factor = 10
         #self.target_factor = 10
@@ -413,6 +424,8 @@ class HiekinAshiStrategyV2_5(Strategy):
                 #and context[self.long_context].iloc[-1]["ha_trending_green"] == 1.0
                 and context[self.long_context2].iloc[-1]["ha_trending_green"] == 1.0
                 and context[self.long_context2].iloc[-1]["ha_non_trending"] != 1.0
+                and context[self.long_context3].iloc[-1]["ha_trending_green"] == 1.0
+                and context[self.long_context3].iloc[-1]["ha_non_trending"] != 1.0
                 #and context[self.long_context3].iloc[-1]["ha_trending_green"] == 1.0
                 #and (context[self.rsi_context].iloc[-1][self.rsi_col] > self.rsi_upper_threshold
                 #     or context[self.rsi_context].iloc[-1][self.rsi_col] < self.rsi_lower_threshold)
@@ -426,6 +439,8 @@ class HiekinAshiStrategyV2_5(Strategy):
                 #and context[self.long_context].iloc[-1]["ha_trending_red"] == 1.0
                 and context[self.long_context2].iloc[-1]["ha_trending_red"] == 1.0
                 and context[self.long_context2].iloc[-1]["ha_non_trending"] != 1.0
+                and context[self.long_context3].iloc[-1]["ha_trending_red"] == 1.0
+                and context[self.long_context3].iloc[-1]["ha_non_trending"] != 1.0
                 #and context[self.long_context3].iloc[-1]["ha_trending_red"] == 1.0
                 #and (context[self.rsi_context].iloc[-1][self.rsi_col] > self.rsi_upper_threshold
                 #     or context[self.rsi_context].iloc[-1][self.rsi_col] < self.rsi_lower_threshold)

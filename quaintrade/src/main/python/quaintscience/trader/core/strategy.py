@@ -24,7 +24,7 @@ class Strategy(ABC, LoggerMixin):
     NON_TRADING_FIRST_HOUR = [{"from": {"hour": 9,
                                         "minute": 0},
                                "to": {"hour": 9,
-                                      "minute": 15}}]
+                                      "minute": 45}}]
     NON_TRADING_AFTERNOON = [{"from": {"hour": 15,
                                        "minute": 00},
                               "to": {"hour": 15,
@@ -36,8 +36,8 @@ class Strategy(ABC, LoggerMixin):
                  default_interval: str = "3min",
                  non_trading_timeslots: list[dict[str, str]] = None,
                  intraday_squareoff: bool = True,
-                 squareoff_hour: int = 15,
-                 squareoff_minute: int = 00,
+                 squareoff_hour: int = 14,
+                 squareoff_minute: int = 55,
                  plottables: Optional[dict] = None,
                  default_tags: Optional[list] = None,
                  context_required: Optional[list[str]] = None,
@@ -46,6 +46,8 @@ class Strategy(ABC, LoggerMixin):
                  long_position_tag: Optional[str] = None,
                  short_position_tag: Optional[str] = None,
                  trigger_price_cushion: float = 0.002,
+                 custom_plot_kwargs: Optional[dict] = None,
+                 plot_context_candles: Optional[list[str]] = None,
                  **kwargs):
         
         self.indicator_pipeline = indicator_pipeline
@@ -74,6 +76,8 @@ class Strategy(ABC, LoggerMixin):
         self.long_position_tag = long_position_tag
         self.short_position_tag = short_position_tag
         self.trigger_price_cushion = trigger_price_cushion
+        self.custom_plot_kwargs = custom_plot_kwargs
+        self.plot_context_candles = plot_context_candles
         super().__init__(*args, **kwargs)
 
     @property
@@ -314,7 +318,8 @@ class Strategy(ABC, LoggerMixin):
                       broker: Broker,
                       position_type: PositionType,
                       trade_type: TradeType,
-                      price: float,
+                      limit_price: float,
+                      trigger_price: Optional[float] = None,
                       quantity: int = 1,
                       product: TradingProduct = TradingProduct.MIS,
                       use_sl_market_order: bool = False,
@@ -322,6 +327,9 @@ class Strategy(ABC, LoggerMixin):
                       group_id: Optional[str] = None,
                       parent_order: Optional[Order] = None) -> Order:
 
+
+        if trigger_price is None:
+            trigger_price = limit_price
         if tags is None:
             tags = []
 
@@ -354,15 +362,13 @@ class Strategy(ABC, LoggerMixin):
 
             if trade_type == TradeType.LONG:
                 transaction_type = TransactionType.BUY
-                limit_price = price * (1 + self.trigger_price_cushion)
             else:
                 transaction_type = TransactionType.SELL
-                limit_price = price * (1 - self.trigger_price_cushion)
 
             limit_order_type = OrderType.SL_LIMIT if not use_sl_market_order else OrderType.SL_MARKET
             order = order_template(transaction_type=transaction_type,
                                    order_type=limit_order_type,
-                                   trigger_price=price,
+                                   trigger_price=trigger_price,
                                    limit_price=limit_price,
                                    tags=all_tags)
             order = broker.place_order(order)
@@ -370,10 +376,8 @@ class Strategy(ABC, LoggerMixin):
 
             if trade_type == TradeType.LONG:
                 transaction_type = TransactionType.SELL
-                limit_price = price * (1 - self.trigger_price_cushion)
             else:
                 transaction_type = TransactionType.BUY
-                limit_price = price * (1 + self.trigger_price_cushion)
 
             if position_type == PositionType.STOPLOSS:
                 limit_order_type = OrderType.SL_LIMIT if not use_sl_market_order else OrderType.SL_MARKET
@@ -382,7 +386,7 @@ class Strategy(ABC, LoggerMixin):
 
             order = order_template(transaction_type=transaction_type,
                                    order_type=limit_order_type,
-                                   trigger_price=price,
+                                   trigger_price=trigger_price,
                                    limit_price=limit_price,
                                    tags=all_tags)
             order = broker.place_gtt_order(parent_order, order)
@@ -432,6 +436,18 @@ class Strategy(ABC, LoggerMixin):
               exchange: str,
               window: pd.DataFrame,
               context: dict[str, pd.DataFrame]) -> None:
+
+        colvals = []
+        for col in window.columns:
+            if col not in ["open", "high", "low", "close"]:
+                colvals.append(f"{col}={window.iloc[-1][col]}")
+        self.logger.info(f"{self.__class__.__name__} [{window.iloc[-1].name}]:"
+                         f" O={window.iloc[-1]['open']}"
+                         f" H={window.iloc[-1]['high']}"
+                         f" L={window.iloc[-1]['low']}"
+                         f" C={window.iloc[-1]['close']}"
+                         f" {' '.join(colvals)}")
+
         self.apply_impl(broker=broker,
                         scrip=scrip,
                         exchange=exchange,

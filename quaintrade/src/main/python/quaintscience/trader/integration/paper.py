@@ -85,6 +85,7 @@ class PaperBroker(Broker):
 
         self.pnl_history = []
         self.trade_timestamps = {}
+        self.trade_transaction_types = {}
         self.max_history_days = max_history_days
         self.order_stats = {"completed": 0,
                             "cancelled": 0,
@@ -140,7 +141,8 @@ class PaperBroker(Broker):
 
             to_idx = self.data[instrument].index.get_indexer([dt], method="nearest")[0]
             if to_idx + 1 >= len(self.data[instrument]):
-                raise PaperTraderTimeExceededException("Time exceeds last item in data for {instrument}")
+                print(to_idx, len(self.data[instrument]))
+                raise PaperTraderTimeExceededException(f"Time exceeds last item in data for {instrument}")
             if self.data[instrument].iloc[to_idx].name < dt:
                 to_idx += 1
 
@@ -264,6 +266,7 @@ class PaperBroker(Broker):
                     self.trade_pnl[other_order.order_id] -= other_charges
                     self.trade_pnl[other_order.order_id] -= this_charges
                     self.trade_timestamps[other_order.order_id] = [other_order.timestamp, order.timestamp]
+                    self.trade_transaction_types[other_order.order_id] = other_order.transaction_type
         elif "squareoff_order" in order.tags:
             latest_order = None
             for other_order in self.get_orders():
@@ -283,6 +286,7 @@ class PaperBroker(Broker):
                 self.trade_pnl[other_order.order_id] -= other_charges
                 self.trade_pnl[other_order.order_id] -= this_charges
                 self.trade_timestamps[other_order.order_id] = [other_order.timestamp, order.timestamp]
+                self.trade_transaction_types[other_order.order_id] = other_order.transaction_type
 
 
         self.logger.info(f"Order {order.transaction_type.value} {order.order_id[:4]}/{order.scrip}/"
@@ -429,6 +433,7 @@ class PaperBroker(Broker):
                     order: Order,
                     refresh_cache: bool = True) -> Order:
         self.logger.info(f"PaperTrader placed order {order}")
+        order.timestamp = self.current_datetime()
         self.orders.append(order)
         storage = self.get_tradebook_storage()
         storage.store_order_execution(self.strategy,
@@ -445,6 +450,7 @@ class PaperBroker(Broker):
             if other_order.order_id == order.order_id:
                 other_order.state = OrderState.CANCELLED
                 self.order_stats["cancelled"] += 1
+        self.gtt_order_callback()
 
     def get_positions(self,
                       refresh_cache: bool = True) -> list[Position]:

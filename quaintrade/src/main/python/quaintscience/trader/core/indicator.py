@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Optional, Union
+import datetime
 import copy
-
+import datetime
 import numpy as np
 import pandas as pd
 import pandas_ta as pd_ta
@@ -104,7 +105,7 @@ class IndicatorPipeline(Indicator):
             if indicator_settings is None:
                 indicator_settings = {}
             indicator_settings = copy.deepcopy(indicator_settings).update(settings)
-            self.logger.info(f"Applying {indicator}")
+            self.logger.info(f"Applying {indicator.__class__.__name__}")
             df, output_column_name, indicator_settings = indicator.compute(df,
                                                                            output_column_name,
                                                                            indicator_settings)
@@ -271,12 +272,38 @@ class PastPeriodHighLowIndicator(Indicator):
             y = [f"{val}_{settings['period_interval']}_{settings['shift']}" for val in x]
             output_column_name = dict(zip(x, y))
 
-        pwh = df["high"].resample(settings["period_interval"]).apply("max").shift(settings["shift"],
+        pwh = df["high"].resample(settings["period_interval"],
+                                  origin=datetime.datetime.fromisoformat('1970-01-01 09:15:00')).apply("max").shift(settings["shift"],
                                                                                   freq=settings["period_interval"])
-        df[output_column_name["previous_high"]] = pwh.resample(settings["data_interval"]).ffill().ffill()
-        pwl = df["low"].resample(settings["period_interval"]).apply("min").shift(settings["shift"],
+        df[output_column_name["previous_high"]] = pwh.resample(settings["data_interval"],
+                                                               origin=datetime.datetime.fromisoformat('1970-01-01 09:15:00')).ffill().ffill()
+        pwl = df["low"].resample(settings["period_interval"],
+                                 origin=datetime.datetime.fromisoformat('1970-01-01 09:15:00')).apply("min").shift(settings["shift"],
                                                                                  freq=settings["period_interval"])
-        df[output_column_name["previous_low"]] = pwl.resample(settings["data_interval"]).ffill().ffill()
+        df[output_column_name["previous_low"]] = pwl.resample(settings["data_interval"],
+                                                                       origin=datetime.datetime.fromisoformat('1970-01-01 09:15:00')).ffill().ffill()
+        return df, output_column_name, settings
+
+class PauseBarIndicator(Indicator):
+
+    def __init__(self, *args,
+                 atr_threshold: float = 0.4,
+                 atr_column_name: str = "ATR_14",
+                 **kwargs):
+        self.atr_threshold = atr_threshold
+        self.atr_column_name = atr_column_name
+        kwargs["setting_attrs"] = ["atr_threshold", "atr_column_name"]
+        super().__init__(*args, **kwargs)
+
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                     settings: Optional[dict] = None) -> pd.DataFrame:
+
+        if (output_column_name is None
+            or len(output_column_name) == 0):
+            output_column_name = {'is_pause': f"is_pause_{settings['atr_threshold']:.2f}_{settings['atr_column_name']}"}
+        df[output_column_name['is_pause']] = 0.
+        df.loc[((df["close"] - df["open"]).abs() < (df[settings['atr_column_name']] * settings['atr_threshold'])), output_column_name['is_pause']] = 1.0
         return df, output_column_name, settings
 
 
@@ -683,8 +710,8 @@ class HeikinAshiIndicator(Indicator):
         heikin_ashi_df = pd.DataFrame(index=df.index.values,
                                       columns=['open', 'high', 'low', 'close'])
     
-        #heikin_ashi_df['close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
-        heikin_ashi_df['close'] = df["close"]
+        heikin_ashi_df['close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
+        #heikin_ashi_df['close'] = df["close"]
         
         for i in range(len(df)):
             if i == 0:
@@ -844,5 +871,3 @@ class SupportIndicator(Indicator):
                          df.loc[row.name, output_column_name["support"]] = 1.0
                          awaiting_approach = False
         return df, output_column_name, settings
-
-

@@ -786,6 +786,9 @@ class Broker(TradingServiceProvider):
                         
                         self.place_order(other_order, refresh_cache=False)
                         continue
+                elif (entry_order.state == OrderState.CANCELLED):
+                    gtt_state_changed = True
+                    continue
                 new_gtt_orders.append((entry_order, other_order))
             self.gtt_orders = new_gtt_orders
         self.get_orders(refresh_cache=refresh_cache)

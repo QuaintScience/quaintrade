@@ -14,7 +14,9 @@ from matplotlib.widgets import MultiCursor
 from .ds import TransactionType
 from .util import resample_candle_data
 
-matplotlib.use('TkAgg')
+#matplotlib.use('TkAgg')
+matplotlib.use('qtagg')
+#matplotlib.use('GTK4Agg')
 
 
 DEFAULT_MPF_STYLE_KWARGS = {"base_mpf_style": 'yahoo', "rc": {'font.size': 6}}
@@ -63,6 +65,7 @@ def plot_backtesting_results(df: pd.DataFrame,
                              indicator_fields: list[Union[dict, str]],
                              title: str = "Backtesting Results",
                              make_mpf_style_kwargs: Optional[dict] = None,
+                             plot_contexts: Optional[list[str]] = None,
                              mpf_custom_kwargs: Optional[dict] = None,
                              custom_addplots: Optional[list] = None,
                              hlines: Optional[dict] = None):
@@ -114,21 +117,29 @@ def plot_backtesting_results(df: pd.DataFrame,
     print("Indicator Fields", indicator_fields)
 
     for field in indicator_fields:
+        print(f"Adding plot for {field}")
         if isinstance(field, str):
             event_plots.append(mpf.make_addplot(df[field]))
         else:
             if "context" in field:
                 context_data = context[field["context"]][field["field"]].resample(interval, origin=datetime.datetime.fromisoformat('1970-01-01 09:15:00')).ffill()
                 df = df.merge(context_data, how='left', left_index=True, right_index=True, suffixes=(None, f"_{field['context']}"))
-                print(field)
-                print(df)
-                event_plots.append(mpf.make_addplot(df.get(f"{field['field']}_{field['context']}"),
-                                                    panel=field.get("panel", 1)))
+                pdata = df.get(f"{field['field']}_{field['context']}")
+                fbfield = f"fill_between_{field['field']}_{field['context']}"
             else:
-                print(field)
-                print(df)
-                event_plots.append(mpf.make_addplot(df[field.get("field")],
-                                                    panel=field.get("panel", 1)))
+                pdata = df[field.get("field")]
+                fbfield = f"fill_between_{field['field']}"
+            addplot_kwargs = {"panel": field.get("panel", 1)}
+            if "fill_region" in field:
+                if isinstance(field["fill_region"], list):
+                    frm, to = field["fill_region"]
+                    df[f"{fbfield}_from"] = frm
+                    df[f"{fbfield}_to"] = to
+                    addplot_kwargs["fill_between"] = {"y1": df[f"{fbfield}_from"].values,
+                                                      "y2": df[f"{fbfield}_to"].values,
+                                                      "alpha": 0.4,
+                                                      "color": field.get("fill_region_color", "magenta")}
+            event_plots.append(mpf.make_addplot(pdata, **addplot_kwargs))
             num_panels = max(num_panels, field.get("panel", 0) + 1)
     
     kwargs = {"returnfig": True,
@@ -145,5 +156,19 @@ def plot_backtesting_results(df: pd.DataFrame,
     # print(kwargs)
     fig, axes = mpf.plot(df,
                          **kwargs)
+    if plot_contexts is not None:
+        for k in plot_contexts:
+            cdf = context[k]
+            ax2 = axes[0].twiny()
+            bms = make_mpf_style_kwargs["base_mpf_style"]
+            m1 = mpf.make_marketcolors(base_mpf_style=bms,
+                                       alpha=0.2)
+            s2 = mpf.make_mpf_style(base_mpf_style=bms,
+                                    y_on_right=False,
+                                    marketcolors=m1)
+            mpf.plot(cdf, type='candle', ax=ax2, style=s2,
+                     scale_width_adjustment=dict(volume=0.4,
+                                                 candle=2.0))
+
     mpf.show()
 

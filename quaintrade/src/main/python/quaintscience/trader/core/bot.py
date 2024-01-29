@@ -108,6 +108,7 @@ class Bot(LoggerMixin):
                                                       from_date=from_date,
                                                       to_date=to_date,
                                                       finegrained=True)
+            self.one_time_download_done = True
 
     def __get_context_data(self,
                            scrip: str,
@@ -210,7 +211,7 @@ class Bot(LoggerMixin):
                                                                second=0,
                                                                microsecond=0)]
                 continue
-            this_context[k] = v[v.index < now_tick]
+            this_context[k] = v[v.index <= now_tick - datetime.timedelta(seconds=pd.Timedelta(k).total_seconds())]
         return this_context
 
     def backtest(self,
@@ -252,27 +253,49 @@ class Bot(LoggerMixin):
             print("Context")
             print(context)
             ts = None
+            first_timeset_done = False
             for ii in range(0, len(data) - window_size + 1, 1):
                 window = data.iloc[ii: ii + window_size]
                 if ts is None or ts.day != window.iloc[-1].name.day:
                     self.logger.info(f"Trading on {window.iloc[-1].name.day}")
                 ts = window.iloc[-1].name
                 now_tick = window.iloc[-1].name.to_pydatetime()
+                prev_tick = window.iloc[-2].name.to_pydatetime()
+                if not first_timeset_done:
+                    self.broker.set_current_time(prev_tick, traverse=False)
+                    first_timeset_done = True
                 try:
-                    self.broker.set_current_time(now_tick, traverse=True)
                     this_context = self.pick_relevant_context(context, now_tick)
-                    self.do(window=window, context=this_context, scrip=scrip, exchange=exchange)
+                    self.logger.info(f"Time now is {now_tick}; "
+                                     f"last-data point is at {prev_tick}")
+                    context_empty = False
+                    for k, v in this_context.items():
+                        if len(v) == 0:
+                            context_empty = True
+                            break
+                        print(f"{now_tick} {k} last tick: {v.iloc[-1].name}")
+                    if context_empty:
+                        continue
+                    self.do(window=window[:-1], context=this_context, scrip=scrip, exchange=exchange)                    
                     if self.backtesting_print_tables:
                         self.logger.info("--------------Tables After Strategy Computation Start-------------")
                         self.broker.get_orders_as_table()
                         self.broker.get_positions_as_table()
                         self.logger.info("--------------Tables After Strategy Computation End-------------")
+
+                    self.logger.info(f"--------------Start Broker Activity for {now_tick} -------------")
+                   
+                    self.broker.set_current_time(now_tick, traverse=True)
+                    self.logger.info(f"--------------End Broker Activity for {now_tick} -------------")
+
                 except PaperTraderTimeExceededException:
                     self.logger.warn(f"Could not set time in paper broker to {now_tick}")
 
         elif self.backtest_type == "live_simulation":
             self.logger.info(f"Live simulation backtest")
-            timeslots = self.get_trading_timeslots(interval)
+            timeslots = self.get_trading_timeslots(interval,
+                                                   d=to_date - datetime.timedelta(days=1))
+
             self.broker.set_current_time(timeslots[0][1], traverse=False)
             for timeslot, exec_time  in timeslots:
                 print(f"============== Start {timeslot} ================")
@@ -297,6 +320,11 @@ class Bot(LoggerMixin):
                         context=this_context,
                         scrip=scrip,
                         exchange=exchange)
+                if self.backtesting_print_tables:
+                    self.logger.info("--------------Tables After Strategy Computation Start-------------")
+                    self.broker.get_orders_as_table()
+                    self.broker.get_positions_as_table()
+                    self.logger.info("--------------Tables After Strategy Computation End-------------")
                 print(f"============== End {timeslot} ================")
 
         self.broker.get_tradebook_storage().commit()
@@ -304,7 +332,11 @@ class Bot(LoggerMixin):
         self.logger.info("===================== Stats ========================")
         pnl_data = []
         for k, v in self.broker.trade_pnl.items():
-            pnl_data.append([k, self.broker.trade_timestamps[k][0], self.broker.trade_timestamps[k][1], v])
+            pnl_data.append([k,
+                             self.broker.trade_timestamps[k][0],
+                             self.broker.trade_timestamps[k][1],
+                             self.broker.trade_transaction_types[k],
+                             v])
         cnts = [1 for v in self.broker.trade_pnl.values() if v > 0]
         if len(cnts) > 0:
             cnts = sum(cnts)
@@ -323,7 +355,7 @@ class Bot(LoggerMixin):
         profit_streak = 0
         for k, v in self.broker.trade_pnl.items():
             running_sum += v
-            lowest_point = min(v, lowest_point)
+            lowest_point = min(running_sum, lowest_point)
             if v > 0:
                 if curr_drawdown < 0:
                     max_drawdown = min(max_drawdown, curr_drawdown)
@@ -396,14 +428,20 @@ class Bot(LoggerMixin):
             if events is not None:
                 events = events[(events["scrip"] == scrip) & (events["exchange"] == exchange)]
             plot_backtesting_results(data, context=context, interval=interval, events=events,
-                                     indicator_fields=self.strategy.plottables["indicator_fields"])
+                                     indicator_fields=self.strategy.plottables["indicator_fields"],
+                                     plot_contexts=self.strategy.plot_context_candles,
+                                     mpf_custom_kwargs=self.strategy.custom_plot_kwargs)
 
-    def get_trading_timeslots(self, interval):
-
-        d = datetime.datetime.now().replace(hour=self.live_trading_market_start_hour,
-                                            minute=self.live_trading_market_start_minute,
-                                            second=0,
-                                            microsecond=0)
+    def get_trading_timeslots(self,
+                              interval,
+                              d: Optional[datetime.datetime] = None):
+        if d is None:
+            d = datetime.datetime.now()
+        d = d.replace(hour=self.live_trading_market_start_hour,
+                      minute=self.live_trading_market_start_minute,
+                      second=0,
+                      microsecond=0)
+        
         start_datetime = d
 
         x = 0; res =[]
