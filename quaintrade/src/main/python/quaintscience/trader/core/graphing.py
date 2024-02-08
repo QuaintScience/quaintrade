@@ -81,37 +81,42 @@ def plot_backtesting_results(df: pd.DataFrame,
         custom_addplots = []
     style = mpf.make_mpf_style(**make_mpf_style_kwargs)
 
-    events_exist = False
+    buy_events_exist, sell_events_exist = False, False
     df = copy.deepcopy(df)
+    print(events[:])
     if events is not None:
         sell_events_df = copy.deepcopy(events[events["transaction_type"] == TransactionType.SELL])
         sell_events_df["sell_signals"] = sell_events_df["price"]
         sell_events_df = sell_events_df[["sell_signals"]]
         if len(sell_events_df) > 0:
-            events_exist = True
+            sell_events_exist = True
             df = df.merge(sell_events_df, how='left', left_index=True, right_index=True)
 
         buy_events_df = copy.deepcopy(events[events["transaction_type"] == TransactionType.BUY])
         buy_events_df["buy_signals"] = buy_events_df["price"]
         buy_events_df = buy_events_df[["buy_signals"]]
-        if len(buy_events_df):
-            events_exist = True
+        if len(buy_events_df) > 0:
+            buy_events_exist = True
             df = df.merge(buy_events_df, on="date", how='left')
 
     event_plots = []
     
-    if events_exist:
+    if sell_events_exist:
 
         event_plots.append(mpf.make_addplot(df["sell_signals"],
                                             type='scatter',
                                             marker=r'$\downarrow$',
-                                            color='k'))
+                                            markersize=150,
+                                            color='red'))
+    if buy_events_exist:
         event_plots.append(mpf.make_addplot(df["buy_signals"],
                                             type='scatter',
                                             marker=r'$\uparrow$',
-                                            color='k'))
+                                            markersize=150,
+                                            color='darkgreen'))
 
     event_plots.extend(custom_addplots)
+
 
     num_panels = 1
     print("Indicator Fields", indicator_fields)
@@ -121,14 +126,20 @@ def plot_backtesting_results(df: pd.DataFrame,
         if isinstance(field, str):
             event_plots.append(mpf.make_addplot(df[field]))
         else:
+            pdata = None
             if "context" in field:
                 context_data = context[field["context"]][field["field"]].resample(interval, origin=datetime.datetime.fromisoformat('1970-01-01 09:15:00')).ffill()
                 df = df.merge(context_data, how='left', left_index=True, right_index=True, suffixes=(None, f"_{field['context']}"))
-                pdata = df.get(f"{field['field']}_{field['context']}")
+                fname = f"{field['field']}_{field['context']}"
+                if fname not in df.columns:
+                    pdata = df[field["field"]]
+                else:
+                    pdata = df[fname]
                 fbfield = f"fill_between_{field['field']}_{field['context']}"
             else:
-                pdata = df[field.get("field")]
+                pdata = df[field["field"]]
                 fbfield = f"fill_between_{field['field']}"
+
             addplot_kwargs = {"panel": field.get("panel", 1)}
             if "fill_region" in field:
                 if isinstance(field["fill_region"], list):
@@ -139,6 +150,10 @@ def plot_backtesting_results(df: pd.DataFrame,
                                                       "y2": df[f"{fbfield}_to"].values,
                                                       "alpha": 0.4,
                                                       "color": field.get("fill_region_color", "magenta")}
+            if "color" in field:
+                addplot_kwargs["color"] = field["color"]
+            addplot_kwargs["type"] = "step"
+            addplot_kwargs["secondary_y"] = False
             event_plots.append(mpf.make_addplot(pdata, **addplot_kwargs))
             num_panels = max(num_panels, field.get("panel", 0) + 1)
     
@@ -168,7 +183,8 @@ def plot_backtesting_results(df: pd.DataFrame,
                                     marketcolors=m1)
             mpf.plot(cdf, type='candle', ax=ax2, style=s2,
                      scale_width_adjustment=dict(volume=0.4,
-                                                 candle=2.0))
+                                                 candle=1.0))
+            ax2.set_axis_off()
 
     mpf.show()
 

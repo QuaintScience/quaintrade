@@ -395,7 +395,6 @@ class PaperBroker(Broker):
                 else:
                     self.order_stats["pending"] += 1
 
-        print("GTT ORDFER LEN", len(self.gtt_orders))
         gtt_state_changed = self.gtt_order_callback()
 
         if gtt_state_changed and self.refresh_orders_immediately_on_gtt_state_change:

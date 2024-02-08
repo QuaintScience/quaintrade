@@ -420,6 +420,7 @@ class HiekinAshiStrategyV2_5(Strategy):
         if self.can_trade(window, context):
             make_entry = False
             if (window.iloc[-1]["ha_long_trend"] == 1.0
+                and window.iloc[-2]["ha_long_trend"] != 1.0
                 # and window.iloc[-2]["ha_long_trend"] == 0.0
                 #and context[self.long_context].iloc[-1]["ha_trending_green"] == 1.0
                 and context[self.long_context2].iloc[-1]["ha_trending_green"] == 1.0
@@ -435,6 +436,7 @@ class HiekinAshiStrategyV2_5(Strategy):
                 make_entry = True
                 self.logger.debug(f"Entering long trade!")
             if (window.iloc[-1]["ha_short_trend"] == 1.0
+                and window.iloc[-2]["ha_long_trend"] != 1.0
                  # and window.iloc[-2]["ha_short_trend"] == 0.0
                 #and context[self.long_context].iloc[-1]["ha_trending_red"] == 1.0
                 and context[self.long_context2].iloc[-1]["ha_trending_red"] == 1.0

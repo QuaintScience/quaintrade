@@ -131,7 +131,7 @@ class SlopeIndicator(Indicator):
         return df, output_column_name, settings        
 
 
-class DonchainIndicator(Indicator):
+class DonchianIndicator(Indicator):
 
     def __init__(self, *args, period: int = 15, **kwargs):
         self.period = period
@@ -142,12 +142,12 @@ class DonchainIndicator(Indicator):
                 output_column_name: Optional[Union[str, dict[str, str]]] = None,
                 settings: Optional[dict] = None) -> pd.DataFrame:
         if output_column_name is None or len(output_column_name) == 0:
-            x = ["donchainUpper", "donchainMiddle", "donchainLower"]
+            x = ["donchianUpper", "donchianMiddle", "donchianLower"]
             y = [f"{val}_{settings['period']}" for val in x]
             output_column_name = dict(zip(x, y))
-        df[output_column_name["donchainUpper"]] = df["high"].rolling(settings['period']).apply(lambda x: max(x))
-        df[output_column_name["donchainLower"]] = df["low"].rolling(settings['period']).apply(lambda x: min(x))
-        df[output_column_name["donchainMiddle"]] = (df[output_column_name["donchainUpper"]] + df[output_column_name["donchainLower"]]) /2
+        df[output_column_name["donchianUpper"]] = df["high"].rolling(settings['period']).apply(lambda x: max(x))
+        df[output_column_name["donchianLower"]] = df["low"].rolling(settings['period']).apply(lambda x: min(x))
+        df[output_column_name["donchianMiddle"]] = (df[output_column_name["donchianUpper"]] + df[output_column_name["donchianLower"]]) /2
         return df, output_column_name, settings
 
 
@@ -400,6 +400,23 @@ class WMAIndicator(Indicator):
         if output_column_name is None or len(output_column_name) == 0:
             output_column_name = {"WMA": f"WMA_{self.period}"}
         df[output_column_name["WMA"]] = talib.SMA(df[settings.get("input_column", "close")], timeperiod=self.period)
+        return df, output_column_name, settings
+
+class SMMAIndicator(Indicator):
+        
+    def __init__(self, *args,
+                 period: int = 22,
+                 **kwargs):
+        self.period = period
+        kwargs["setting_attrs"] = ["period"]
+        super().__init__(*args, **kwargs)
+
+    def compute_impl(self, df: pd.DataFrame,
+                output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                settings: Optional[dict] = None) -> pd.DataFrame:
+        if output_column_name is None or len(output_column_name) == 0:
+            output_column_name = {"SMMA": f"SMMA_{self.period}"}
+        df[output_column_name["SMMA"]] = talib.SMMA(df[settings.get("input_column", "close")], timeperiod=self.period)
         return df, output_column_name, settings
 
 
@@ -676,6 +693,59 @@ class IchimokuIndicator(Indicator):
                               "chikou_span": "chikou_span"}
         return df, output_column_name, settings
 
+
+class PivotIndicator(Indicator):
+
+    def __init__(self,
+                 *args,
+                 left_period: int = 10,
+                 right_period: int = 10,
+                 **kwargs):
+        self.left_period = left_period
+        self.right_period = right_period
+        kwargs["setting_attrs"] = ["left_period", "right_period"]
+        super().__init__(*args, **kwargs)
+
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_name: str | dict[str, str] | None = None,
+                     settings: dict | None = None) -> pd.DataFrame:
+        
+        if output_column_name is None or len(output_column_name) == 0:
+            if settings["left_period"] != settings["right_period"]:
+                output_column_name = {"pivot_high": f"pivot_high_{settings['left_period']}_{settings['right_period']}",
+                                      "pivot_low": f"pivot_low_{settings['left_period']}_{settings['right_period']}",}
+            else:
+                output_column_name = {"pivot_high": f"pivot_high_{settings['left_period']}",
+                                      "pivot_low": f"pivot_low_{settings['left_period']}",}
+        df[output_column_name["pivot_high"]] = df["high"].shift(-settings["right_period"], fill_value=0).rolling(settings["left_period"]).max()
+        df[output_column_name["pivot_low"]] = df["low"].shift(-settings["right_period"], fill_value=0).rolling(settings["left_period"]).min()
+        print(df)
+        return df, output_column_name, settings    
+
+class GapUpDownIndicator(Indicator):
+
+    def __init__(self,
+                 *args,
+                 **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_name: str | dict[str, str] | None = None,
+                     settings: dict | None = None) -> pd.DataFrame:
+        
+        if output_column_name is None or len(output_column_name) == 0:
+            output_column_name = {"gapup": "gapup",
+                                  "gapdown": "gapdown"}
+        sh = df["high"].shift()
+        sl = df["low"].shift()
+        df["gapup"] = 0.
+        df["gapdown"] = 0.
+        df.loc[(df.index.minute == 15) & (df.index.hour == 9) & (sh < df["low"]), "gapup"] = 1.0
+        df.loc[(df.index.minute == 15) & (df.index.hour == 9) & (sl > df["high"]), "gapdown"] = 1.0
+        return df, output_column_name, settings    
+
+
+
 class HeikinAshiIndicator(Indicator):
 
     def __init__(self, *args, **kwargs):
@@ -724,80 +794,51 @@ class HeikinAshiIndicator(Indicator):
         heikin_ashi_df['low'] = heikin_ashi_df.loc[:, ['open', 'close']].join(df['low']).min(axis=1)
         
         for col in ["open", "high", "low", "close"]:
+            df[f"ha_{col}"] = heikin_ashi_df[col].astype(float)
             df[col] = heikin_ashi_df[col].astype(float)
-
         df["ha_trending_green"] = 0.
+        df.loc[(df["ha_close"] > df["ha_open"]) & (df["ha_open"] == df["ha_low"]), "ha_trending_green"] = 1.0
         df["ha_trending_red"] = 0.
+        df.loc[(df["ha_close"] < df["ha_open"]) & (df["ha_open"] == df["ha_high"]), "ha_trending_red"] = 1.0
         df["ha_non_trending"] = 0.
-        df["ha_long_trend"] = 0.
-        df["ha_short_trend"] = 0.
-
-        for row_id, row in df.iterrows():
-            if self.green_trending_candle(row):
-                df.loc[row_id, "ha_trending_green"] = 1.
-            elif self.red_trending_candle(row):
-                df.loc[row_id, "ha_trending_red"] = 1.
-            if self.doji_candle(row):
-                df.loc[row_id, "ha_non_trending"] = 1.
-
-        #self.smooth(df, "ha_trending_green")
-        #self.smooth(df, "ha_trending_green")
-        #self.smooth(df, "ha_trending_red")
-        #self.smooth(df, "ha_trending_red")
-        #self.smooth(df, "ha_non_trending")
-        #self.smooth(df, "ha_non_trending")
-
-        prev_row = None
-        short_trend_in_progress = False
-        long_trend_in_progress = False
-        for row_id, row in df.iterrows():
-            if prev_row is None:
-                prev_row = row
-                continue
-            if ((prev_row["ha_trending_green"] == 1.0
-                or prev_row["ha_non_trending"] == 1.0
-                 )
-                and row["ha_trending_red"] == 1.0
-                and row["ha_non_trending"] != 1.0):
-                short_trend_in_progress = True
-                long_trend_in_progress = False
-            elif ((prev_row["ha_trending_red"] == 1.0
-                or prev_row["ha_non_trending"] == 1.0
-                   )
-                and row["ha_trending_green"] == 1.0
-                and row["ha_non_trending"] != 1.0):
-                short_trend_in_progress = False
-                long_trend_in_progress = True
-            #elif row["ha_non_trending"] == 1.0:
-            #    short_trend_in_progress = False
-            #    long_trend_in_progress = False
-
-            if short_trend_in_progress:
-                df.loc[row_id, "ha_short_trend"] = 1.0
-            elif long_trend_in_progress:
-                df.loc[row_id, "ha_long_trend"] = 1.0
-            prev_row = row
+        
+        upper_wick = df["ha_high"] - df[["ha_open", "ha_close"]].max(axis=1)
+        lower_wick = df[["ha_open", "ha_close"]].min(axis=1) - df["ha_low"]
+        body= (df["ha_close"] - df["ha_open"]).abs()
+        #df.loc[((upper_wick > body)
+        #        & (lower_wick > body)),
+        #        "ha_non_trending"] = 1.0
+        df.loc[((upper_wick > 0)
+                & (lower_wick > 0)), 
+                "ha_non_trending"] = 1.0
+        """
+        df.loc[(((2 * body) < upper_wick.max())
+                & ((2 * body) < lower_wick.max())),
+                "ha_non_trending"] = 1.0
+        """
         return df, output_column_name, settings
 
     def green_trending_candle(self, row):
-        if (row["close"] > row["open"]):
+        if (row["ha_close"] > row["ha_open"]
+            and row["ha_low"] == row["ha_open"]):
             #and ((row["low"] - row["open"]) < 0.1 * (row["close"] - row["open"]))):
             return True
         return False
 
     def red_trending_candle(self, row):
-        if (row["close"] < row["open"]):
+        if (row["ha_close"] < row["ha_open"]
+            and row["ha_high"] == row["ha_open"]):
             #and ((row["high"] - row["open"]) < 0.1 * (row["open"] - row["close"]))):
             return True
         return False
 
     def doji_candle(self, row):
-        upper_wick = (row["high"] - max(row["open"], row["close"]))
-        lower_wick = (min(row["open"], row["close"]) - row["low"])
-        if (upper_wick >  1 * abs(row["open"] - row["close"])
-            and (lower_wick >  1 * abs(row["close"] - row["open"]))):
+        upper_wick = (row["ha_high"] - max(row["ha_open"], row["ha_close"]))
+        lower_wick = (min(row["ha_open"], row["ha_close"]) - row["ha_low"])
+        if (upper_wick >  1 * abs(row["ha_open"] - row["ha_close"])
+            and (lower_wick >  1 * abs(row["ha_close"] - row["ha_open"]))):
             return True
-        if 2 * abs(row["close"] - row["open"]) < max(lower_wick, upper_wick):
+        if 2 * abs(row["ha_close"] - row["ha_open"]) < max(lower_wick, upper_wick):
             return True
         if abs(upper_wick - lower_wick) / (min(upper_wick, lower_wick) + 1e-30) < 0.1:
             return True
@@ -871,3 +912,8 @@ class SupportIndicator(Indicator):
                          df.loc[row.name, output_column_name["support"]] = 1.0
                          awaiting_approach = False
         return df, output_column_name, settings
+
+
+class SupportResistanceIndicator:
+    pass
+

@@ -68,15 +68,17 @@ class Bot(LoggerMixin):
                             scrip=scrip,
                             exchange=exchange)
 
-    def get_context(self, data: pd.DataFrame):
-
-        data = self.strategy.indicator_pipeline["window"].compute(data)[0]
+    def get_context(self,
+                    data: pd.DataFrame,
+                    interval: str):
+        rsdata = resample_candle_data(data, interval)
+        rsdata = self.strategy.indicator_pipeline["window"].compute(rsdata)[0]
         context = {}
         for ctx, pipeline in self.strategy.indicator_pipeline["context"].items():
             ctx_data = resample_candle_data(data, ctx)
             ctx_data = pipeline.compute(ctx_data)[0]
             context[ctx] = ctx_data
-        return context
+        return rsdata, context
 
     def __get_live_data_cache(self, scrip: str,
                               exchange: str):
@@ -139,7 +141,7 @@ class Bot(LoggerMixin):
         if data is None or len(data) == 0:
             data = self.data_provider.get_data_as_df(scrip=scrip, exchange=exchange,
                                                     from_date=from_date, to_date=to_date,
-                                                    interval=interval,
+                                                    interval="1min",
                                                     storage_type=OHLCStorageType.PERM,
                                                     download_missing_data=self.online_mode)
             data["date"] = data.index
@@ -150,7 +152,7 @@ class Bot(LoggerMixin):
             data_updates = self.data_provider.get_data_as_df(scrip=scrip, exchange=exchange,
                                                              from_date=to_date_day_begin,
                                                              to_date=to_date,
-                                                             interval=interval,
+                                                             interval="1min",
                                                              storage_type=OHLCStorageType.PERM,
                                                              download_missing_data=False)
             data_updates["date"] = data_updates.index
@@ -167,7 +169,7 @@ class Bot(LoggerMixin):
         live_data = self.data_provider.get_data_as_df(scrip=scrip, exchange=exchange,
                                                         from_date=to_date_day_begin,
                                                         to_date=to_date,
-                                                        interval=interval,
+                                                        interval="1min",
                                                         storage_type=OHLCStorageType.LIVE)
 
         live_data["date"] = live_data.index
@@ -198,7 +200,8 @@ class Bot(LoggerMixin):
         print("Final data")
         print(data)
         self.logger.info(f"First {data.iloc[0].name} - Latest {data.iloc[-1].name}")
-        context = self.get_context(data)
+        data, context = self.get_context(data, interval)
+        #data = resample_candle_data(data, interval)
         return context, data
 
     def pick_relevant_context(self, context: dict[str, pd.DataFrame],
@@ -211,7 +214,7 @@ class Bot(LoggerMixin):
                                                                second=0,
                                                                microsecond=0)]
                 continue
-            this_context[k] = v[v.index <= now_tick - datetime.timedelta(seconds=pd.Timedelta(k).total_seconds())]
+            this_context[k] = v[v.index < now_tick - datetime.timedelta(seconds=pd.Timedelta(k).total_seconds())]
         return this_context
 
     def backtest(self,
@@ -278,10 +281,10 @@ class Bot(LoggerMixin):
                         continue
                     self.do(window=window[:-1], context=this_context, scrip=scrip, exchange=exchange)                    
                     if self.backtesting_print_tables:
-                        self.logger.info("--------------Tables After Strategy Computation Start-------------")
+                        self.logger.info(f"--------------Tables After Strategy Computation Start {now_tick}-------------")
                         self.broker.get_orders_as_table()
                         self.broker.get_positions_as_table()
-                        self.logger.info("--------------Tables After Strategy Computation End-------------")
+                        self.logger.info(f"--------------Tables After Strategy Computation End {now_tick}-------------")
 
                     self.logger.info(f"--------------Start Broker Activity for {now_tick} -------------")
                    

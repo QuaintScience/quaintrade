@@ -23,9 +23,9 @@ class Strategy(ABC, LoggerMixin):
 
     NON_TRADING_FIRST_HOUR = [{"from": {"hour": 9,
                                         "minute": 0},
-                               "to": {"hour": 9,
-                                      "minute": 45}}]
-    NON_TRADING_AFTERNOON = [{"from": {"hour": 15,
+                               "to": {"hour": 10,
+                                      "minute": 15}}]
+    NON_TRADING_AFTERNOON = [{"from": {"hour": 14,
                                        "minute": 00},
                               "to": {"hour": 15,
                                      "minute": 59}}]
@@ -106,7 +106,7 @@ class Strategy(ABC, LoggerMixin):
                     and order.parent_order_id is not None
                     and ("target" in order.tags or "stoploss" in order.tags)):
                     quantity += order.quantity if order.transaction_type == TransactionType.SELL else -order.quantity
-
+                    visited_parent_ids.add(order.parent_order_id)
                 delete_order = False
                 if delete_order_tags is not None:
                     for tag in delete_order_tags:
@@ -127,8 +127,7 @@ class Strategy(ABC, LoggerMixin):
                                                 date=broker.current_datetime(),
                                                 order=order,
                                                 event="OrderCancelled")
-                if order.parent_order_id is not None:
-                    visited_parent_ids.add(order.parent_order_id)
+
         broker.cancel_invalid_child_orders()
         broker.cancel_invalid_group_orders()
         broker.get_orders(refresh_cache=True)
@@ -163,16 +162,18 @@ class Strategy(ABC, LoggerMixin):
             elif self.short_position_tag in current_stoploss_order.tags:
                 return TradeType.SHORT
 
-        for order in broker.get_orders(refresh_cache=False):
-            if (order.state == OrderState.PENDING
-                and order.scrip == scrip
-                and order.exchange == exchange
-                and "entry" in order.tags):
-                if self.long_position_tag in order.tags:
-                    return TradeType.LONG
-                elif self.short_position_tag in order.tags:
-                    return TradeType.SHORT
-
+        entry_order = self.get_current_position_order(broker,
+                                                      scrip=scrip,
+                                                      exchange=exchange,
+                                                      product=self.product,
+                                                      position_name="entry",
+                                                      refresh_order_cache=False,
+                                                      states=[OrderState.PENDING])
+        if entry_order is not None:
+            if self.long_position_tag in entry_order.tags:
+                return TradeType.LONG
+            elif self.short_position_tag in entry_order.tags:
+                return TradeType.SHORT
 
     def get_current_position_order(self,
                                    broker: Broker,
@@ -323,6 +324,7 @@ class Strategy(ABC, LoggerMixin):
                       quantity: int = 1,
                       product: TradingProduct = TradingProduct.MIS,
                       use_sl_market_order: bool = False,
+                      entry_with_limit: bool = False,
                       tags: Optional[list] = None,
                       group_id: Optional[str] = None,
                       parent_order: Optional[Order] = None) -> Order:
@@ -366,6 +368,8 @@ class Strategy(ABC, LoggerMixin):
                 transaction_type = TransactionType.SELL
 
             limit_order_type = OrderType.SL_LIMIT if not use_sl_market_order else OrderType.SL_MARKET
+            if entry_with_limit:
+                limit_order_type = OrderType.LIMIT
             order = order_template(transaction_type=transaction_type,
                                    order_type=limit_order_type,
                                    trigger_price=trigger_price,
@@ -447,7 +451,17 @@ class Strategy(ABC, LoggerMixin):
                          f" L={window.iloc[-1]['low']}"
                          f" C={window.iloc[-1]['close']}"
                          f" {' '.join(colvals)}")
-
+        for key, cdf in context.items():
+            colvals = []
+            for col in cdf.columns:
+                if col not in ["open", "high", "low", "close"]:
+                    colvals.append(f"{col}={cdf.iloc[-1][col]}")
+            self.logger.info(f"CONTEXT {key} {self.__class__.__name__} [{cdf.iloc[-1].name}]:"
+                            f" O={cdf.iloc[-1]['open']}"
+                            f" H={cdf.iloc[-1]['high']}"
+                            f" L={cdf.iloc[-1]['low']}"
+                            f" C={cdf.iloc[-1]['close']}"
+                            f" {' '.join(colvals)}")
         self.apply_impl(broker=broker,
                         scrip=scrip,
                         exchange=exchange,
