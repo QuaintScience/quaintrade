@@ -87,7 +87,12 @@ class SqliteTradeBookStorage(SqliteStorage, TradeBookStorageMixin):
                                           "run_name": run_name,
                                           "run_id": run_id,
                                           "date": date})
+<<<<<<< HEAD
+        if len(self.cache[key]["events"]) > 1000:
+            self.commit()
+=======
        
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
 
     def store_order_execution(self,
                               strategy: str,
@@ -122,6 +127,11 @@ class SqliteTradeBookStorage(SqliteStorage, TradeBookStorageMixin):
                                           "run_id": run_id,
                                           "run_name": run_name,
                                           "date": date})
+<<<<<<< HEAD
+        if len(self.cache[key]["orders"]) > 1000:
+            self.commit()
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
 
     def store_position_state(self,
                              strategy: str,
@@ -146,6 +156,11 @@ class SqliteTradeBookStorage(SqliteStorage, TradeBookStorageMixin):
                                              "pnl": position.pnl,
                                              "charges": position.charges,
                                              "date": date})
+<<<<<<< HEAD
+        if len(self.cache[key]["positions"]) > 1000:
+            self.commit()
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
 
     def get_orders_for_run(self,
                            strategy: str,

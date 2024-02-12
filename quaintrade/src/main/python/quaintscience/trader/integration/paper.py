@@ -1,7 +1,7 @@
 import datetime
 from typing import Optional
 from dataclasses import dataclass
-
+import copy
 import pandas as pd
 from tabulate import tabulate
 
@@ -9,7 +9,11 @@ from ..core.ds import (Order,
                        Position,
                        OrderType,
                        OHLCStorageType,
+<<<<<<< HEAD
+                       OrderState,
+=======
                        OrderState, TradingProduct,
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
                        TransactionType)
 from ..core.roles import Broker, HistoricDataProvider
 from ..core.util import (default_dataclass_field,
@@ -18,6 +22,11 @@ from ..core.util import (default_dataclass_field,
 from .common import get_instrument_for_provider
 
 
+<<<<<<< HEAD
+class PaperTraderTimeExceededException(Exception):
+    pass
+
+=======
 def nse_commission_func(order: Order, brokerage_percentage: float = 0.03, max_commission: float = 20):
     charges = 0.
     if max_commission > 0:
@@ -55,6 +64,7 @@ def nse_commission_func(order: Order, brokerage_percentage: float = 0.03, max_co
     return total
 
 
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
 @dataclass(kw_only=True)
 class PaperPosition(Position):
     quantity_and_price_history: list[(float, float)] = default_dataclass_field([])
@@ -85,7 +95,11 @@ class PaperBroker(Broker):
                  interval: str = "10min",
                  refresh_orders_immediately_on_gtt_state_change: bool = False,
                  refresh_data_on_every_time_change: bool = False,
+<<<<<<< HEAD
+                 max_history_days: int = 1,
+=======
                  commission_func: Optional[callable] = None,
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
                  **kwargs):
 
         self.data_provider = data_provider
@@ -107,9 +121,12 @@ class PaperBroker(Broker):
         self.refresh_orders_immediately_on_gtt_state_change = refresh_orders_immediately_on_gtt_state_change
 
         self.refresh_data_on_every_time_change = refresh_data_on_every_time_change
+<<<<<<< HEAD
+=======
         if commission_func is None:
             commission_func = nse_commission_func
         self.commission_func = commission_func
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         self.orders = []
         self.positions = {}
 
@@ -121,7 +138,13 @@ class PaperBroker(Broker):
         self.events = []
 
         self.pnl_history = []
+<<<<<<< HEAD
+        self.trade_timestamps = {}
+        self.trade_transaction_types = {}
+        self.max_history_days = max_history_days
+=======
 
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         self.order_stats = {"completed": 0,
                             "cancelled": 0,
                             "pending": 0}
@@ -159,6 +182,29 @@ class PaperBroker(Broker):
 
         if self.refresh_data_on_every_time_change:
             self.init()
+<<<<<<< HEAD
+
+        if (self.current_datetime() is not None
+            and self.current_datetime().day != dt.day
+            and (dt - self.current_datetime()).days >= self.max_history_days):
+            orders = []
+            for order in self.get_orders():
+                if (order.state == OrderState.COMPLETED
+                    or order.state == OrderState.CANCELLED):
+                    continue
+                orders.append(order)
+            self.orders = orders
+            print(f"Cleaned orders {len(self.orders)}")
+
+        for instrument in self.data.keys():
+
+            to_idx = self.data[instrument].index.get_indexer([dt], method="nearest")[0]
+            if to_idx + 1 >= len(self.data[instrument]):
+                print(to_idx, len(self.data[instrument]))
+                raise PaperTraderTimeExceededException(f"Time exceeds last item in data for {instrument}")
+            if self.data[instrument].iloc[to_idx].name < dt:
+                to_idx += 1
+=======
 
         for instrument in self.data.keys():
             to_idx = self.data[instrument].index.get_indexer([dt], method="nearest")[0]
@@ -167,6 +213,7 @@ class PaperBroker(Broker):
 
             if to_idx >= len(self.data[instrument]):
                 raise ValueError("Time exceeds last item in data for {instrument}")
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
 
             if not traverse:
                 self.current_time = dt
@@ -272,7 +319,49 @@ class PaperBroker(Broker):
         if price is None:
             price = order.limit_price
         order.price = price
+<<<<<<< HEAD
+        order.timestamp = self.current_datetime()
+        if not hasattr(self, "pnlcnt"):
+            self.pnlcnt = 0
+        if order.parent_order_id is not None:
+            self.pnlcnt += 1
+            for other_order in self.get_orders():
+                if (other_order.order_id == order.parent_order_id
+                    and "entry" in other_order.tags):
+                    other_charges, this_charges = 0., 0.
+                    if self.commission_func is not None:
+                        other_charges = self.commission_func(other_order)
+                        this_charges = self.commission_func(order)
+                    self.trade_pnl[other_order.order_id] = (order.price - other_order.price if other_order.transaction_type == TransactionType.BUY else other_order.price - order.price) * order.quantity
+                    self.trade_pnl[other_order.order_id] -= other_charges
+                    self.trade_pnl[other_order.order_id] -= this_charges
+                    self.trade_timestamps[other_order.order_id] = [other_order.timestamp, order.timestamp]
+                    self.trade_transaction_types[other_order.order_id] = other_order.transaction_type
+        elif "squareoff_order" in order.tags:
+            latest_order = None
+            for other_order in self.get_orders():
+                if ("entry" in other_order.tags
+                    and other_order.state == OrderState.COMPLETED):
+                    if latest_order is not None and other_order.timestamp > latest_order.timestamp:
+                        latest_order = other_order
+                    elif latest_order is None:
+                        latest_order = other_order
+            if latest_order is not None:
+                other_order = latest_order
+                other_charges, this_charges = 0., 0.
+                if self.commission_func is not None:
+                    other_charges = self.commission_func(other_order)
+                    this_charges = self.commission_func(order)
+                self.trade_pnl[other_order.order_id] = (order.price - other_order.price if other_order.transaction_type == TransactionType.BUY else other_order.price - order.price) * order.quantity
+                self.trade_pnl[other_order.order_id] -= other_charges
+                self.trade_pnl[other_order.order_id] -= this_charges
+                self.trade_timestamps[other_order.order_id] = [other_order.timestamp, order.timestamp]
+                self.trade_transaction_types[other_order.order_id] = other_order.transaction_type
+
+
+=======
         
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         self.logger.info(f"Order {order.transaction_type.value} {order.order_id[:4]}/{order.scrip}/"
                          f"{order.exchange}/{order.order_type.value} [tags={order.tags}] @ {order.price} x {order.quantity} executed.")
         """
@@ -364,10 +453,17 @@ class PaperBroker(Broker):
                         #if change:
                         #    print(order, candle)
                         if candle["high"] >= order.limit_price:
+<<<<<<< HEAD
+                            self.__add_position(order,
+                                                last_price=candle["close"],
+                                                price=max(order.limit_price,
+                                                          candle["low"]))
+=======
                              self.__add_position(order,
                                                  last_price=candle["close"],
                                                  price=max(order.limit_price,
                                                            candle["low"]))
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
                         self.cancel_invalid_child_orders()
                 elif order.order_type == OrderType.MARKET:
                     self.__add_position(order, last_price=candle["close"], price=candle["close"])
@@ -379,7 +475,10 @@ class PaperBroker(Broker):
                 else:
                     self.order_stats["pending"] += 1
 
+<<<<<<< HEAD
+=======
         print("GTT ORDFER LEN", len(self.gtt_orders))
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         gtt_state_changed = self.gtt_order_callback()
 
         if gtt_state_changed and self.refresh_orders_immediately_on_gtt_state_change:
@@ -393,12 +492,15 @@ class PaperBroker(Broker):
         #    position.last_price = candle = self.data[key].iloc[self.idx[key]]["close"]
         #    position.pnl = (position.last_price - position.average_price) * position.quantity
         #self.order_callback(self.get_orders())
+<<<<<<< HEAD
+=======
         orders = []
         for order in self.get_orders():
             if order.state == OrderState.COMPLETED:
                 continue
             orders.append(order)
         self.orders = orders
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
 
     def order_callback(self, *args, **kwargs):
         self.cancel_invalid_child_orders()
@@ -409,11 +511,19 @@ class PaperBroker(Broker):
         return self.orders
 
     def update_order(self, order: Order,
+<<<<<<< HEAD
+                     local_update: bool = False,
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
                      refresh_cache: bool = True) -> Order:
         found = False
         for ii, other_order in enumerate(self.orders):
             if other_order.order_id == order.order_id:
+<<<<<<< HEAD
+                self.orders[ii] = copy.deepcopy(order)
+=======
                 self.orders[ii] = order
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
                 found = True
         if not found:
             raise KeyError(f"Order {order} not found.")
@@ -422,6 +532,10 @@ class PaperBroker(Broker):
                     order: Order,
                     refresh_cache: bool = True) -> Order:
         self.logger.info(f"PaperTrader placed order {order}")
+<<<<<<< HEAD
+        order.timestamp = self.current_datetime()
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         self.orders.append(order)
         storage = self.get_tradebook_storage()
         storage.store_order_execution(self.strategy,
@@ -438,6 +552,10 @@ class PaperBroker(Broker):
             if other_order.order_id == order.order_id:
                 other_order.state = OrderState.CANCELLED
                 self.order_stats["cancelled"] += 1
+<<<<<<< HEAD
+        self.gtt_order_callback()
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
 
     def get_positions(self,
                       refresh_cache: bool = True) -> list[Position]:

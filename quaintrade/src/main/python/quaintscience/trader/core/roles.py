@@ -26,11 +26,51 @@ from .util import (resample_candle_data,
                    get_scrip_and_exchange_from_key,
                    sanitize,
                    new_id)
+from .reflection import dynamically_load_class
 
 from .persistence.sqlite.ohlc import SqliteOHLCStorage
 from .persistence.ohlc import OHLCStorageMixin
 from .persistence.tradebook import TradeBookStorageMixin
 from .persistence.sqlite.tradebook import SqliteTradeBookStorage
+
+
+
+def nse_commission_func(order: Order, brokerage_percentage: float = 0.03, max_commission: float = 20):
+    charges = 0.
+    if max_commission > 0:
+        brokerage = min((brokerage_percentage / 100) * order.price * order.quantity, max_commission)
+    else:
+        brokerage = (brokerage_percentage / 100) * order.price * order.quantity
+    stt = 0.
+    if order.product == TradingProduct.MIS:
+        if order.transaction_type == TransactionType.SELL:
+            stt = (0.025 / 100) * order.price * order.quantity # STT
+    else:
+        stt = (0.1 / 100) * order.price * order.quantity # STT
+    transaction_charges = (0.00325 / 100) * order.price * order.quantity # Transaction charges NSE
+    sebi_charges = (order.price * order.quantity / 10000000) * 10
+    stamp_charges = 0.
+    if order.transaction_type == TransactionType.BUY:
+        stamp_charges = (0.015 / 100) * (order.price * order.quantity / 10000000)
+    gst = (18 / 100) * (brokerage + sebi_charges + transaction_charges)
+    
+    brokerage = round(brokerage, 2)
+    stt = round(stt, 2)
+    transaction_charges = round(transaction_charges, 2)
+    sebi_charges = round(sebi_charges, 2)
+    stamp_charges = round(stamp_charges, 2)
+    gst = round(gst, 2)
+    
+    total = round(brokerage + stt + transaction_charges + sebi_charges + stamp_charges + gst, 2)
+    print(f"Brokerage: {brokerage} for {order.order_id[:4]} {order.transaction_type}"
+          f"| STT: {stt} "
+          f"| TransactionCharges: {transaction_charges} "
+          f"| SEBICharges: {sebi_charges} "
+          f"| Stamp: {stamp_charges} "
+          f"| GST: {gst} "
+          f"| Total : {total}")
+    return total
+
 
 
 def CallbackHandleFactory(context):
@@ -160,7 +200,7 @@ class DataProvider(TradingServiceProvider):
                            conflict_resolution_type=conflict_resolution_type)
 
         data = self.postprocess_data(data, interval)
-        self.logger.info(f"Read {len(data)} rows.")
+        self.logger.debug(f"Read {len(data)} rows.")
         return data
 
 
@@ -295,12 +335,16 @@ class StreamingDataProvider(DataProvider):
     def __init__(self, *args,
                  save_frequency: int = 5,
                  clear_live_data_cache: bool = True,
+                 market_start_hour: int = 9,
+                 market_start_minute: int = 15,
                  **kwargs):
         self.kill_tick_thread = False
         self.clear_live_data_cache = clear_live_data_cache
         self.cache = defaultdict(dict)
         self.tick_counter = defaultdict(int)
         self.save_frequency = save_frequency
+        self.market_start_hour = market_start_hour
+        self.market_start_minute = market_start_minute
         super().__init__(*args, **kwargs)
 
     def clear_live_storage(self, instruments: list):
@@ -352,6 +396,10 @@ class StreamingDataProvider(DataProvider):
                 *args,
                 **kwargs):
         token = str(token)
+        if (ltt.hour < self.market_start_hour or
+            (ltt.hour == self.market_start_hour and ltt.minute < self.market_start_minute)):
+            self.logger.warn(f"Found data from a datetime that's before market start {ltt}")
+            return
         key = ltt.strftime("%Y%m%d %H:%M")
         key = str(key)
         
@@ -391,8 +439,11 @@ class Broker(TradingServiceProvider):
                  run_name: Optional[str] = None,
                  thread_id: str = "1",
                  disable_state_persistence: bool = False,
+                 commission_func: Optional[callable] = None,
                  **kwargs):
         LoggerMixin.__init__(self, *args, **kwargs)
+        if isinstance(TradingBookStorageClass, str):
+            TradingBookStorageClass = dynamically_load_class(TradingBookStorageClass)
         self.TradingBookStorageClass = TradingBookStorageClass
         self.audit_records_path = audit_records_path
         self.strategy = strategy
@@ -405,6 +456,10 @@ class Broker(TradingServiceProvider):
         self.state_file_lock = Lock()
         self.disable_state_persistence = disable_state_persistence
         self.gtt_orders = []
+        self.trade_pnl = {}
+        if commission_func is None:
+            commission_func = nse_commission_func
+        self.commission_func = commission_func
         super().__init__(*args, **kwargs)
         self.load_state()
 
@@ -448,11 +503,11 @@ class Broker(TradingServiceProvider):
         if self.TradingBookStorageClass == SqliteTradeBookStorage:
             return os.path.join(root, f"tradebook-{self.thread_id}.sqlite")
         else:
-            raise ValueError(f"Cannot handle storage type {self.TradingBookStorageClass}")
+            return os.path.join(root, f"tradebook-{self.thread_id}")
 
     def get_tradebook_storage(self) -> TradeBookStorageMixin:
         if not hasattr(self, "tradebook_storage"):
-            self.logger.info("Connecting to new Tradebook storage")
+            self.logger.debug("Connecting to new Tradebook storage")
             db_path = self.get_tradebook_db_path()
             self.tradebook_storage = self.TradingBookStorageClass(db_path)
         return self.tradebook_storage
@@ -472,7 +527,7 @@ class Broker(TradingServiceProvider):
                             self.logger.info(f"Cancelling order {other_order.order_id}/"
                                             f"{other_order.scrip}/{other_order.exchange}/"
                                             f"{other_order.transaction_type}/{other_order.order_type}"
-                                            f"{','.join(other_order.tags)} due OCO (Sibling)")
+                                            f"{','.join(other_order.tags)} due OCO (Sibling of {order.order_id})")
                             self.cancel_order(other_order, refresh_cache=False)
                             self.delete_gtt_orders_for(other_order)
         if state_changed:
@@ -482,19 +537,18 @@ class Broker(TradingServiceProvider):
         for order in self.get_orders(refresh_cache=False):
             state_changed = False
             if (order.group_id is not None
-                and order.state == OrderState.COMPLETED):
+                and order.state != OrderState.PENDING):
                 #self.logger.info(f"Searching for group members of "
                 #                 f"{order.order_id} (group_id={order.group_id})")
                 for other_order in self.get_orders(refresh_cache=False):
                     if (other_order.group_id == order.group_id
                         and other_order.order_id != order.order_id
-                        and other_order.state == OrderState.PENDING
-                        and "entry" in other_order.tags):
+                        and other_order.state == OrderState.PENDING):
                         state_changed = True
                         self.logger.info(f"Cancelling order {other_order.order_id[:4]}/"
                                          f"{other_order.scrip}/{other_order.exchange}/"
                                          f"{other_order.transaction_type}/{other_order.order_type}"
-                                         f"{','.join(other_order.tags)} due OCO (Group)")
+                                         f"{','.join(other_order.tags)} due OCO (Group of {order.group_id})")
                         self.cancel_order(other_order, refresh_cache=False)
                         self.delete_gtt_orders_for(other_order)
             if state_changed:
@@ -520,7 +574,7 @@ class Broker(TradingServiceProvider):
             printable_orders.append(["GTT",
                                      to_order.order_id[:4],
                                      from_order.order_id[:4],
-                                     to_order.group_id[:4] if order.group_id is not None else "",
+                                     to_order.group_id[:4] if to_order.group_id is not None else "",
                                      to_order.scrip,
                                      to_order.exchange,
                                      to_order.transaction_type,
@@ -565,6 +619,7 @@ class Broker(TradingServiceProvider):
 
     @abstractmethod
     def update_order(self, order: Order,
+                     local_update: bool = False,
                      refresh_cache: bool = True) -> Order:
         pass
     """
@@ -719,7 +774,7 @@ class Broker(TradingServiceProvider):
                 if (entry_order.state == OrderState.COMPLETED
                     and other_order.state == OrderState.PENDING):
                     if entry_order.product == TradingProduct.MIS:
-                        self.logger.debug("Placing MIS GTT Order for {entry_order.order_id} {other_order.tags}}")
+                        self.logger.info(f"Placing MIS GTT Order for {entry_order.order_id} {other_order.tags}")
                         self.place_order(other_order, refresh_cache=False)
                         # print(other_order)
                         gtt_state_changed = True
@@ -731,11 +786,15 @@ class Broker(TradingServiceProvider):
                         
                         self.place_order(other_order, refresh_cache=False)
                         continue
+                elif (entry_order.state == OrderState.CANCELLED):
+                    gtt_state_changed = True
+                    continue
                 new_gtt_orders.append((entry_order, other_order))
             self.gtt_orders = new_gtt_orders
         self.get_orders(refresh_cache=refresh_cache)
         self.cancel_invalid_child_orders()
         self.cancel_invalid_group_orders()
+        self.get_orders(refresh_cache=refresh_cache)
         self.save_state()
         return gtt_state_changed
 

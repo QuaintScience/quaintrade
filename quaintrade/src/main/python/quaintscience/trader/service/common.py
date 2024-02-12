@@ -176,6 +176,10 @@ class BrokerService(Service):
         p.add('--broker_reset_auth_cache', help="Reset broker auth cache", env_var="BROKER_RESET_AUTH_CACHE", action="store_true")
         p.add('--broker_auth_credentials', help="Broker auth Credentials", env_var="BROKER_AUTH_CREDENTIALS", type=yaml.safe_load)
         p.add('--broker_auth_cache_filepath', help="Broker auth credentials cache filepath", env_var="BROKER_AUTH_CACHE_FILEPATH")
+<<<<<<< HEAD
+        p.add('--broker_custom_kwargs', help="Broker custom kwargs", env_var="BROKER_CUSTOM_KWARGS", type=yaml.safe_load)
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
 
 
 class BotService(DataProviderService, BrokerService):
@@ -222,4 +226,8 @@ class BotService(DataProviderService, BrokerService):
         p.add("--bot_backtesting_print_tables", action="store_true", help="Print tables for every tick in backtesting", env_var="BOT_BACKTESTING_PRINT_TABLES")
         p.add("--bot_online_mode", action="store_true", help="Run bot in online mode (get data during live trading)", env_var="BOT_ONLINE_MODE")
         p.add('--strategy_kwargs', help="kwargs to instantiate the strategy", env_var="STRATEGY_KWARGS", type=yaml.safe_load)
+<<<<<<< HEAD
+        p.add('--bot_custom_kwargs', help="kwargs to instantiate the bot", env_var="BOT_CUSTOM_KWARGS", type=yaml.safe_load)
+=======
         p.add('--bot_kwargs', help="kwargs to instantiate the bot", env_var="BOT_KWARGS", type=yaml.safe_load)
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468

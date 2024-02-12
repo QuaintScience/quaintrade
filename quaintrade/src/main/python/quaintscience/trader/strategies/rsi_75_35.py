@@ -106,7 +106,7 @@ class RSI7535Strategy(Strategy):
 
         self.bar_cnt[f"{scrip}:{exchange}"] += 1
         if self.bar_cnt[f"{scrip}:{exchange}"] >= 3:
-            
+            self.cancel_active_orders(broker, scrip=scrip, exchange=exchange)
         if self.can_trade(window, context) and self.get_current_run(broker) is None:
             
             qty = max(self.max_budget // window.iloc[-1]["close"], self.min_quantity)

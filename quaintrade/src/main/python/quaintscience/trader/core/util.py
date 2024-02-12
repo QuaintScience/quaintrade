@@ -1,10 +1,15 @@
 from dataclasses import field
 from typing import Union
+from dataclasses import field
+from typing import Union
 import functools
 import datetime
 import copy
 import uuid
 import re
+
+import pandas as pd
+import numpy as np
 
 
 def crossunder(df, col1, col2):
@@ -17,6 +22,13 @@ def crossover(df, col1, col2):
         return True
     return False
 
+def get_datetime(dt: Union[str, datetime.datetime]):
+    if isinstance(dt, str):
+        try:
+            dt = datetime.datetime.strptime(dt, "%Y%m%d %H:%M")
+        except Exception:
+            dt = datetime.datetime.strptime(dt, "%Y%m%d")
+    return dt
 def get_datetime(dt: Union[str, datetime.datetime]):
     if isinstance(dt, str):
         try:
@@ -81,7 +93,7 @@ def new_id_field():
 
 
 def resample_candle_data(data, interval):
-    data = data.resample(interval).apply({'open': 'first',
+    data = data.resample(interval, origin=datetime.datetime.fromisoformat('1970-01-01 09:15:00')).apply({'open': 'first',
                                           'high': 'max',
                                           'low': 'min',
                                           'close': 'last'})
@@ -97,6 +109,7 @@ def get_key_from_scrip_and_exchange(scrip: str,
                                     exchange: str):
         scrip = sanitize(scrip)
         exchange = sanitize(exchange)
+
         return f'{scrip}__{exchange}'
 
 def get_scrip_and_exchange_from_key(key: str):
@@ -107,3 +120,72 @@ def get_scrip_and_exchange_from_key(key: str):
     else:
         raise ValueError(f"No delimiter found in {key} to split it into scrip and exchange")
     return parts
+
+
+def is_monotonically_increasing(signal: pd.Series):
+    return (np.sort(signal.to_numpy()) == signal.to_numpy()).all()
+
+
+def is_monotonically_decreasing(signal: pd.Series):
+    return (np.sort(signal.to_numpy())[::-1] == signal.to_numpy()).all()
+
+
+def __get_lhs_rhs_pivot(signal: pd.Series, context_size: int):
+    lhs = signal.iloc[-(2 * context_size + 1):-(context_size + 1)]
+    rhs = signal.iloc[-context_size:]
+    pivot = signal.iloc[-(context_size + 1)]
+    return lhs, rhs, pivot
+
+def is_local_minima(signal: pd.Series, context_size: int = 1):
+
+    lhs, rhs, pivot = __get_lhs_rhs_pivot(signal, context_size)
+    return (is_monotonically_decreasing(lhs)
+            and is_monotonically_decreasing(rhs)
+            and pivot < lhs.iloc[-1] and pivot < rhs.iloc[-1])
+
+
+def is_local_maxima(signal: pd.Series, context_size: int = 1):
+
+    lhs, rhs, pivot = __get_lhs_rhs_pivot(signal, context_size)
+    return (is_monotonically_increasing(lhs)
+            and is_monotonically_decreasing(rhs)
+            and pivot > lhs.iloc[-1] and pivot > rhs.iloc[-1])
+
+
+def candle_body(candle: pd.Series):
+    return abs(candle["close"] - candle["open"])
+
+
+def span(candles: pd.DataFrame,
+         size: int = 3,
+         direction="down"):
+    start_price = 0
+    if direction == "down":
+        start_price = max(candles.iloc[-size]["close"], candles.iloc[-size]["open"])
+        end_price = min(candles.iloc[-size]["close"], candles.iloc[-size]["open"])
+    else:
+        start_price = min(candles.iloc[-size]["close"], candles.iloc[-size]["open"])
+        end_price = max(candles.iloc[-size]["close"], candles.iloc[-size]["open"])
+
+    for ii in range(1, size):
+        if direction == "down":
+            end_price = min(end_price,
+                            min(candles.iloc[-size + ii]["close"],
+                                candles.iloc[-size + ii]["open"]))
+        else:
+            end_price = max(end_price,
+                            max(candles.iloc[-size + ii]["close"],
+                                candles.iloc[-size + ii]["open"]))
+    return abs(start_price - end_price)
+
+def get_pivot_value(signal: pd.Series,
+                    context_size=3):
+    return signal.iloc[-(context_size + 1)]
+
+
+def sameday(dt1, dt2):
+    if (dt1.day == dt2.day
+        and dt1.month == dt2.month
+        and dt1.year == dt2.year):
+        return True
+    return False

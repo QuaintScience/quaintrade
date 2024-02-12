@@ -4,50 +4,36 @@ import datetime
 
 import pandas as pd
 
-from ..ds import Order, Position, TransactionType
+from ...ds import Order, Position, TransactionType
+from ..tradebook import TradeBookStorageMixin
 
-
-class TradeBookStorageMixin():
-
-    table_names = ["events", "orders", "positions"]
+class DummyTradeBookStorage(TradeBookStorageMixin):
 
     def __init__(self,
                  *args,
                  **kwargs):
-        pass
+        super().__init__(*args, **kwargs)
 
-    @abstractmethod
     def store_order_execution(self,
                               strategy: str,
                               run_name: str,
-<<<<<<< HEAD
                               run_id: str,
-=======
->>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
                               date: Union[str, datetime.datetime],
                               order: Order,
                               event: str):
         pass
 
-    @abstractmethod
     def store_position_state(self,
                              strategy: str,
                              run_name: str,
-<<<<<<< HEAD
                              run_id: str,
-=======
-
->>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
                              date: Union[str, datetime.datetime],
                              position: Position):
         pass
 
-    @abstractmethod
-<<<<<<< HEAD
-    def store_event(self, strategy: str, run_name: str, run_id: str,
-=======
-    def store_event(self, strategy: str, run_name: str,
->>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
+    def store_event(self, strategy: str,
+                    run_name: str,
+                    run_id: str,
                     scrip: str,
                     exchange: str,
                     event_type: str,
@@ -57,9 +43,9 @@ class TradeBookStorageMixin():
                     date: Optional[Union[str, datetime.datetime]] = None):
         pass
 
-    @abstractmethod
     def get_events(self, strategy: str,
                    run_name: str,
+                   run_id: str,
                    scrip: Optional[str] = None,
                    exchange: Optional[str] = None,
                    transaction_type: Optional[TransactionType] = None,
@@ -68,23 +54,24 @@ class TradeBookStorageMixin():
                    to_date: Optional[Union[str, datetime.datetime]] = None):
         pass
 
-    @abstractmethod
     def get_orders_for_run(self,
                            strategy: str,
                            run_name: str,
+                           run_id: str,
                            from_date: Optional[Union[str, datetime.datetime]] = None,
                            to_date: Optional[Union[str, datetime.datetime]] = None) -> pd.DataFrame:
         pass
 
-    @abstractmethod
     def get_positions_for_run(self, strategy: str,
                               run_name: str,
+                              run_id: str,
                               from_date: Optional[Union[str, datetime.datetime]] = None,
                               to_date: Optional[Union[str, datetime.datetime]] = None) -> pd.DataFrame:
         pass
 
-    def get_position_statement_monthwise(self, strategy: str, run_name: str) -> dict[str, dict[str, float]]:
-        positions = self.get_positions_for_run(strategy=strategy, run_name=run_name)
+    def get_position_statement_monthwise(self, strategy: str, run_name: str, run_id: str) -> dict[str, dict[str, float]]:
+        positions = self.get_positions_for_run(strategy=strategy, run_name=run_name,
+                                               run_id=run_id)
         result = {}
         for group_name, group in positions.groupby(pd.Grouper(freq="M")):
             result[group_name] = {"pnl": group.iloc[-1]["pnl"] - group.iloc[0]["pnl"],
@@ -94,15 +81,19 @@ class TradeBookStorageMixin():
     def get_position_statement(self,
                                strategy: str,
                                run_name: str,
+                               run_id: str,
                                from_date: Optional[Union[str, datetime.datetime]] = None,
                                to_date: Optional[Union[str, datetime.datetime]] = None) -> dict[str, float]:
         positions = self.get_positions_for_run(strategy=strategy, run_name=run_name,
+                                               run_id=run_id,
                                                from_date=from_date, to_date=to_date)
         return {"pnl": positions.iloc[-1]["pnl"], "charges": positions.iloc[-1]["charges"]}
 
-    @abstractmethod
     def clear_run(self, strategy: str,
                   run_name: str,
                   scrip: str,
                   exchange: str):
+        pass
+
+    def commit(self):
         pass
