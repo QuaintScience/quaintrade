@@ -21,6 +21,7 @@ from ..core.indicator import (IndicatorPipeline,
                               RSIIndicator,
                               GapUpDownIndicator,
                               DonchianIndicator)
+from ..core.ml.lorentzian import LorentzianClassificationIndicator
 from ..core.roles import Broker
 from ..core.statemachine import TradingStateMachine, Action
 from ..core.util import (new_id,
@@ -174,7 +175,7 @@ class HeikinAshiPullBackStateMachine(TradingStateMachine):
             self.reset()
             return Action.CancelPosition
         """
-
+        """
         if (orders["target"] is not None
             and orders["stoploss"] is not None):
             action = None
@@ -205,7 +206,7 @@ class HeikinAshiPullBackStateMachine(TradingStateMachine):
                 self.persistent_state.rsi_short_breakout_used = False
                 self.reset()
                 return Action.CancelPosition
-
+        """
         if self.state.id is None:
             self.logger.info("state id is None; so resettting..")
             self.persistent_state.rsi_short_breakout_used = False
@@ -264,7 +265,7 @@ class HeikinAshiPullBackStateMachine(TradingStateMachine):
             self.persistent_state.dont_trade_today = True
             self.logger.info("Gapdown with green candle; don't trade today!")
 
-
+        
         if candle["low"] < window.iloc[-2][strategy.dc_lower_col]:
             self.persistent_state.donchian_down_breaks += 1
             self.persistent_state.donchian_up_breaks = 0
@@ -282,20 +283,39 @@ class HeikinAshiPullBackStateMachine(TradingStateMachine):
 
         if (orders["target"] is not None
             and ((current_run == TradeType.LONG
-            and self.persistent_state.donchian_down_breaks >= 3)
+            and self.persistent_state.donchian_down_breaks >= 5)
             or (current_run == TradeType.SHORT
-            and self.persistent_state.donchian_up_breaks >=3))):
+            and self.persistent_state.donchian_up_breaks >=5))):
             self.logger.info("opposite donchian movement detected. Quitting trade")
             self.reset()
             self.persistent_state.rsi_long_breakout_used = False
             self.persistent_state.rsi_short_breakout_used = False
             return Action.CancelPosition
 
+        """
+        lorentzian_long_score = sum([context[ctx].iloc[-1]["isBullish"] for ctx in strategy.long_contexts])
+        lorentzian_short_score = sum([context[ctx].iloc[-1]["isBearish"] for ctx in strategy.long_contexts])
+        if (current_run == TradeType.LONG
+            and lorentzian_long_score < lorentzian_short_score):
+            self.logger.info("Long trade with bearish sign. exiting.")
+            self.reset()
+            self.persistent_state.rsi_long_breakout_used = False
+            self.persistent_state.rsi_short_breakout_used = False
+            return Action.CancelPosition
+        elif (current_run == TradeType.SHORT
+              and lorentzian_long_score > lorentzian_short_score):
+            self.logger.info("Short trade with bullish sign. exiting.")
+            self.reset()
+            self.persistent_state.rsi_long_breakout_used = False
+            self.persistent_state.rsi_short_breakout_used = False
+            return Action.CancelPosition
+        """
 
         match self.state.id:
 
             case "start":
                 if strategy.can_trade(window, context):
+                    
                     if (orders["entry"] is not None
                         and orders["entry"].state == OrderState.COMPLETED
                         and sameday(orders["entry"].timestamp,
@@ -304,6 +324,8 @@ class HeikinAshiPullBackStateMachine(TradingStateMachine):
                         return
 
                     print("can trade. checking for conditions")
+                    entry_done = False
+                    """
                     self.logger.info(f"is ctf local minima: {is_local_minima(rsi_ctf, context_size=1)} "
                                      f"is ctf local maxima: {is_local_maxima(rsi_ctf, context_size=1)} "
                                      f"WMA stat inc {is_monotonically_increasing(short_context_wma)}"
@@ -313,7 +335,7 @@ class HeikinAshiPullBackStateMachine(TradingStateMachine):
                     self.logger.info(f"Consecutive donchian breaks: "
                                      f"UP: {self.persistent_state.donchian_up_breaks}; "
                                      f"DOWN: {self.persistent_state.donchian_down_breaks}")
-                    entry_done = False
+                    
                     long_score = sum([rsi_highs, #>= 2,
                                       rsi_monotonically_increasing, #>= 2,
                                       adx_monotonically_increasing, #>= 1,
@@ -333,33 +355,39 @@ class HeikinAshiPullBackStateMachine(TradingStateMachine):
                                        is_monotonically_decreasing(short_context_wma),
                                        is_monotonically_decreasing(long_context_wma),
                                        long_context_wma[0] - long_context_wma[-1] >= candle[strategy.atr_col] * 1])
-
+                    """
 
                     if (
-                        (not self.persistent_state.rsi_long_breakout_used
-                         and (long_score - short_score) >= 18)
+                        #not self.persistent_state.rsi_long_breakout_used
+                         #and (long_score - short_score) >= 18
+                         not window.iloc[-2]["isBullish"] and window.iloc[-1]["isBullish"]
+                         #and lorentzian_long_score > 3
                         ):
                         
-                        self.logger.info(f"Long trend found {long_score} {short_score}.")
+                        #self.logger.info(f"Long trend found {long_score} {short_score}.")
+                        self.logger.info("Long found")
                         self.state.potential_trade = TradeType.LONG
-                        self.persistent_state.rsi_long_breakout_used = True
-                        self.persistent_state.rsi_short_breakout_used = False
+                        #self.persistent_state.rsi_long_breakout_used = True
+                        #self.persistent_state.rsi_short_breakout_used = False
                         entry_done = True
                     elif (
-                          (not self.persistent_state.rsi_short_breakout_used
-                          and (short_score - long_score) >= 18)
+                          #(not self.persistent_state.rsi_short_breakout_used
+                          #and (short_score - long_score) >= 18
+                          #and candle["isBearish"])
+                        not window.iloc[-2]["isBearish"] and window.iloc[-1]["isBearish"]
+                        #and lorentzian_short_score > 3
                         ):
-                        self.logger.info(f"Short trend found {long_score} {short_score}")
+                        #self.logger.info(f"Short trend found {long_score} {short_score}")
+                        self.logger.info("Short trade found.")
                         self.state.potential_trade = TradeType.SHORT
-                        self.persistent_state.rsi_short_breakout_used = True
-                        self.persistent_state.rsi_long_breakout_used = False
+                        #self.persistent_state.rsi_short_breakout_used = True
+                        #self.persistent_state.rsi_long_breakout_used = False
                         entry_done = True
                     if entry_done:
                         self.state.entry_candle = candle
                         self.state.stoploss_candle = self.__get_closest_htf_candle(window,
                                                                                 context,
                                                                                 contexts_to_use=strategy.long_contexts)
-                        
                         self.state.id = "exit_swing"
                         return Action.TakePosition
 
@@ -415,14 +443,31 @@ class Strategy2(Strategy):
                                        (PivotIndicator(left_period=self.pivot_period,
                                                        right_period=self.pivot_period), None, None),
                                        (DonchianIndicator(period=self.short_dc_period), None, None),
-                                       (GapUpDownIndicator(), None, None)])
+                                       (GapUpDownIndicator(), None, None),
+                                       (LorentzianClassificationIndicator(neighbors_count = 8,
+                                                                          user_ema_filter=False,
+                                                                          use_sma_filter=False,
+                                                                          use_adx_filter=False,
+                                                                          use_kernel_smoothing=True,
+                                                                          use_dynamic_exists=True,
+                                                                          use_volatility_filter=True,
+                                                                          lookback_window=32,
+                                                                          regime_threshold=1), None, None)])
         indicators_long_context = IndicatorPipeline([(HeikinAshiIndicator(), None, None),
                                                      (ATRIndicator(period=self.atr_period), None, None),
                                                      (WMAIndicator(period=self.short_wma_period), None, None),
                                                      (RSIIndicator(period=self.rsi_period), None, None),
                                                      (ADXIndicator(period=self.adx_period), None, None),
                                                      (DonchianIndicator(period=self.dc_period), None, None),
-                                                     (DonchianIndicator(period=self.short_dc_period), None, None)])
+                                                     (DonchianIndicator(period=self.short_dc_period), None, None),
+                                                     (LorentzianClassificationIndicator(neighbors_count = 16,
+                                                                                        user_ema_filter=False,
+                                                                                        use_sma_filter=False,
+                                                                                        use_adx_filter=False,
+                                                                                        use_kernel_smoothing=True,
+                                                                                        use_dynamic_exists=True,
+                                                                                        use_volatility_filter=True,
+                                                                                        regime_threshold=-0.1), None, None)])
         context_indicators = {}
         for context in self.long_contexts:
             context_indicators[context] = indicators_long_context
@@ -447,7 +492,9 @@ class Strategy2(Strategy):
                                                      {"field": self.rsi_col, "color": "black", "panel": 2,
                                                       "fill_region": [self.rsi_lower_threshold,
                                                                       self.rsi_upper_threshold]
-                                                      },                                                     
+                                                      },
+                                                      {"field": "yhat1", "color": "red"},
+                                                      {"field": "yhat2", "color": "green"},
                                                      ]}
         for context in self.long_contexts:
             kwargs["plottables"]["indicator_fields"].append({"field": self.rsi_col,

@@ -11,7 +11,7 @@ from tabulate import tabulate
 
 
 from .ds import OHLCStorageType, TradingProduct
-from .util import resample_candle_data, get_key_from_scrip_and_exchange, new_id
+from .util import resample_candle_data, get_key_from_scrip_and_exchange, new_id, datestring_to_datetime
 from .logging import LoggerMixin
 from .roles import Broker, HistoricDataProvider
 from .strategy import Strategy
@@ -222,11 +222,13 @@ class Bot(LoggerMixin):
                  exchange: str,
                  from_date: Union[str, datetime.datetime],
                  to_date: Union[str, datetime.datetime],
+                 context_from_date: Optional[Union[str, datetime.datetime]] = None,
                  interval: Optional[str] = None,
                  window_size: int = 5,
                  plot_results: bool = False,
                  clear_tradebook_for_scrip_and_exchange: bool = False):
-
+        if context_from_date is None:
+            context_from_date = from_date
         self.broker.run_id = new_id()
         self.broker.strategy = self.strategy.strategy_name
         self.broker.run_name = "backtest"
@@ -246,7 +248,7 @@ class Bot(LoggerMixin):
             self.logger.info(f"Standard back test")
             context, data = self.__get_context_data(scrip=data_provider_instrument["scrip"],
                                                     exchange=data_provider_instrument["exchange"],
-                                                    from_date=from_date,
+                                                    from_date=context_from_date,
                                                     to_date=to_date,
                                                     interval=interval,
                                                     blend_live_data=False)
@@ -257,7 +259,12 @@ class Bot(LoggerMixin):
             print(context)
             ts = None
             first_timeset_done = False
-            for ii in range(0, len(data) - window_size + 1, 1):
+            
+            if isinstance(from_date, str):
+                from_date = datestring_to_datetime(from_date)
+            start_ii = data.index.get_indexer([from_date], method="nearest")[0]
+            
+            for ii in range(start_ii, len(data) - window_size + 1, 1):
                 window = data.iloc[ii: ii + window_size]
                 if ts is None or ts.day != window.iloc[-1].name.day:
                     self.logger.info(f"Trading on {window.iloc[-1].name.day}")

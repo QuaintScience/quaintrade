@@ -742,8 +742,7 @@ class GapUpDownIndicator(Indicator):
         df["gapdown"] = 0.
         df.loc[(df.index.minute == 15) & (df.index.hour == 9) & (sh < df["low"]), "gapup"] = 1.0
         df.loc[(df.index.minute == 15) & (df.index.hour == 9) & (sl > df["high"]), "gapdown"] = 1.0
-        return df, output_column_name, settings    
-
+        return df, output_column_name, settings
 
 
 class HeikinAshiIndicator(Indicator):
@@ -778,7 +777,7 @@ class HeikinAshiIndicator(Indicator):
         output_column_name = dict(zip(x, x))
 
         heikin_ashi_df = pd.DataFrame(index=df.index.values,
-                                      columns=['open', 'high', 'low', 'close'])
+                                      columns=['open', 'high', 'low', 'close', 'volume', 'oi'])
     
         heikin_ashi_df['close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
         #heikin_ashi_df['close'] = df["close"]
