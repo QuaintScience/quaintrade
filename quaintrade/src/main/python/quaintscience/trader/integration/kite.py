@@ -109,7 +109,10 @@ class KiteStreamingMixin():
                  on_connect: Optional[callable] = None,
                  on_close: Optional[callable] = None,
                  on_order_update: Optional[callable] = None,
+<<<<<<< HEAD
                  on_error: Optional[callable] = None,
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
                  **kwargs):
         if on_message is None and on_order_update is None:
             raise ValueError("Streaming cannot work when both on_message and on_orders is None.")
@@ -117,7 +120,10 @@ class KiteStreamingMixin():
         self.on_connect_callable = on_connect
         self.on_close_callable = on_close
         self.on_order_update_callable = on_order_update
+<<<<<<< HEAD
         self.on_error_callable = on_error
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
 
     def start_streamer(self):
         self.kws = KiteTicker(self.auth_credentials["API_KEY"],
@@ -130,8 +136,11 @@ class KiteStreamingMixin():
             self.kws.on_connect = self.on_connect_callable
         if self.on_close_callable is not None:
             self.kws.on_close = self.on_close_callable
+<<<<<<< HEAD
         if self.on_error_callable is not None:
             self.kws.on_error = self.on_error_callable
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         self.logger.info("Starting streamer....")
         self.ticker_thread = Thread(target=self.kws.connect,
                                     kwargs={"threaded": True})
@@ -210,7 +219,10 @@ class KiteBroker(KiteBaseMixin,
         Broker.__init__(self, *args, **kwargs)
         KiteBaseMixin.__init__(self, *args, **kwargs)
         kwargs["on_order_update"] = self.order_callback
+<<<<<<< HEAD
         kwargs["on_error"] = self.error_callback
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         KiteStreamingMixin.__init__(self, *args, **kwargs)
 
     def get_state(self) -> dict:
@@ -255,6 +267,7 @@ class KiteBroker(KiteBaseMixin,
                     self.logger.info(f"Did not cancel order as it's state is {existing_order.state} {type(order.state)}")
                 break
 
+<<<<<<< HEAD
     def update_order(self, order: Order,
                      local_update: bool = False,
                      refresh_cache: bool = True) -> Order:
@@ -279,6 +292,22 @@ class KiteBroker(KiteBaseMixin,
                         order.order_id = order_id
                         with self.order_state_lock:
                             self.orders_cache.append(order)
+=======
+    def update_order(self, order: Order, refresh_cache: bool = True) -> Order:
+        self.logger.info(f"Attempting update of order with order_id {order.order_id}...")
+        for existing_order in self.get_orders(refresh_cache=refresh_cache):
+            if existing_order.order_id == order.order_id:
+
+                if existing_order.state == OrderState.PENDING:
+                    self.logger.info(f"Found order with order_id {order.order_id} for updation...")
+                    order_id = self.kite.modify_order(variety=self.kite.VARIETY_REGULAR,
+                                                    order_id=order.order_id,
+                                                    quantity=int(order.quantity),
+                                                    price=order.price,
+                                                    order=order.trigger_price)
+                    time.sleep(self.rate_limit_time)
+                    order.order_id = order_id
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
                     self.get_orders(refresh_cache=refresh_cache)
                     return order
             else:
@@ -323,11 +352,15 @@ class KiteBroker(KiteBaseMixin,
         if order.order_type in [OrderType.SL_LIMIT, OrderType.SL_MARKET]:
             order_kwargs["trigger_price"] = round(order.trigger_price, 1)
         self.logger.info(f"KITE: {order_kwargs}")
+<<<<<<< HEAD
         try:
             order_id = self.kite.place_order(**order_kwargs)
         except InputException:
             traceback.print_exc()
             return None
+=======
+        order_id = self.kite.place_order(**order_kwargs)
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         order.order_id = order_id
         with self.order_state_lock:
             self.orders_cache.append(order)
@@ -341,6 +374,7 @@ class KiteBroker(KiteBaseMixin,
 
     def order_callback(self, ws, message):
         self.logger.info(f"Received order update {message}")
+<<<<<<< HEAD
         # self.get_orders(refresh_cache=True) # Commented as gtt_order_callback does this anyway.
         # self.__update_order_in_cache(message) # Locks order cache
         # self.__update_gtt_orders_using_dct(message) # Locks gtt
@@ -348,6 +382,11 @@ class KiteBroker(KiteBaseMixin,
 
     def error_callback(self, *args, **kwargs):
         self.gtt_order_callback(refresh_cache=True) # Locks order cache intermittently and locks gtt
+=======
+        self.__update_order_in_cache(message) # Locks order cache
+        self.__update_gtt_orders_using_dct(message) # Locks gtt
+        self.gtt_order_callback() # Locks order cache intermittently and locks gtt
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
 
     def get_positions(self, refresh_cache: bool = True) -> list[Position]:
         if refresh_cache:
@@ -395,8 +434,11 @@ class KiteBroker(KiteBaseMixin,
             return OrderType.SL_LIMIT
         elif order_type == self.kite.ORDER_TYPE_SLM:
             return OrderType.SL_MARKET
+<<<<<<< HEAD
         else:
             raise ValueError(f"Unknown order type {order_type}")
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
     
     def __reverse_translate_product(self, product: str):
         if product == self.kite.PRODUCT_CNC:
@@ -405,16 +447,22 @@ class KiteBroker(KiteBaseMixin,
             return TradingProduct.MIS
         elif product == self.kite.PRODUCT_NRML:
             return TradingProduct.NRML
+<<<<<<< HEAD
         else:
             raise ValueError(f"Unknown product {product}")
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
 
     def __reverse_translate_transaction_type(self, transaction_type: str):
         if transaction_type == self.kite.TRANSACTION_TYPE_BUY:
             return TransactionType.BUY
         elif transaction_type == self.kite.TRANSACTION_TYPE_SELL:
             return TransactionType.SELL
+<<<<<<< HEAD
         else:
             raise ValueError(f"Unknown transaction type {transaction_type}")
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
 
     def __reverse_translate_order_state(self, order_state: str):
         if order_state == self.kite.STATUS_CANCELLED:
@@ -425,6 +473,7 @@ class KiteBroker(KiteBaseMixin,
             return OrderState.REJECTED
         elif order_state == "TRIGGER PENDING":
             return OrderState.PENDING
+<<<<<<< HEAD
         elif order_state == "OPEN":
             return OrderState.PENDING
         elif order_state == "OPEN PENDING":
@@ -433,6 +482,9 @@ class KiteBroker(KiteBaseMixin,
             return OrderState.PENDING
         else:
             raise ValueError(f"Unknown Order State {order_state}")
+=======
+        return order_state
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
 
     def __update_order_from_dct(self, cached_order: Order, order: dict):
         cached_order.quantity = order["quantity"]
@@ -478,6 +530,7 @@ class KiteBroker(KiteBaseMixin,
                 self.orders_cache.append(new_order)
 
     def get_orders(self, refresh_cache=True) -> list[Order]:
+<<<<<<< HEAD
 
         if refresh_cache:
             orders = self.kite.orders()
@@ -502,7 +555,42 @@ class KiteBroker(KiteBaseMixin,
 
     def start_order_change_streamer(self):
         self.start_streamer()
+=======
+        if refresh_cache:
+            orders = self.kite.orders()
+            time.sleep(self.rate_limit_time)
+        else:
+            orders = []
+        for order in orders:
+            self.__update_order_in_cache(order)
+        if refresh_cache:
+            for order in orders:
+                self.__update_gtt_orders_using_dct(order)
+            self.cancel_invalid_child_orders()
+            self.cancel_invalid_group_orders()
+            self.save_state()
+        return self.orders_cache
 
+    def __update_gtt_orders_using_dct(self, order: dict):
+        with self.gtt_state_lock:
+            for from_order, _ in self.gtt_orders:
+                if from_order.order_id == order["order_id"]:
+                    self.__update_order_from_dct(from_order, order)
+
+    def start_order_change_streamer(self):
+        self.start_streamer()
+
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
+
+class KiteStreamingDataProvider(KiteBaseMixin, StreamingDataProvider, KiteStreamingMixin):
+
+    ProviderName = "kite"
+
+    def __init__(self, *args, **kwargs):
+        StreamingDataProvider.__init__(self, *args, **kwargs)
+        KiteBaseMixin.__init__(self, *args, **kwargs)
+        kwargs["on_message"] = self.on_message
+        KiteStreamingMixin.__init__(self, *args, **kwargs)
 
 class KiteStreamingDataProvider(KiteBaseMixin, StreamingDataProvider, KiteStreamingMixin):
 
@@ -540,8 +628,13 @@ class KiteStreamingDataProvider(KiteBaseMixin, StreamingDataProvider, KiteStream
     def on_connect(self, ws,
                    response,
                    *args, **kwargs):
+<<<<<<< HEAD
         self.logger.debug(f"Ticker Websock connected {response}.")
         self.logger.debug(f"Subscribing to {self.ticker_instruments}")
+=======
+        self.logger.info(f"Ticker Websock connected {response}.")
+        self.logger.info(f"Subscribing to {self.ticker_instruments}")
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         tokens = [instrument["instrument_token"] for instrument in self.ticker_instruments]
         self.kws.subscribe(tokens)
         self.kws.set_mode(KiteTicker.MODE_QUOTE, tokens)

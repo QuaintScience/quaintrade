@@ -1,6 +1,9 @@
 from abc import abstractmethod, ABC
 from typing import Union, Optional
+<<<<<<< HEAD
 from threading import Lock
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
 import sqlite3
 import datetime
 
@@ -14,15 +17,23 @@ class SqliteStorage(Storage):
 
     def __init__(self, *args, **kwargs):
         self.cache = {}
+<<<<<<< HEAD
         self.write_lock = Lock()
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         super().__init__(*args, **kwargs)
 
     def init_cache_for(self, *args,
                        conflict_resolution_type: str = "REPLACE"):
         key = self.get_table_name(*args)
+<<<<<<< HEAD
         with self.write_lock:
             self.create_tables(*args,
                             conflict_resolution_type=conflict_resolution_type)
+=======
+        self.create_tables(*args,
+                           conflict_resolution_type=conflict_resolution_type)
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         if key not in self.cache:
             self.cache[key] = {}
             for k in self.table_names:
@@ -33,6 +44,7 @@ class SqliteStorage(Storage):
         for key, all_data in self.cache.items():
             for table_suffix, data in all_data.items():
                 if len(data) > 0:
+<<<<<<< HEAD
                     self.logger.debug(f"Writing cache for {key} / {table_suffix} with {len(data)} to {self.path}")
                     df = pd.DataFrame(data)
                     with self.write_lock:
@@ -45,6 +57,19 @@ class SqliteStorage(Storage):
     def connect(self):
         self.logger.debug(f"Connecting to {self.path}")
         self.connection = sqlite3.connect(self.path, check_same_thread=False)
+=======
+                    self.logger.info(f"Writing cache for {key} / {table_suffix} with {len(data)} to {self.path}")
+                    df = pd.DataFrame(data)
+                    df.to_sql(f"{key}__{table_suffix}",
+                            con=self.connection,
+                            if_exists="append",
+                            index=False)
+        self.cache = {}
+
+    def connect(self):
+        self.logger.info(f"Connecting to {self.path}")
+        self.connection = sqlite3.connect(self.path)
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
 
     def get_table_name(self, *args):
         return "__".join([sanitize(str(arg)) for arg in args])
@@ -84,6 +109,7 @@ class SqliteStorage(Storage):
                            conflict_resolution_type=conflict_resolution_type)
         if table_name_suffixes is None:
             table_name_suffixes = []
+<<<<<<< HEAD
         table_name = self.create_tables(*args)
         if len(table_name_suffixes) > 0:
             table_name = f"{table_name}__{'__'.join(table_name_suffixes)}"
@@ -97,6 +123,19 @@ class SqliteStorage(Storage):
         self.logger.debug(f"Reading {data_name} from {from_date} to {to_date} from {table_name}...")
 
         if "date" not in cols and not skip_time_stamps:
+=======
+        if cols is None or len(cols) == 0:
+            raise ValueError("Cols not specified to fetch data")
+
+        table_name = self.create_tables(*args)
+
+        from_date, to_date = self.__date_parse(from_date, to_date)
+        if len(table_name_suffixes) > 0:
+            table_name = f"{table_name}__{'__'.join(table_name_suffixes)}"
+        self.logger.debug(f"Reading {data_name} from {from_date} to {to_date} from {table_name}...")
+
+        if "date" not in cols:
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
             cols.append("date")
         filters = ""
         if col_filters is None:
@@ -123,8 +162,12 @@ class SqliteStorage(Storage):
             sql = (f"SELECT {', '.join(cols)} FROM "
                    f"{table_name}")
         self.logger.debug(f"Executing {sql}")
+<<<<<<< HEAD
         with self.write_lock:
             data = self.connection.execute(sql).fetchall()
+=======
+        data = self.connection.execute(sql).fetchall()
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         data = pd.DataFrame(data, columns=cols)
         if index_col is not None:
             data.index = data[index_col]

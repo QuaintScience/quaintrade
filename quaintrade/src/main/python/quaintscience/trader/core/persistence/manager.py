@@ -9,6 +9,7 @@ class ManagerMixin():
         pass
 
     @abstractmethod
+<<<<<<< HEAD
     def get_data_providers(self):
         pass
 
@@ -37,6 +38,19 @@ class ManagerMixin():
                      StorageClass: str = "quaintscience.trader.core.persistence.SqliteOHLCStorage",
                      auth_credentials: Optional[dict] = None,                          
                      custom_kwargs: Optional[dict] = None):
+=======
+    def get_trade_service_providers(self, provider_type: Optional[str] = None):
+        pass
+
+    @abstractmethod
+    def store_trade_service_provider(self,
+                                     name: str,
+                                     ProviderClass: str,
+                                     auth_cache_filepath: str,
+                                     storage_class: str = "quaintscience.trader.core.persistence.SqliteOHLCStorage",
+                                     auth_credentials: Optional[dict] = None,                          
+                                     custom_kwargs: Optional[dict] = None):
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         pass
 
     @abstractmethod
@@ -50,6 +64,10 @@ class ManagerMixin():
                        strategy_kwargs: Optional[dict] = None):
         pass
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
     @abstractmethod
     def get_backtesting_templates(self):
         pass
@@ -66,8 +84,12 @@ class ManagerMixin():
                                    plot_results: str = False,
                                    window_size: int = 5,
                                    live_trading_mode: bool = False,
+<<<<<<< HEAD
                                    clear_tradebook_for_scrip_and_exchange: bool = False,
                                    custom_kwargs: Optional[dict] = None):
+=======
+                                   clear_tradebook_for_scrip_and_exchange: bool = False):
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         pass
 
     @abstractmethod
@@ -80,6 +102,7 @@ class ManagerMixin():
                              run_id: str,
                              start_time: datetime.datetime,
                              end_time: datetime.datetime,
+<<<<<<< HEAD
                              result: dict):
         pass
 
@@ -97,6 +120,23 @@ class ManagerMixin():
                           data_context_size: int,
                           online_mode: bool,
                           custom_kwargs: dict):
+=======
+                             result: str):
+        pass
+
+    @abstractmethod
+    def get_live_traders(self):
+        pass
+
+    @abstractmethod
+    def put_live_trader(self,
+                        name: str,
+                        data_provider_name: str,
+                        broker_name: str,
+                        data_context_size: int = 60,
+                        online_mode: bool = True,
+                        bot_custom_kwargs: Optional[dict] = None):
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         pass
 
     @abstractmethod
@@ -105,10 +145,17 @@ class ManagerMixin():
 
     @abstractmethod
     def store_live_trader_stats(self,
+<<<<<<< HEAD
                                 live_trader_name: str,
                                 start_time: datetime.datetime,
                                 end_time: datetime.datetime,
                                 instruments: list[str],
                                 run_id: str,
                                 result: dict):
+=======
+                              live_trader_name: str,
+                              start_time: datetime.datetime,
+                              end_time: datetime.datetime,
+                              instruments: list[str]):
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         pass

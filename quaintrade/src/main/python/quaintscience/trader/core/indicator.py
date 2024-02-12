@@ -6,6 +6,7 @@ import datetime
 import numpy as np
 import pandas as pd
 import pandas_ta as pd_ta
+import pandas_ta as pd_ta
 import talib
 
 from .logging import LoggerMixin
@@ -17,7 +18,42 @@ class Indicator(ABC, LoggerMixin):
                  setting_attrs: Optional[list[str]] = None,
                  **kwargs):
         self.setting_attrs = setting_attrs if setting_attrs is not None else []
+    def __init__(self, *args,
+                 setting_attrs: Optional[list[str]] = None,
+                 **kwargs):
+        self.setting_attrs = setting_attrs if setting_attrs is not None else []
         super().__init__(*args, **kwargs)
+    
+    def add_setting(self, settings, name):
+        settings[name] = settings.get(name, getattr(self, name))
+
+    def is_red_candle(self, opn, close=None):
+        is_shooting_star = False
+        is_hanging_man = False
+        if close is None:
+            if "CDLSHOOTINGSTAR" in opn:
+                is_shooting_star = True if opn["CDLSHOOTINGSTAR"] != 0 else False
+            if "CDLHANGINGMAN" in opn:
+                is_hanging_man = True if opn["CDLHANGINGMAN"] != 0 else False
+            opn, close = opn["open"], opn["close"]
+        if opn > close or is_shooting_star or is_hanging_man:
+            return True
+        return False
+
+    def is_green_candle(self, opn, close=None):
+        return not self.is_red_candle(opn, close)
+
+    def is_doji(self, opn, high=None, low=None, close=None, settings=None):
+        is_cdl_doji = False
+        if settings is None:
+            wick_threshold = getattr(self, "wick_threshold", 2.0)
+        else:
+            wick_threshold = settings.get("wick_threshold", getattr(self, "wick_threshold", 2.0))
+        if high is None:
+            if "CDLDOJI" in opn:
+                is_cdl_doji = True if opn["CDLDOJI"] != 0 else False
+            opn, high, low, close = opn["open"], opn["high"], opn["low"], opn["close"]
+        return (not (abs(opn - close) / (high - max(close, opn)) >= wick_threshold or abs(opn - close) / (min(opn, close) - low) >= wick_threshold)) or  is_cdl_doji
     
     def add_setting(self, settings, name):
         settings[name] = settings.get(name, getattr(self, name))
@@ -59,11 +95,18 @@ class Indicator(ABC, LoggerMixin):
             self.add_setting(settings, attr)
         if output_column_name is None:
             output_column_name = {}
+        for attr in self.setting_attrs:
+            self.add_setting(settings, attr)
+        if output_column_name is None:
+            output_column_name = {}
         return df, output_column_name, settings
 
     def postprocess(self, df: pd.DataFrame,
                 output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                output_column_name: Optional[Union[str, dict[str, str]]] = None,
                 settings: Optional[dict] = None) -> (pd.DataFrame, Optional[Union[str, list[str]]], Optional[dict]):
+        for _, column_name in output_column_name.items():
+            df[column_name] = df[column_name].astype(float)
         for _, column_name in output_column_name.items():
             df[column_name] = df[column_name].astype(float)
         return df, output_column_name, settings
@@ -80,6 +123,7 @@ class Indicator(ABC, LoggerMixin):
         df, output_column_name, settings = self.postprocess(df=df,
                                                             output_column_name=output_column_name,
                                                             settings=settings)
+        return df, output_column_name, settings
         return df, output_column_name, settings
 
     @abstractmethod
@@ -135,6 +179,7 @@ class DonchianIndicator(Indicator):
 
     def __init__(self, *args, period: int = 15, **kwargs):
         self.period = period
+        kwargs["setting_attrs"] = ["period"]
         kwargs["setting_attrs"] = ["period"]
         super().__init__(*args, **kwargs)
 
@@ -328,6 +373,39 @@ class IntradayHighLowIndicator(Indicator):
     def compute_impl(self, df: pd.DataFrame,
                      output_column_name: Optional[Union[str, dict[str, str]]] = None,
                      settings: Optional[dict] = None) -> pd.DataFrame:
+                     output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                     settings: Optional[dict] = None) -> pd.DataFrame:
+
+        if output_column_name is None or len(output_column_name) == 0:
+            output_column_name = {"period_high": f"period_high_{settings['start_hour']}_{settings['start_minute']}_{settings['end_hour']}_{settings['end_minute']}",
+                                  "period_low": f"period_low_{settings['start_hour']}_{settings['start_minute']}_{settings['end_hour']}_{settings['end_minute']}"}
+
+        df[output_column_name["period_high"]] = np.nan
+        df[output_column_name["period_low"]] = np.nan
+
+        current_high = np.nan
+        current_low = np.nan
+        
+        for row_id, row in df.iterrows():
+            if (row_id.hour < settings["start_hour"]
+                or (row_id.hour == settings["start_hour"] and row_id.minute < settings["start_minute"])):
+                current_high = np.nan
+                current_low = np.nan
+                continue
+            if (((row_id.hour == settings["start_hour"] and row_id.minute >= settings["start_minute"])
+                 or row_id.hour > settings["start_hour"])
+                 and (row_id.hour < settings["end_hour"] or
+                      (row_id.hour == settings["end_hour"] and row_id.minute <= settings["end_hour"]))):
+                if np.isnan(current_high):
+                    current_high = row["high"]
+                else:
+                    current_high = max(current_high, row["high"])
+                if np.isnan(current_low):
+                    current_low = row["low"]
+                else:
+                    current_low = min(current_low, row["low"])
+            df.loc[row_id, output_column_name["period_high"]] = current_high
+            df.loc[row_id, output_column_name["period_low"]] = current_low
 
         if output_column_name is None or len(output_column_name) == 0:
             output_column_name = {"period_high": f"period_high_{settings['start_hour']}_{settings['start_minute']}_{settings['end_hour']}_{settings['end_minute']}",
@@ -368,8 +446,11 @@ class SMAIndicator(Indicator):
     def __init__(self, *args,
                  period: int = 22,
                  signal: str = "close",
+                 signal: str = "close",
                  **kwargs):
         self.period = period
+        self.signal = signal
+        kwargs["setting_attrs"] = ["period", "signal"]
         self.signal = signal
         kwargs["setting_attrs"] = ["period", "signal"]
         super().__init__(*args, **kwargs)
@@ -392,6 +473,8 @@ class WMAIndicator(Indicator):
                  **kwargs):
         self.period = period
         kwargs["setting_attrs"] = ["period"]
+        self.period = period
+        kwargs["setting_attrs"] = ["period"]
         super().__init__(*args, **kwargs)
 
     def compute_impl(self, df: pd.DataFrame,
@@ -407,6 +490,8 @@ class SMMAIndicator(Indicator):
     def __init__(self, *args,
                  period: int = 22,
                  **kwargs):
+        self.period = period
+        kwargs["setting_attrs"] = ["period"]
         self.period = period
         kwargs["setting_attrs"] = ["period"]
         super().__init__(*args, **kwargs)
@@ -464,6 +549,8 @@ class RSIIndicator(Indicator):
                  **kwargs):
         self.period = period
         kwargs["setting_attrs"] = ["period"]
+        self.period = period
+        kwargs["setting_attrs"] = ["period"]
         super().__init__(*args, **kwargs)
 
     def compute_impl(self, df: pd.DataFrame,
@@ -503,12 +590,20 @@ class ChoppinessIndicator(Indicator):
     
 
 class SupertrendIndicator(Indicator):
+class SupertrendIndicator(Indicator):
         
     def __init__(self,
                  *args,
                  period: int = 7,
                  multiplier: float = 3.0,
+    def __init__(self,
+                 *args,
+                 period: int = 7,
+                 multiplier: float = 3.0,
                  **kwargs):
+        self.period = period
+        self.multiplier = multiplier
+        kwargs["setting_attrs"] = ["period", "multiplier"]
         self.period = period
         self.multiplier = multiplier
         kwargs["setting_attrs"] = ["period", "multiplier"]
@@ -554,7 +649,49 @@ class BBANDSIndicator(Indicator):
             x = ["BBandUpper", "BBandMiddle", "BBandLower"]
             y = [f"{val}_{settings['period']}" for val in x]
             output_column_name = dict(zip(x, y))
+        if output_column_name is None or len(output_column_name) == 0:
+            output_column_name = {"supertrend": f"supertrend_{settings['period']}_{settings['multiplier']:.1f}"}
+        result = pd_ta.supertrend(high=df["high"],
+                                  low=df["low"],
+                                  close=df["close"],
+                                  length=settings['period'],
+                                  multiplier=settings['multiplier'])
+        df[output_column_name["supertrend"]] = pd.NA
+        if result is not None:
+            df[output_column_name["supertrend"]] = result[f"SUPERT_{settings['period']}_{settings['multiplier']:.1f}"]
+        df[output_column_name["supertrend"]].fillna(df["close"].mean(), inplace=True)
+        df.loc[df[output_column_name["supertrend"]] < 1e-3, output_column_name["supertrend"]] = df["close"].mean()
+        return df, output_column_name, settings
+    
+
+
+class BBANDSIndicator(Indicator):
         
+    def __init__(self,
+                 *args,
+                 period: int = 5,
+                 nbdevup: float = 2.0,
+                 nbdevdown: float = 2.0,
+                 **kwargs):
+        self.period = period
+        self.nbdevup = nbdevup
+        self.nbdevdown = nbdevdown
+        kwargs["setting_attrs"] = ["period", "nbdevup", "nbdevdown"]
+        super().__init__(*args, **kwargs)
+
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                     settings: Optional[dict] = None) -> pd.DataFrame:
+        if output_column_name is None or len(output_column_name) == 0:
+            x = ["BBandUpper", "BBandMiddle", "BBandLower"]
+            y = [f"{val}_{settings['period']}" for val in x]
+            output_column_name = dict(zip(x, y))
+        
+        df[output_column_name["BBandUpper"]], df[output_column_name["BBandMiddle"]], df[output_column_name["BBandLower"]] = talib.BBANDS(df["close"],
+                                                                                                                                         timeperiod=settings['period'],
+                                                                                                                                         nbdevup=settings['nbdevup'],
+                                                                                                                                         nbdevdn=settings['nbdevdown'])
+        return df, output_column_name, settings
         df[output_column_name["BBandUpper"]], df[output_column_name["BBandMiddle"]], df[output_column_name["BBandLower"]] = talib.BBANDS(df["close"],
                                                                                                                                          timeperiod=settings['period'],
                                                                                                                                          nbdevup=settings['nbdevup'],
@@ -579,6 +716,14 @@ class CDLPatternIndicator(Indicator):
         for item in output_column_name.keys():
             df[item] = getattr(talib, item)(df["open"], df["high"], df["low"], df["close"])
         return df, output_column_name, settings
+        if output_column_name is None or len(output_column_name) == 0:
+            for item in dir(talib):
+                if item.startswith("CDL"):
+                    output_column_name[item] = item
+
+        for item in output_column_name.keys():
+            df[item] = getattr(talib, item)(df["open"], df["high"], df["low"], df["close"])
+        return df, output_column_name, settings
 
 
 class BreakoutIndicator(Indicator):
@@ -589,9 +734,19 @@ class BreakoutIndicator(Indicator):
                  *args,
                  upper_price_column: str = "high",
                  lower_price_column: str = "low",
+    def __init__(self,
+                 upper_breakout_column: str,
+                 lower_breakout_column: str,
+                 *args,
+                 upper_price_column: str = "high",
+                 lower_price_column: str = "low",
                  **kwargs):
         self.upper_breakout_column = upper_breakout_column
         self.lower_breakout_column = lower_breakout_column
+        self.upper_price_column = upper_price_column
+        self.lower_price_column = lower_price_column
+        kwargs['setting_attrs'] = ["upper_breakout_column", "lower_breakout_column",
+                                   "upper_price_column", "lower_price_column"]
         self.upper_price_column = upper_price_column
         self.lower_price_column = lower_price_column
         kwargs['setting_attrs'] = ["upper_breakout_column", "lower_breakout_column",

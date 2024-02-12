@@ -20,7 +20,10 @@ class TradeBookStorageMixin():
     def store_order_execution(self,
                               strategy: str,
                               run_name: str,
+<<<<<<< HEAD
                               run_id: str,
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
                               date: Union[str, datetime.datetime],
                               order: Order,
                               event: str):
@@ -30,13 +33,21 @@ class TradeBookStorageMixin():
     def store_position_state(self,
                              strategy: str,
                              run_name: str,
+<<<<<<< HEAD
                              run_id: str,
+=======
+
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
                              date: Union[str, datetime.datetime],
                              position: Position):
         pass
 
     @abstractmethod
+<<<<<<< HEAD
     def store_event(self, strategy: str, run_name: str, run_id: str,
+=======
+    def store_event(self, strategy: str, run_name: str,
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
                     scrip: str,
                     exchange: str,
                     event_type: str,

@@ -16,7 +16,10 @@ class BackTesterService(BotService):
                  *args,
                  from_date: Union[str, datetime.datetime] = None,
                  to_date: Union[str, datetime.datetime] = None,
+<<<<<<< HEAD
                  context_from_date: Union[str, datetime.datetime] = None,
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
                  interval: str = "3min",
                  refresh_orders_immediately_on_gtt_state_change: bool = False,
                  plot_results: bool = False,
@@ -26,13 +29,19 @@ class BackTesterService(BotService):
                  **kwargs):
         self.from_date = get_datetime(from_date)
         self.to_date = get_datetime(to_date)
+<<<<<<< HEAD
         self.context_from_date = get_datetime(context_from_date)
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         self.interval = interval
         self.plot_results = plot_results
         self.window_size = window_size
         self.live_trading_mode = live_trading_mode
         self.clear_tradebook_for_scrip_and_exchange = clear_tradebook_for_scrip_and_exchange
+<<<<<<< HEAD
         print(kwargs)
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         if self.live_trading_mode:
             kwargs["data_provider_login"] = True
             kwargs["data_provider_init"] = True
@@ -44,6 +53,7 @@ class BackTesterService(BotService):
         kwargs["broker_login"] = False
         kwargs["broker_init"] = True
         kwargs["broker_skip_order_streamer"] = True
+<<<<<<< HEAD
         broker_kwargs_overrides = {"instruments": self.instruments,
                                    "data_provider": self.data_provider,
                                    "historic_context_from": self.from_date,
@@ -56,6 +66,15 @@ class BackTesterService(BotService):
         else:
             kwargs["broker_custom_kwargs"] = broker_kwargs_overrides
         print(kwargs["broker_custom_kwargs"])
+=======
+        kwargs["broker_custom_kwargs"] = {"instruments": self.instruments,
+                                          "data_provider": self.data_provider,
+                                          "historic_context_from": self.from_date,
+                                          "historic_context_to": self.to_date,
+                                          "interval": self.interval,
+                                          "refresh_orders_immediately_on_gtt_state_change": refresh_orders_immediately_on_gtt_state_change,
+                                          "refresh_data_on_every_time_change": False}
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         BotService.__init__(self,
                             *args,
                             **kwargs)
@@ -71,7 +90,10 @@ class BackTesterService(BotService):
                                   exchange=instrument["exchange"],
                                   from_date=self.from_date,
                                   to_date=self.to_date,
+<<<<<<< HEAD
                                   context_from_date=self.context_from_date,
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
                                   interval=self.interval,
                                   window_size=self.window_size,
                                   plot_results=self.plot_results,
@@ -82,7 +104,10 @@ class BackTesterService(BotService):
         BotService.enrich_arg_parser(p)
         p.add('--from_date', help="From date", env_var="FROM_DATE")
         p.add('--to_date', help="To date", env_var="TO_DATE")
+<<<<<<< HEAD
         p.add('--context_from_date', help="context from date", env_var="CONTEXT_FROM_DATE")
+=======
+>>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         p.add('--interval', help="To date", env_var="INTERVAL")
         p.add('--refresh_orders_immediately_on_gtt_state_change',
               help="Refresh orders when gtt orders are executed",

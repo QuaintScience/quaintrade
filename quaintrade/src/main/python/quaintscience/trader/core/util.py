@@ -1,5 +1,7 @@
 from dataclasses import field
 from typing import Union
+from dataclasses import field
+from typing import Union
 import functools
 import datetime
 import copy
@@ -20,6 +22,13 @@ def crossover(df, col1, col2):
         return True
     return False
 
+def get_datetime(dt: Union[str, datetime.datetime]):
+    if isinstance(dt, str):
+        try:
+            dt = datetime.datetime.strptime(dt, "%Y%m%d %H:%M")
+        except Exception:
+            dt = datetime.datetime.strptime(dt, "%Y%m%d")
+    return dt
 def get_datetime(dt: Union[str, datetime.datetime]):
     if isinstance(dt, str):
         try:

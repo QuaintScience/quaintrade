@@ -4,10 +4,19 @@ import copy
 import os
 import pickle
 from functools import partial
+import os
+import pickle
+from functools import partial
 
 import pandas as pd
 
 from .logging import LoggerMixin
+from .ds import (Order,
+                 TradeType,
+                 OrderState,
+                 OrderType,
+                 TransactionType,
+                 TradingProduct)
 from .ds import (Order,
                  TradeType,
                  OrderState,
@@ -32,6 +41,8 @@ class Strategy(ABC, LoggerMixin):
 
     def __init__(self,
                  indicator_pipeline: IndicatorPipeline,
+                 *args,
+                 default_interval: str = "3min",
                  *args,
                  default_interval: str = "3min",
                  non_trading_timeslots: list[dict[str, str]] = None,
@@ -310,6 +321,12 @@ class Strategy(ABC, LoggerMixin):
                 if (row.name.hour < non_trading_timeslot["to"]["hour"]
                     or (row.name.hour == non_trading_timeslot["to"]["hour"] and
                     row.name.minute <= non_trading_timeslot["to"]["minute"])):
+            if (row.name.hour > non_trading_timeslot["from"]["hour"]
+                or (row.name.hour == non_trading_timeslot["from"]["hour"] and
+                    row.name.minute >= non_trading_timeslot["from"]["minute"])):
+                if (row.name.hour < non_trading_timeslot["to"]["hour"]
+                    or (row.name.hour == non_trading_timeslot["to"]["hour"] and
+                    row.name.minute <= non_trading_timeslot["to"]["minute"])):
                     return False
         return True
 
@@ -341,6 +358,9 @@ class Strategy(ABC, LoggerMixin):
         all_tags.append(position_type.value)
 
         if trade_type == TradeType.LONG:
+            all_tags.append(self.long_position_tag)
+        elif trade_type == TradeType.SHORT:
+            all_tags.append(self.short_position_tag)
             all_tags.append(self.long_position_tag)
         elif trade_type == TradeType.SHORT:
             all_tags.append(self.short_position_tag)
@@ -470,6 +490,13 @@ class Strategy(ABC, LoggerMixin):
         self.perform_intraday_squareoff(broker=broker, window=window)
 
     @abstractmethod
+    def apply_impl(self, broker: Broker,
+                   scrip: str,
+                   exchange: str,
+                   window: pd.DataFrame,
+                   context: dict[str, pd.DataFrame]) -> None:
+        pass
+
     def apply_impl(self, broker: Broker,
                    scrip: str,
                    exchange: str,
