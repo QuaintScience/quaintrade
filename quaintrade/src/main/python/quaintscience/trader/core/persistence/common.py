@@ -23,9 +23,6 @@ class Storage(ABC, LoggerMixin):
         pass
 
 
-<<<<<<< HEAD
     @abstractmethod
     def commit(self):
         pass
-=======
->>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468

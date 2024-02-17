@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Optional, Union
+from typing import Optional, Union, Tuple
 import datetime
 import copy
 import datetime
@@ -86,50 +86,74 @@ class Indicator(ABC, LoggerMixin):
             opn, high, low, close = opn["open"], opn["high"], opn["low"], opn["close"]
         return (not (abs(opn - close) / (high - max(close, opn)) >= wick_threshold or abs(opn - close) / (min(opn, close) - low) >= wick_threshold)) or  is_cdl_doji
 
-    def preprocess(self, df: pd.DataFrame,
-                output_column_name: Optional[Union[str, list[str]]] = None,
-                settings: Optional[dict] = None) -> (pd.DataFrame, Optional[Union[str, list[str]]], Optional[dict]):
+    def get_default_settings(self, settings: Optional[dict] = None):
         if settings is None:
             settings = {}
+        else:
+            settings = settings.copy()
         for attr in self.setting_attrs:
             self.add_setting(settings, attr)
-        if output_column_name is None:
-            output_column_name = {}
+
         for attr in self.setting_attrs:
             self.add_setting(settings, attr)
-        if output_column_name is None:
-            output_column_name = {}
-        return df, output_column_name, settings
+        return settings
+
+    def get_default_column_names(self,
+                                 output_column_names: dict[str, str] | None = None,
+                                 settings: dict | None = None) -> dict[str, str]:
+        if output_column_names is None:
+            output_column_names = {}
+        if settings is None:
+            settings = self.get_default_settings()
+
+        return self.get_default_column_names_impl(output_column_names.copy(), settings)
+
+    @abstractmethod
+    def get_default_column_names_impl(self,
+                                 output_column_names: dict[str, str],
+                                 settings: dict) -> dict[str, str]:
+        pass
+
+    def preprocess(self, df: pd.DataFrame,
+                   output_column_names: Optional[Union[str, list[str]]] = None,
+                   settings: Optional[dict] = None) -> Tuple[pd.DataFrame,
+                                                             Optional[Union[str, list[str]]],
+                                                             Optional[dict]]:
+        settings = self.get_default_settings(settings)
+        output_column_names = self.get_default_column_names(output_column_names=output_column_names)
+        return df, output_column_names, settings
 
     def postprocess(self, df: pd.DataFrame,
-                output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                settings: Optional[dict] = None) -> (pd.DataFrame, Optional[Union[str, list[str]]], Optional[dict]):
-        for _, column_name in output_column_name.items():
+                output_column_names: dict[str, str],
+                settings: dict) -> Tuple[pd.DataFrame,
+                                         Optional[Union[str, list[str]]],
+                                         Optional[dict]]:
+        for _, column_name in output_column_names.items():
             df[column_name] = df[column_name].astype(float)
-        for _, column_name in output_column_name.items():
+        for _, column_name in output_column_names.items():
             df[column_name] = df[column_name].astype(float)
-        return df, output_column_name, settings
+        return df
 
     def compute(self, df: pd.DataFrame,
-                output_column_name: Optional[Union[str, dict[str, str]]] = None,
+                output_column_names: Optional[Union[str, dict[str, str]]] = None,
                 settings: Optional[dict] = None) -> pd.DataFrame:
-        df, output_column_name, settings = self.preprocess(df=df,
-                                                           output_column_name=output_column_name,
+        df, output_column_names, settings = self.preprocess(df=df,
+                                                           output_column_names=output_column_names,
                                                            settings=settings)
-        df, output_column_name, settings = self.compute_impl(df=df,
-                                                             output_column_name=output_column_name,
-                                                             settings=settings)
-        df, output_column_name, settings = self.postprocess(df=df,
-                                                            output_column_name=output_column_name,
-                                                            settings=settings)
-        return df, output_column_name, settings
-        return df, output_column_name, settings
+        df = self.compute_impl(df=df,
+                               output_column_names=output_column_names,
+                               settings=settings)
+        if isinstance(df, tuple):
+            df, output_column_names, settings = df
+        df = self.postprocess(df=df,
+                              output_column_names=output_column_names,
+                              settings=settings)
+        return df, output_column_names, settings
 
     @abstractmethod
     def compute_impl(self, df: pd.DataFrame,
-                output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                settings: Optional[dict] = None) -> pd.DataFrame:
+                output_column_names: dict[str, str],
+                settings: dict) -> pd.DataFrame:
         pass
 
 
@@ -142,37 +166,57 @@ class IndicatorPipeline(Indicator):
         self.indicators = indicators
         super().__init__(*args, **kwargs)
 
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+        return output_column_names
+
     def compute_impl(self, df: pd.DataFrame,
-                output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                settings: Optional[dict] = None) -> pd.DataFrame:
-        for indicator, output_column_name, indicator_settings in self.indicators:
+                output_column_names: dict[str, str],
+                settings: dict) -> pd.DataFrame:
+        ret_settings = {}
+        ret_col_names = {}
+        for indicator, ind_output_column_names, indicator_settings in self.indicators:
             if indicator_settings is None:
                 indicator_settings = {}
             indicator_settings = copy.deepcopy(indicator_settings).update(settings)
             self.logger.info(f"Applying {indicator.__class__.__name__}")
-            df, output_column_name, indicator_settings = indicator.compute(df,
-                                                                           output_column_name,
-                                                                           indicator_settings)
-        return df, output_column_name, settings
+            (df,
+             indicator_output_column_names,
+             indicator_settings) = indicator.compute(df,
+                                                     ind_output_column_names,
+                                                     indicator_settings)
+            ret_col_names.update(indicator_output_column_names)
+            ret_settings.update(indicator_settings)
+        return df, ret_col_names, ret_settings
 
 
 class SlopeIndicator(Indicator):
-    def __init__(self, signal: str, *args, shift: int = 1,
+    def __init__(self,
+                 signal: str,
+                 *args,
+                 shift: int = 1,
                  **kwargs):
         self.signal = signal
         self.shift = shift
         kwargs["setting_attrs"] = ["signal", "shift"]
         super().__init__(*args, **kwargs)
     
+    def get_default_column_names_impl(self,
+                                     output_column_names: dict[str, str],
+                                     settings: dict) -> dict[str, str]:
+
+        output_column_names["slope"] = f"{settings['signal']}_slope"
+        output_column_names["acceleration"] = f"{settings['signal']}_acceleration"
+        return output_column_names
+
     def compute_impl(self, df: pd.DataFrame,
-                     output_column_name: str | dict[str, str] | None = None,
-                     settings: dict | None = None) -> pd.DataFrame:
-        if output_column_name is None or len(output_column_name) == 0:
-            output_column_name["slope"] = f"{settings['signal']}_slope"
-            output_column_name["acceleration"] = f"{settings['signal']}_acceleration"
-        df[output_column_name["slope"]] = df[settings['signal']].diff(periods=settings['shift'])
-        df[output_column_name["acceleration"]] = df[settings['signal']].diff(settings['shift']).diff()
-        return df, output_column_name, settings        
+                     output_column_names: dict[str, str],
+                     settings: dict) -> pd.DataFrame:
+            
+        df[output_column_names["slope"]] = df[settings['signal']].diff(periods=settings['shift'])
+        df[output_column_names["acceleration"]] = df[settings['signal']].diff(settings['shift']).diff()
+        return df
 
 
 class DonchianIndicator(Indicator):
@@ -180,20 +224,24 @@ class DonchianIndicator(Indicator):
     def __init__(self, *args, period: int = 15, **kwargs):
         self.period = period
         kwargs["setting_attrs"] = ["period"]
-        kwargs["setting_attrs"] = ["period"]
         super().__init__(*args, **kwargs)
 
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+        x = ["donchianUpper", "donchianMiddle", "donchianLower"]
+        y = [f"{val}_{settings['period']}" for val in x]
+        output_column_names.update(dict(zip(x, y)))
+        return output_column_names
+
     def compute_impl(self, df: pd.DataFrame,
-                output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                settings: Optional[dict] = None) -> pd.DataFrame:
-        if output_column_name is None or len(output_column_name) == 0:
-            x = ["donchianUpper", "donchianMiddle", "donchianLower"]
-            y = [f"{val}_{settings['period']}" for val in x]
-            output_column_name = dict(zip(x, y))
-        df[output_column_name["donchianUpper"]] = df["high"].rolling(settings['period']).apply(lambda x: max(x))
-        df[output_column_name["donchianLower"]] = df["low"].rolling(settings['period']).apply(lambda x: min(x))
-        df[output_column_name["donchianMiddle"]] = (df[output_column_name["donchianUpper"]] + df[output_column_name["donchianLower"]]) /2
-        return df, output_column_name, settings
+                output_column_names: dict[str, str],
+                settings: dict) -> pd.DataFrame:
+            
+        df[output_column_names["donchianUpper"]] = df["high"].rolling(settings['period']).apply(lambda x: max(x))
+        df[output_column_names["donchianLower"]] = df["low"].rolling(settings['period']).apply(lambda x: min(x))
+        df[output_column_names["donchianMiddle"]] = (df[output_column_names["donchianUpper"]] + df[output_column_names["donchianLower"]]) / 2
+        return df
 
 
 class PullbackDetector(Indicator):
@@ -222,14 +270,19 @@ class PullbackDetector(Indicator):
         super().__init__(*args,
                          **kwargs)
 
-    def compute_impl(self, df: pd.DataFrame,
-                     output_column_name: str | dict[str, str] | None = None,
-                     settings: dict | None = None) -> pd.DataFrame:
 
-        if output_column_name is None or len(output_column_name) == 0:
-            x = ["pullback_start", "pullback_end"]
-            y = [f"{settings['breakout_column']}_{val}" for val in x]
-            output_column_name = dict(zip(x, y))
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+        x = ["pullback_start", "pullback_end"]
+        y = [f"{settings['breakout_column']}_{val}" for val in x]
+        output_column_names.update(dict(zip(x, y)))
+        return output_column_names
+
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_names: dict[str, str],
+                     settings: dict) -> pd.DataFrame:
+           
         after_breakout = False
         pull_back_in_progress = False
 
@@ -240,14 +293,14 @@ class PullbackDetector(Indicator):
             df.loc[df[settings["price_column"]] <= df[settings["breakout_column"]], "_breakouts"] = 1.0
 
         prev_row = None
-        for v in output_column_name.values():
+        for v in output_column_names.values():
             df[v] = 0.
         for _, row in df.iterrows():
             if settings["pullback_direction"] == PullbackDetector.PULLBACK_DIRECTION_DOWN:
                 if (prev_row is not None
                     and row["_breakouts"] != 1.0
                     and prev_row["_breakouts"] == 1.0):
-                        df.loc[row.name, output_column_name["pullback_start"]] = 1.0
+                        df.loc[row.name, output_column_names["pullback_start"]] = 1.0
                         if self.is_red_candle(row):
                             pull_back_in_progress = True
                             after_breakout = False
@@ -263,7 +316,7 @@ class PullbackDetector(Indicator):
                         after_breakout = False
                 elif pull_back_in_progress:
                     if self.is_green_candle(row):
-                        df.loc[row.name, output_column_name["pullback_end"]] = 1.0
+                        df.loc[row.name, output_column_names["pullback_end"]] = 1.0
                         pull_back_in_progress = False
                         after_breakout = False
                 prev_row = row
@@ -271,7 +324,7 @@ class PullbackDetector(Indicator):
                 if (prev_row is not None
                     and row["_breakouts"] != 1.0
                     and prev_row["_breakouts"] == 1.0):
-                        df.loc[row.name, output_column_name["pullback_start"]] = 1.0
+                        df.loc[row.name, output_column_names["pullback_start"]] = 1.0
                         if self.is_green_candle(row):
                             pull_back_in_progress = True
                             after_breakout = False
@@ -287,12 +340,12 @@ class PullbackDetector(Indicator):
                         after_breakout = False
                 elif pull_back_in_progress:
                     if self.is_red_candle(row):
-                        df.loc[row.name, output_column_name["pullback_end"]] = 1.0
+                        df.loc[row.name, output_column_names["pullback_end"]] = 1.0
                         pull_back_in_progress = False
                         after_breakout = False
                 prev_row = row
 
-        return df, output_column_name, settings
+        return df
 
 
 class PastPeriodHighLowIndicator(Indicator):
@@ -308,26 +361,29 @@ class PastPeriodHighLowIndicator(Indicator):
         kwargs["setting_attrs"] = ["period_interval", "data_interval", "shift"]
         super().__init__(*args, **kwargs)
 
-    def compute_impl(self, df: pd.DataFrame,
-                     output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                     settings: Optional[dict] = None) -> pd.DataFrame:
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+        x = ["previous_high", "previous_low"]
+        y = [f"{val}_{settings['period_interval']}_{settings['shift']}" for val in x]
+        output_column_names.update(dict(zip(x, y)))
+        return output_column_names
 
-        if output_column_name is None or len(output_column_name) == 0:
-            x = ["previous_high", "previous_low"]
-            y = [f"{val}_{settings['period_interval']}_{settings['shift']}" for val in x]
-            output_column_name = dict(zip(x, y))
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_names: dict[str, str],
+                     settings: dict) -> pd.DataFrame:
 
         pwh = df["high"].resample(settings["period_interval"],
                                   origin=datetime.datetime.fromisoformat('1970-01-01 09:15:00')).apply("max").shift(settings["shift"],
                                                                                   freq=settings["period_interval"])
-        df[output_column_name["previous_high"]] = pwh.resample(settings["data_interval"],
-                                                               origin=datetime.datetime.fromisoformat('1970-01-01 09:15:00')).ffill().ffill()
+        df[output_column_names["previous_high"]] = pwh.resample(settings["data_interval"],
+                                                                origin=datetime.datetime.fromisoformat('1970-01-01 09:15:00')).ffill().ffill()
         pwl = df["low"].resample(settings["period_interval"],
                                  origin=datetime.datetime.fromisoformat('1970-01-01 09:15:00')).apply("min").shift(settings["shift"],
                                                                                  freq=settings["period_interval"])
-        df[output_column_name["previous_low"]] = pwl.resample(settings["data_interval"],
-                                                                       origin=datetime.datetime.fromisoformat('1970-01-01 09:15:00')).ffill().ffill()
-        return df, output_column_name, settings
+        df[output_column_names["previous_low"]] = pwl.resample(settings["data_interval"],
+                                                                        origin=datetime.datetime.fromisoformat('1970-01-01 09:15:00')).ffill().ffill()
+        return df
 
 class PauseBarIndicator(Indicator):
 
@@ -340,16 +396,19 @@ class PauseBarIndicator(Indicator):
         kwargs["setting_attrs"] = ["atr_threshold", "atr_column_name"]
         super().__init__(*args, **kwargs)
 
-    def compute_impl(self, df: pd.DataFrame,
-                     output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                     settings: Optional[dict] = None) -> pd.DataFrame:
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+        output_column_names.update({'is_pause': f"is_pause_{settings['atr_threshold']:.2f}_{settings['atr_column_name']}"})
+        return output_column_names
 
-        if (output_column_name is None
-            or len(output_column_name) == 0):
-            output_column_name = {'is_pause': f"is_pause_{settings['atr_threshold']:.2f}_{settings['atr_column_name']}"}
-        df[output_column_name['is_pause']] = 0.
-        df.loc[((df["close"] - df["open"]).abs() < (df[settings['atr_column_name']] * settings['atr_threshold'])), output_column_name['is_pause']] = 1.0
-        return df, output_column_name, settings
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_names: dict[str, str],
+                     settings: dict) -> pd.DataFrame:
+
+        df[output_column_names['is_pause']] = 0.
+        df.loc[((df["close"] - df["open"]).abs() < (df[settings['atr_column_name']] * settings['atr_threshold'])), output_column_names['is_pause']] = 1.0
+        return df
 
 
 class IntradayHighLowIndicator(Indicator):
@@ -370,18 +429,20 @@ class IntradayHighLowIndicator(Indicator):
                                    "end_minute"]
         super().__init__(*args, **kwargs)
 
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+        output_column_names.update({"period_high": f"period_high_{settings['start_hour']}_{settings['start_minute']}_{settings['end_hour']}_{settings['end_minute']}",
+                                    "period_low": f"period_low_{settings['start_hour']}_{settings['start_minute']}_{settings['end_hour']}_{settings['end_minute']}"})
+        return output_column_names
+
     def compute_impl(self, df: pd.DataFrame,
-                     output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                     settings: Optional[dict] = None) -> pd.DataFrame:
-                     output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                     settings: Optional[dict] = None) -> pd.DataFrame:
+                     output_column_names: dict[str, str],
+                     settings: dict) -> pd.DataFrame:
 
-        if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"period_high": f"period_high_{settings['start_hour']}_{settings['start_minute']}_{settings['end_hour']}_{settings['end_minute']}",
-                                  "period_low": f"period_low_{settings['start_hour']}_{settings['start_minute']}_{settings['end_hour']}_{settings['end_minute']}"}
 
-        df[output_column_name["period_high"]] = np.nan
-        df[output_column_name["period_low"]] = np.nan
+        df[output_column_names["period_high"]] = np.nan
+        df[output_column_names["period_low"]] = np.nan
 
         current_high = np.nan
         current_low = np.nan
@@ -404,105 +465,37 @@ class IntradayHighLowIndicator(Indicator):
                     current_low = row["low"]
                 else:
                     current_low = min(current_low, row["low"])
-            df.loc[row_id, output_column_name["period_high"]] = current_high
-            df.loc[row_id, output_column_name["period_low"]] = current_low
+            df.loc[row_id, output_column_names["period_high"]] = current_high
+            df.loc[row_id, output_column_names["period_low"]] = current_low
 
-        if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"period_high": f"period_high_{settings['start_hour']}_{settings['start_minute']}_{settings['end_hour']}_{settings['end_minute']}",
-                                  "period_low": f"period_low_{settings['start_hour']}_{settings['start_minute']}_{settings['end_hour']}_{settings['end_minute']}"}
-
-        df[output_column_name["period_high"]] = np.nan
-        df[output_column_name["period_low"]] = np.nan
-
-        current_high = np.nan
-        current_low = np.nan
-        
-        for row_id, row in df.iterrows():
-            if (row_id.hour < settings["start_hour"]
-                or (row_id.hour == settings["start_hour"] and row_id.minute < settings["start_minute"])):
-                current_high = np.nan
-                current_low = np.nan
-                continue
-            if (((row_id.hour == settings["start_hour"] and row_id.minute >= settings["start_minute"])
-                 or row_id.hour > settings["start_hour"])
-                 and (row_id.hour < settings["end_hour"] or
-                      (row_id.hour == settings["end_hour"] and row_id.minute <= settings["end_hour"]))):
-                if np.isnan(current_high):
-                    current_high = row["high"]
-                else:
-                    current_high = max(current_high, row["high"])
-                if np.isnan(current_low):
-                    current_low = row["low"]
-                else:
-                    current_low = min(current_low, row["low"])
-            df.loc[row_id, output_column_name["period_high"]] = current_high
-            df.loc[row_id, output_column_name["period_low"]] = current_low
-
-        return df, output_column_name, settings
+        return df
 
 
-class SMAIndicator(Indicator):
+class MAIndicator(Indicator):
         
     def __init__(self, *args,
                  period: int = 22,
                  signal: str = "close",
-                 signal: str = "close",
+                 ma_type: str = "SMA",
                  **kwargs):
         self.period = period
         self.signal = signal
-        kwargs["setting_attrs"] = ["period", "signal"]
-        self.signal = signal
-        kwargs["setting_attrs"] = ["period", "signal"]
+        self.ma_type = ma_type
+        kwargs["setting_attrs"] = ["period", "signal", "ma_type"]
         super().__init__(*args, **kwargs)
 
-    def compute_impl(self, df: pd.DataFrame,
-                output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                settings: Optional[dict] = None) -> pd.DataFrame:
-        if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"SMA": f"SMA_{settings['period']}"}
-            if settings['signal'] != 'close':
-                output_column_name = {"SMA": f"{output_column_name['SMA']}_{settings['signal']}"}
-        df[output_column_name["SMA"]] = talib.SMA(df[settings['signal']], timeperiod=self.period)
-        return df, output_column_name, settings
-
-
-class WMAIndicator(Indicator):
-        
-    def __init__(self, *args,
-                 period: int = 22,
-                 **kwargs):
-        self.period = period
-        kwargs["setting_attrs"] = ["period"]
-        self.period = period
-        kwargs["setting_attrs"] = ["period"]
-        super().__init__(*args, **kwargs)
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+        output_column_names.update({"MA": f"{settings['ma_type']}_{settings['signal']}_{settings['period']}"})
+        return output_column_names
 
     def compute_impl(self, df: pd.DataFrame,
-                output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                settings: Optional[dict] = None) -> pd.DataFrame:
-        if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"WMA": f"WMA_{self.period}"}
-        df[output_column_name["WMA"]] = talib.SMA(df[settings.get("input_column", "close")], timeperiod=self.period)
-        return df, output_column_name, settings
-
-class SMMAIndicator(Indicator):
-        
-    def __init__(self, *args,
-                 period: int = 22,
-                 **kwargs):
-        self.period = period
-        kwargs["setting_attrs"] = ["period"]
-        self.period = period
-        kwargs["setting_attrs"] = ["period"]
-        super().__init__(*args, **kwargs)
-
-    def compute_impl(self, df: pd.DataFrame,
-                output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                settings: Optional[dict] = None) -> pd.DataFrame:
-        if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"SMMA": f"SMMA_{self.period}"}
-        df[output_column_name["SMMA"]] = talib.SMMA(df[settings.get("input_column", "close")], timeperiod=self.period)
-        return df, output_column_name, settings
+                output_column_names: dict[str, str],
+                settings: dict) -> pd.DataFrame:
+        df[output_column_names["MA"]] = getattr(talib, settings["ma_type"])(df[settings['signal']],
+                                                                            timeperiod=self.period)
+        return df
 
 
 class ADXIndicator(Indicator):
@@ -514,13 +507,18 @@ class ADXIndicator(Indicator):
         kwargs["setting_attrs"] = ["period"]
         super().__init__(*args, **kwargs)
 
+    def get_default_column_names_impl(self,
+                                output_column_names: dict[str, str],
+                                settings: dict) -> dict[str, str]:
+
+        output_column_names.update({"ADX": f"ADX_{settings['period']}"})
+        return output_column_names
+
     def compute_impl(self, df: pd.DataFrame,
-                output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                settings: Optional[dict] = None) -> pd.DataFrame:
-        if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"ADX": f"ADX_{settings['period']}"}
-        df[output_column_name["ADX"]] = talib.ADX(df["high"], df["low"], df["close"], timeperiod=settings['period'])
-        return df, output_column_name, settings
+                     output_column_names: dict[str, str],
+                     settings: dict) -> pd.DataFrame:
+        df[output_column_names["ADX"]] = talib.ADX(df["high"], df["low"], df["close"], timeperiod=settings['period'])
+        return df
     
 
 class ATRIndicator(Indicator):
@@ -532,13 +530,17 @@ class ATRIndicator(Indicator):
         kwargs["setting_attrs"] = ["period"]
         super().__init__(*args, **kwargs)
 
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+        output_column_names.update({"ATR": f"ATR_{settings['period']}"})
+        return output_column_names
+
     def compute_impl(self, df: pd.DataFrame,
-                output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                settings: Optional[dict] = None) -> pd.DataFrame:
-        if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"ATR": f"ATR_{settings['period']}"}
-        df[output_column_name["ATR"]] = talib.ATR(df["high"], df["low"], df["close"], timeperiod=settings['period'])
-        return df, output_column_name, settings
+                output_column_names: dict[str, str],
+                settings: dict) -> pd.DataFrame:
+        df[output_column_names["ATR"]] = talib.ATR(df["high"], df["low"], df["close"], timeperiod=settings['period'])
+        return df
 
 
 class RSIIndicator(Indicator):
@@ -549,18 +551,21 @@ class RSIIndicator(Indicator):
                  **kwargs):
         self.period = period
         kwargs["setting_attrs"] = ["period"]
-        self.period = period
-        kwargs["setting_attrs"] = ["period"]
         super().__init__(*args, **kwargs)
 
+    def get_default_column_names_impl(self,
+                                output_column_names: dict[str, str],
+                                settings: dict) -> dict[str, str]:
+
+        output_column_names.update({"RSI": f"RSI_{settings['period']}"})
+        return output_column_names
+
     def compute_impl(self, df: pd.DataFrame,
-                output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                settings: Optional[dict] = None) -> pd.DataFrame:
-        if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"RSI": f"RSI_{settings['period']}"}
+                output_column_names: dict[str, str],
+                settings: dict) -> pd.DataFrame:
         
-        df[output_column_name["RSI"]] = talib.RSI(df["close"], timeperiod=settings['period'])
-        return df, output_column_name, settings
+        df[output_column_names["RSI"]] = talib.RSI(df["close"], timeperiod=settings['period'])
+        return df
 
 
 class ChoppinessIndicator(Indicator):
@@ -577,25 +582,24 @@ class ChoppinessIndicator(Indicator):
         kwargs["setting_attrs"] = ["period", "atr_length", "drift"]
         super().__init__(*args, **kwargs)
 
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+        output_column_names.update({"choppiness": f"choppiness_{settings['period']}"})
+        return output_column_names
+
     def compute_impl(self, df: pd.DataFrame,
-                output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                settings: Optional[dict] = None) -> pd.DataFrame:
-        if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"choppiness": f"choppiness_{settings['period']}"}
-        df[output_column_name["choppiness"]] = pd_ta.chop(high=df["high"], low=df["low"], close=df["close"],
+                output_column_names: dict[str, str],
+                settings: dict) -> pd.DataFrame:
+        df[output_column_names["choppiness"]] = pd_ta.chop(high=df["high"], low=df["low"], close=df["close"],
                                                           length=settings['period'],
                                                           atr_length=settings['atr_length'],
                                                           drift=settings['drift'])
-        return df, output_column_name, settings
+        return df
     
 
 class SupertrendIndicator(Indicator):
-class SupertrendIndicator(Indicator):
         
-    def __init__(self,
-                 *args,
-                 period: int = 7,
-                 multiplier: float = 3.0,
     def __init__(self,
                  *args,
                  period: int = 7,
@@ -604,29 +608,31 @@ class SupertrendIndicator(Indicator):
         self.period = period
         self.multiplier = multiplier
         kwargs["setting_attrs"] = ["period", "multiplier"]
-        self.period = period
-        self.multiplier = multiplier
-        kwargs["setting_attrs"] = ["period", "multiplier"]
         super().__init__(*args, **kwargs)
 
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+
+        output_column_names.update({"supertrend": f"supertrend_{settings['period']}_{settings['multiplier']:.1f}"})
+        return output_column_names
+
     def compute_impl(self, df: pd.DataFrame,
-                output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                settings: Optional[dict] = None) -> pd.DataFrame:
-        if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"supertrend": f"supertrend_{settings['period']}_{settings['multiplier']:.1f}"}
+                output_column_names: dict[str, str],
+                settings: dict) -> pd.DataFrame:
+
         result = pd_ta.supertrend(high=df["high"],
                                   low=df["low"],
                                   close=df["close"],
                                   length=settings['period'],
                                   multiplier=settings['multiplier'])
-        df[output_column_name["supertrend"]] = pd.NA
+        df[output_column_names["supertrend"]] = pd.NA
         if result is not None:
-            df[output_column_name["supertrend"]] = result[f"SUPERT_{settings['period']}_{settings['multiplier']:.1f}"]
-        df[output_column_name["supertrend"]].fillna(df["close"].mean(), inplace=True)
-        df.loc[df[output_column_name["supertrend"]] < 1e-3, output_column_name["supertrend"]] = df["close"].mean()
-        return df, output_column_name, settings
+            df[output_column_names["supertrend"]] = result[f"SUPERT_{settings['period']}_{settings['multiplier']:.1f}"]
+        df[output_column_names["supertrend"]].fillna(df["close"].mean(), inplace=True)
+        df.loc[df[output_column_names["supertrend"]] < 1e-3, output_column_names["supertrend"]] = df["close"].mean()
+        return df
     
-
 
 class BBANDSIndicator(Indicator):
         
@@ -642,61 +648,27 @@ class BBANDSIndicator(Indicator):
         kwargs["setting_attrs"] = ["period", "nbdevup", "nbdevdown"]
         super().__init__(*args, **kwargs)
 
-    def compute_impl(self, df: pd.DataFrame,
-                     output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                     settings: Optional[dict] = None) -> pd.DataFrame:
-        if output_column_name is None or len(output_column_name) == 0:
-            x = ["BBandUpper", "BBandMiddle", "BBandLower"]
-            y = [f"{val}_{settings['period']}" for val in x]
-            output_column_name = dict(zip(x, y))
-        if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"supertrend": f"supertrend_{settings['period']}_{settings['multiplier']:.1f}"}
-        result = pd_ta.supertrend(high=df["high"],
-                                  low=df["low"],
-                                  close=df["close"],
-                                  length=settings['period'],
-                                  multiplier=settings['multiplier'])
-        df[output_column_name["supertrend"]] = pd.NA
-        if result is not None:
-            df[output_column_name["supertrend"]] = result[f"SUPERT_{settings['period']}_{settings['multiplier']:.1f}"]
-        df[output_column_name["supertrend"]].fillna(df["close"].mean(), inplace=True)
-        df.loc[df[output_column_name["supertrend"]] < 1e-3, output_column_name["supertrend"]] = df["close"].mean()
-        return df, output_column_name, settings
-    
-
-
-class BBANDSIndicator(Indicator):
-        
-    def __init__(self,
-                 *args,
-                 period: int = 5,
-                 nbdevup: float = 2.0,
-                 nbdevdown: float = 2.0,
-                 **kwargs):
-        self.period = period
-        self.nbdevup = nbdevup
-        self.nbdevdown = nbdevdown
-        kwargs["setting_attrs"] = ["period", "nbdevup", "nbdevdown"]
-        super().__init__(*args, **kwargs)
+    def get_default_column_names_impl(self,
+                                 output_column_names: dict[str, str],
+                                 settings: dict) -> dict[str, str]:
+        output_column_names.update({"supertrend": f"supertrend_{settings['period']}_{settings['multiplier']:.1f}"})
+        x = ["BBandUpper", "BBandMiddle", "BBandLower"]
+        y = [f"{val}_{settings['period']}" for val in x]
+        output_column_names.update(dict(zip(x, y)))
+        return output_column_names
 
     def compute_impl(self, df: pd.DataFrame,
-                     output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                     settings: Optional[dict] = None) -> pd.DataFrame:
-        if output_column_name is None or len(output_column_name) == 0:
-            x = ["BBandUpper", "BBandMiddle", "BBandLower"]
-            y = [f"{val}_{settings['period']}" for val in x]
-            output_column_name = dict(zip(x, y))
-        
-        df[output_column_name["BBandUpper"]], df[output_column_name["BBandMiddle"]], df[output_column_name["BBandLower"]] = talib.BBANDS(df["close"],
-                                                                                                                                         timeperiod=settings['period'],
-                                                                                                                                         nbdevup=settings['nbdevup'],
-                                                                                                                                         nbdevdn=settings['nbdevdown'])
-        return df, output_column_name, settings
-        df[output_column_name["BBandUpper"]], df[output_column_name["BBandMiddle"]], df[output_column_name["BBandLower"]] = talib.BBANDS(df["close"],
-                                                                                                                                         timeperiod=settings['period'],
-                                                                                                                                         nbdevup=settings['nbdevup'],
-                                                                                                                                         nbdevdn=settings['nbdevdown'])
-        return df, output_column_name, settings
+                     output_column_name: dict[str, str],
+                     settings: dict = None) -> pd.DataFrame:
+        if settings is None:
+            settings = self.get_default_settings()
+        (df[output_column_name["BBandUpper"]],
+         df[output_column_name["BBandMiddle"]],
+         df[output_column_name["BBandLower"]]) = talib.BBANDS(df["close"],
+                                                              timeperiod=settings['period'],
+                                                              nbdevup=settings['nbdevup'],
+                                                              nbdevdn=settings['nbdevdown'])
+        return df
 
 
 class CDLPatternIndicator(Indicator):
@@ -705,73 +677,24 @@ class CDLPatternIndicator(Indicator):
                  **kwargs):
         super().__init__(*args, **kwargs)
 
-    def compute_impl(self, df: pd.DataFrame,
-                     output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                     settings: Optional[dict] = None) -> pd.DataFrame:
-        if output_column_name is None or len(output_column_name) == 0:
-            for item in dir(talib):
-                if item.startswith("CDL"):
-                    output_column_name[item] = item
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
 
-        for item in output_column_name.keys():
-            df[item] = getattr(talib, item)(df["open"], df["high"], df["low"], df["close"])
-        return df, output_column_name, settings
-        if output_column_name is None or len(output_column_name) == 0:
-            for item in dir(talib):
-                if item.startswith("CDL"):
-                    output_column_name[item] = item
-
-        for item in output_column_name.keys():
-            df[item] = getattr(talib, item)(df["open"], df["high"], df["low"], df["close"])
-        return df, output_column_name, settings
-
-
-class BreakoutIndicator(Indicator):
-        
-    def __init__(self,
-                 upper_breakout_column: str,
-                 lower_breakout_column: str,
-                 *args,
-                 upper_price_column: str = "high",
-                 lower_price_column: str = "low",
-    def __init__(self,
-                 upper_breakout_column: str,
-                 lower_breakout_column: str,
-                 *args,
-                 upper_price_column: str = "high",
-                 lower_price_column: str = "low",
-                 **kwargs):
-        self.upper_breakout_column = upper_breakout_column
-        self.lower_breakout_column = lower_breakout_column
-        self.upper_price_column = upper_price_column
-        self.lower_price_column = lower_price_column
-        kwargs['setting_attrs'] = ["upper_breakout_column", "lower_breakout_column",
-                                   "upper_price_column", "lower_price_column"]
-        self.upper_price_column = upper_price_column
-        self.lower_price_column = lower_price_column
-        kwargs['setting_attrs'] = ["upper_breakout_column", "lower_breakout_column",
-                                   "upper_price_column", "lower_price_column"]
-        super().__init__(*args, **kwargs)
+        output_column_names.update({"supertrend": f"supertrend_{settings['period']}_{settings['multiplier']:.1f}"})
+        for item in dir(talib):
+            if item.startswith("CDL"):
+                output_column_names[item] = item
+        return output_column_names
 
     def compute_impl(self, df: pd.DataFrame,
-                     output_column_name: Optional[Union[str, dict[str, str]]] = None,
-                     settings: Optional[dict] = None) -> pd.DataFrame:
-
-        if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"upperBreakout": f"{settings['upper_breakout_column']}_breakout",
-                                  "lowerBreakout": f"{settings['lower_breakout_column']}_breakout"}
-        df[output_column_name["upperBreakout"]] = 0.
-        df[output_column_name["lowerBreakout"]] = 0.
-        df.loc[((df[settings['upper_price_column']] > df[settings['upper_breakout_column']].shift()) &
-                (df[settings['upper_price_column']].shift() <= df[settings['upper_breakout_column']].shift(2)) &
-                (df["close"] >= df["open"])),
-                output_column_name["upperBreakout"]] = 1.0
-
-        df.loc[((df[settings['lower_price_column']] < df[settings['lower_breakout_column']].shift()) &
-                (df[settings['lower_price_column']].shift() >= df[settings['lower_breakout_column']].shift(2)) &
-                (df["close"] <= df["open"])),
-                output_column_name["lowerBreakout"]] = 1.0
-        return df, output_column_name, settings
+                     output_column_names: dict[str, str],
+                     settings: dict = None) -> pd.DataFrame:
+        if settings is None:
+            settings = self.get_default_settings()
+        for item in output_column_names.keys():
+            df[item] = getattr(talib, item)(df["open"], df["high"], df["low"], df["close"])
+        return df
 
 
 class MajorityRuleIndicator(Indicator):
@@ -783,17 +706,24 @@ class MajorityRuleIndicator(Indicator):
         kwargs["setting_attrs"] = ["period"]
         super().__init__(self, *args, **kwargs)
     
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+
+        output_column_names.update({"majority_rule": f"majority_rule_{settings['period']}"})
+        return output_column_names
+
     def compute_impl(self, df: pd.DataFrame,
-                     output_column_name: str | dict[str, str] | None = None,
-                     settings: dict | None = None) -> pd.DataFrame:
-        if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"majority_rule": f"majority_rule_{settings['period']}"}
+                     output_column_names: dict[str, str],
+                     settings: dict) -> pd.DataFrame:
+
         res = (df["close"] - df["open"] > 0).rolling(window=settings["period"]).sum()
         res = res / settings["period"]
         #res[np.isnan(res)] = 0.
         #res[np.isinf(res)] = 1.
-        df[output_column_name["majority_rule"]] = res
-        return df, output_column_name, settings
+        df[output_column_names["majority_rule"]] = res
+        return df
+
 
 class IchimokuIndicator(Indicator):
 
@@ -812,9 +742,20 @@ class IchimokuIndicator(Indicator):
                                    "senkou_span_b_period", "chikou_offset"]
         super().__init__(*args, **kwargs)
     
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+
+        output_column_names.update({"tenkan_sen": "tenkan_sen",
+                                    "kijun_sen": "kijun_sen",
+                                    "senkou_span_a": "senkou_span_a",
+                                    "senkou_span_b": "senkou_span_b",
+                                    "chikou_span": "chikou_span"})
+        return output_column_names
+
     def compute_impl(self, df: pd.DataFrame,
-                     output_column_name: str | dict[str, str] | None = None,
-                     settings: dict | None = None) -> pd.DataFrame:
+                     output_column_name: dict[str, str],
+                     settings: dict) -> pd.DataFrame:
         # Tenkan-sen (Conversion Line): (9-period high + 9-period low)/2))
         period9_high = df["high"].rolling(window=settings["tenkan_period"]).max()
         period9_low = df["low"].rolling(window=settings["tenkan_period"]).min()
@@ -841,12 +782,8 @@ class IchimokuIndicator(Indicator):
         df["senkou_span_a"] = senkou_span_a
         df["senkou_span_b"] = senkou_span_b
         df["chikou_span"] = chikou_span
-        output_column_name = {"tenkan_sen": "tenkan_sen",
-                              "kijun_sen": "kijun_sen",
-                              "senkou_span_a": "senkou_span_a",
-                              "senkou_span_b": "senkou_span_b",
-                              "chikou_span": "chikou_span"}
-        return df, output_column_name, settings
+
+        return df
 
 
 class PivotIndicator(Indicator):
@@ -861,21 +798,28 @@ class PivotIndicator(Indicator):
         kwargs["setting_attrs"] = ["left_period", "right_period"]
         super().__init__(*args, **kwargs)
 
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+        dct = {}
+        if settings["left_period"] != settings["right_period"]:
+            dct = {"pivot_high": f"pivot_high_{settings['left_period']}_{settings['right_period']}",
+                    "pivot_low": f"pivot_low_{settings['left_period']}_{settings['right_period']}"}
+        else:
+            dct = {"pivot_high": f"pivot_high_{settings['left_period']}",
+                    "pivot_low": f"pivot_low_{settings['left_period']}"}
+        output_column_names.update(dct)
+        return output_column_names
+
     def compute_impl(self, df: pd.DataFrame,
-                     output_column_name: str | dict[str, str] | None = None,
-                     settings: dict | None = None) -> pd.DataFrame:
-        
-        if output_column_name is None or len(output_column_name) == 0:
-            if settings["left_period"] != settings["right_period"]:
-                output_column_name = {"pivot_high": f"pivot_high_{settings['left_period']}_{settings['right_period']}",
-                                      "pivot_low": f"pivot_low_{settings['left_period']}_{settings['right_period']}",}
-            else:
-                output_column_name = {"pivot_high": f"pivot_high_{settings['left_period']}",
-                                      "pivot_low": f"pivot_low_{settings['left_period']}",}
-        df[output_column_name["pivot_high"]] = df["high"].shift(-settings["right_period"], fill_value=0).rolling(settings["left_period"]).max()
-        df[output_column_name["pivot_low"]] = df["low"].shift(-settings["right_period"], fill_value=0).rolling(settings["left_period"]).min()
+                     output_column_names: dict[str, str],
+                     settings: dict) -> pd.DataFrame:
+
+        df[output_column_names["pivot_high"]] = df["high"].shift(-settings["right_period"], fill_value=0).rolling(settings["left_period"]).max()
+        df[output_column_names["pivot_low"]] = df["low"].shift(-settings["right_period"], fill_value=0).rolling(settings["left_period"]).min()
         print(df)
-        return df, output_column_name, settings    
+        return df
+
 
 class GapUpDownIndicator(Indicator):
 
@@ -884,55 +828,59 @@ class GapUpDownIndicator(Indicator):
                  **kwargs):
         super().__init__(*args, **kwargs)
 
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+        output_column_names.update({"gapup": "gapup",
+                                    "gapdown": "gapdown"})
+        return output_column_names
+
     def compute_impl(self, df: pd.DataFrame,
-                     output_column_name: str | dict[str, str] | None = None,
-                     settings: dict | None = None) -> pd.DataFrame:
+                     output_column_names: dict[str, str],
+                     settings: dict) -> pd.DataFrame:
         
-        if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"gapup": "gapup",
-                                  "gapdown": "gapdown"}
         sh = df["high"].shift()
         sl = df["low"].shift()
-        df["gapup"] = 0.
-        df["gapdown"] = 0.
-        df.loc[(df.index.minute == 15) & (df.index.hour == 9) & (sh < df["low"]), "gapup"] = 1.0
-        df.loc[(df.index.minute == 15) & (df.index.hour == 9) & (sl > df["high"]), "gapdown"] = 1.0
-        return df, output_column_name, settings
+        df[output_column_names["gapup"]] = 0.
+        df[output_column_names["gapdown"]] = 0.
+        df.loc[(df.index.minute == 15) & (df.index.hour == 9) & (sh < df["low"]), output_column_names["gapup"]] = 1.0
+        df.loc[(df.index.minute == 15) & (df.index.hour == 9) & (sl > df["high"]), output_column_names["gapdown"]] = 1.0
+        return df
 
 
 class HeikinAshiIndicator(Indicator):
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args,
+                 replace_ohlc: bool = False,
+                 **kwargs):
+        self.replace_ohlc = replace_ohlc
+        kwargs["setting_attrs"] = ["replace_ohlc"]
         super().__init__(*args, **kwargs)
-    
-    def smooth(self, df, field):
-        prev_row = None
-        prev_prev_row = None
-        prev_row_id = None
-        for row_id, row in df.iterrows():
-            if prev_row is None:
-                prev_row = row
-                prev_row_id = row_id
-                continue
-            if prev_prev_row is None:
-                prev_prev_row = prev_row
-                continue
-            if prev_prev_row[field] == 1. and prev_row[field] == 0. and row[field] == 1.:
-                df.loc[prev_row_id, field] = 1.0
-            prev_prev_row = prev_row
-            prev_row = row
-            prev_row_id = row_id
 
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+        output_column_names.update({"ha_open": "ha_open",
+                                    "ha_close": "ha_close",
+                                    "ha_high": "ha_high",
+                                    "ha_low": "ha_low",
+                                    "ha_bullsish": "ha_bullish",
+                                    "ha_bearish": "ha_bearish",
+                                    "ha_doji": "ha_doji"})
+        return output_column_names
 
     def compute_impl(self, df: pd.DataFrame,
-                     output_column_name: str | dict[str, str] | None = None,
-                     settings: dict | None = None) -> pd.DataFrame:
+                     output_column_names: dict[str, str],
+                     settings: dict) -> pd.DataFrame:
 
-        x = ["high", "low", "open", "close"]
-        output_column_name = dict(zip(x, x))
 
         heikin_ashi_df = pd.DataFrame(index=df.index.values,
-                                      columns=['open', 'high', 'low', 'close', 'volume', 'oi'])
+                                      columns=['open',
+                                               'high',
+                                               'low',
+                                               'close',
+                                               'volume',
+                                               'oi'])
     
         heikin_ashi_df['close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
         #heikin_ashi_df['close'] = df["close"]
@@ -949,54 +897,23 @@ class HeikinAshiIndicator(Indicator):
         
         for col in ["open", "high", "low", "close"]:
             df[f"ha_{col}"] = heikin_ashi_df[col].astype(float)
-            df[col] = heikin_ashi_df[col].astype(float)
-        df["ha_trending_green"] = 0.
-        df.loc[(df["ha_close"] > df["ha_open"]) & (df["ha_open"] == df["ha_low"]), "ha_trending_green"] = 1.0
-        df["ha_trending_red"] = 0.
-        df.loc[(df["ha_close"] < df["ha_open"]) & (df["ha_open"] == df["ha_high"]), "ha_trending_red"] = 1.0
-        df["ha_non_trending"] = 0.
+            if settings['replace_ohlc']:
+                df[col] = heikin_ashi_df[col].astype(float)
+
+        df["ha_bullish"] = 0.
+        df.loc[(df["ha_close"] > df["ha_open"]) & (df["ha_open"] == df["ha_low"]), "ha_bullish"] = 1.0
+        df["ha_bearish"] = 0.
+        df.loc[(df["ha_close"] < df["ha_open"]) & (df["ha_open"] == df["ha_high"]), "ha_bearish"] = 1.0
+        df["ha_doji"] = 0.
         
         upper_wick = df["ha_high"] - df[["ha_open", "ha_close"]].max(axis=1)
         lower_wick = df[["ha_open", "ha_close"]].min(axis=1) - df["ha_low"]
-        body= (df["ha_close"] - df["ha_open"]).abs()
-        #df.loc[((upper_wick > body)
-        #        & (lower_wick > body)),
-        #        "ha_non_trending"] = 1.0
-        df.loc[((upper_wick > 0)
-                & (lower_wick > 0)), 
-                "ha_non_trending"] = 1.0
-        """
-        df.loc[(((2 * body) < upper_wick.max())
-                & ((2 * body) < lower_wick.max())),
-                "ha_non_trending"] = 1.0
-        """
-        return df, output_column_name, settings
+        body = (df["ha_close"] - df["ha_open"]).abs()
+        df.loc[(((upper_wick > body) | (lower_wick > body))
+                 & (upper_wick > 0) & (lower_wick > 0)),
+               "ha_doji"] = 1.0
 
-    def green_trending_candle(self, row):
-        if (row["ha_close"] > row["ha_open"]
-            and row["ha_low"] == row["ha_open"]):
-            #and ((row["low"] - row["open"]) < 0.1 * (row["close"] - row["open"]))):
-            return True
-        return False
-
-    def red_trending_candle(self, row):
-        if (row["ha_close"] < row["ha_open"]
-            and row["ha_high"] == row["ha_open"]):
-            #and ((row["high"] - row["open"]) < 0.1 * (row["open"] - row["close"]))):
-            return True
-        return False
-
-    def doji_candle(self, row):
-        upper_wick = (row["ha_high"] - max(row["ha_open"], row["ha_close"]))
-        lower_wick = (min(row["ha_open"], row["ha_close"]) - row["ha_low"])
-        if (upper_wick >  1 * abs(row["ha_open"] - row["ha_close"])
-            and (lower_wick >  1 * abs(row["ha_close"] - row["ha_open"]))):
-            return True
-        if 2 * abs(row["ha_close"] - row["ha_open"]) < max(lower_wick, upper_wick):
-            return True
-        if abs(upper_wick - lower_wick) / (min(upper_wick, lower_wick) + 1e-30) < 0.1:
-            return True
-        return False
+        return df
 
 
 class SupportIndicator(Indicator):
@@ -1006,68 +923,83 @@ class SupportIndicator(Indicator):
 
     def __init__(self,
                  direction: str,
+                 support_signal: str,
                  signal: str,
                  *args,
                  factor: float = 0.04/100,
-                 max_candle_size: float = 20.,
                  **kwargs):
         self.direction = direction
+        self.support_signal = support_signal
         self.signal = signal
         self.factor = factor
-        self.max_candle_size = max_candle_size
-        kwargs['setting_attrs'] = ["direction", "signal", "factor", "max_candle_size"]
+        kwargs['setting_attrs'] = ["direction",
+                                   "support_signal",
+                                   "signal",
+                                   "factor"]
         super().__init__(*args, **kwargs)
 
-    def compute_impl(self, df: pd.DataFrame, output_column_name: str | dict[str, str] | None = None,
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+        output_column_names.update({"support": f"support_{settings['direction']}_of_{settings['support_signal']}_by{settings['signal']}"})
+        return output_column_names
+
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_names: dict[str, str],
+                     settings: dict) -> pd.DataFrame:
+
+        df[output_column_names["support"]] = 0.
+
+        df['_support_zone_upper'] = df[settings['support_signal']] * (1 + settings['factor'])
+        df['_support_zone_lower'] = df[settings['support_signal']] * (1 - settings['factor'])
+        if settings['direction'] == SupportIndicator.SUPPORT_DIRECTION_UP:
+            df.loc[((df[settings['signal']].shift(2) > df['_support_zone_upper'])
+                    & (df[settings['signal']].shift() <= df['_support_zone_upper'])
+                    & (df[settings['signal']].shift() >= df['_support_zone_lower'])
+                    & (df[settings['signal']] > df['_support_zone_upper'])), output_column_names['support']] = 1.0
+        elif settings['direction'] == SupportIndicator.SUPPORT_DIRECTION_DOWN:
+            df.loc[((df[settings['signal']].shift(2) < df['_support_zone_lower'])
+                    & (df[settings['signal']].shift() <= df['_support_zone_upper'])
+                    & (df[settings['signal']].shift() >= df['_support_zone_lower'])
+                    & (df[settings['signal']] < df['_support_zone_lower'])), output_column_names['support']] = 1.0
+        else:
+            raise ValueError(f"Did not understand support direction {settings['direction']}")
+        return df
+
+
+class BreakoutDetector(Indicator):
+
+    BREAKOUT_DIRECTION_UP = "up"
+    BREAKOUT_DIRECTION_DOWN = "down"
+
+    def __init__(self,
+                 direction: str,
+                 threshold_signal: str,
+                 *args,
+                 signal: str = "close",
+                 **kwargs):
+        self.direction = direction
+        self.threshold_signal = threshold_signal
+        self.signal = signal
+        kwargs['setting_attrs'] = ["direction", "signal", "threshold_signal"]
+        super().__init__(*args, **kwargs)
+
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+
+        output_column_names.update({"breakout": f"breakout_{settings['direction']}_of_{settings['threshold_signal']}_by_{settings['signal']}"})
+        return output_column_names
+
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_names: dict[str, str],
                      settings: dict | None = None) -> pd.DataFrame:
 
-        if output_column_name is None or len(output_column_name) == 0:
-            output_column_name = {"support": f"{settings['signal']}_{settings['direction']}_support"}
-
-        df[output_column_name["support"]] = 0.
-
-        df['_support_zone_upper'] = df[settings['signal']] * (1 + settings['factor'])
-        df['_support_zone_lower'] = df[settings['signal']] * (1 - settings['factor'])
-
-        df["_started_search"] = 0.
-        awaiting_approach = False
-
-        for _, row in df.iterrows():
-            # print(row["low"], row["_support_zone_upper"])
-            if settings['direction'] == SupportIndicator.SUPPORT_DIRECTION_UP:
-                if (not awaiting_approach
-                    and row["low"] >= row["_support_zone_upper"]):
-                    df["_started_search"] = 1.
-                    awaiting_approach = True
-                    continue
-                elif awaiting_approach:
-                    if row["high"] <= row["_support_zone_lower"] or abs(row["close"] - row["open"]) > settings["max_candle_size"]:
-                        awaiting_approach = False
-                        continue
-                    elif ((row["_support_zone_upper"] >= row["close"] >= row["_support_zone_lower"]
-                           or row["_support_zone_upper"] >= row["open"] >= row["_support_zone_lower"])
-                           #or (row["_support_zone_upper"] < row["close"] and row["_support_zone_lower"] > row["open"]))
-                          and self.is_green_candle(row)):
-                         df.loc[row.name, output_column_name["support"]] = 1.0
-                         awaiting_approach = False
-            elif settings["direction"] == SupportIndicator.SUPPORT_DIRECTION_DOWN:
-                if (not awaiting_approach
-                    and row["high"] <= row["_support_zone_lower"]):
-                    awaiting_approach = True
-                    continue
-                if awaiting_approach:
-                    if row["low"] >= row["_support_zone_upper"] or abs(row["close"] - row["open"]) > settings["max_candle_size"]:
-                        awaiting_approach = False
-                        continue
-                    elif ((row["_support_zone_upper"] >= row["close"] >= row["_support_zone_lower"]
-                           or row["_support_zone_upper"] >= row["open"] >= row["_support_zone_lower"])
-                           #or (row["_support_zone_upper"] < row["open"] and row["_support_zone_lower"] > row["close"]))
-                          and self.is_red_candle(row)):
-                         df.loc[row.name, output_column_name["support"]] = 1.0
-                         awaiting_approach = False
-        return df, output_column_name, settings
-
-
-class SupportResistanceIndicator:
-    pass
-
+        if settings['direction'] == BreakoutDetector.BREAKOUT_DIRECTION_UP:
+            df[output_column_names["breakout"]] = df[settings['signal']].shift() >= df[settings['threshold_signal']]
+        elif settings['direction'] == BreakoutDetector.BREAKOUT_DIRECTION_DOWN:
+            df[output_column_names["breakout"]] = df[settings['signal']].shift() <= df[settings['threshold_signal']]
+        else:
+            raise ValueError(f"Direction {settings['direction']} not understood.")
+        
+        return df

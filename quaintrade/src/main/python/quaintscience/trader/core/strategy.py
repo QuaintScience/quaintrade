@@ -1,8 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional, Union
 import copy
-import os
-import pickle
+import datetime
 from functools import partial
 import os
 import pickle
@@ -41,8 +40,6 @@ class Strategy(ABC, LoggerMixin):
 
     def __init__(self,
                  indicator_pipeline: IndicatorPipeline,
-                 *args,
-                 default_interval: str = "3min",
                  *args,
                  default_interval: str = "3min",
                  non_trading_timeslots: list[dict[str, str]] = None,
@@ -143,6 +140,14 @@ class Strategy(ABC, LoggerMixin):
         broker.cancel_invalid_group_orders()
         broker.get_orders(refresh_cache=True)
         return quantity
+
+    def is_new_context_bar(self,
+                           candle: pd.Series,
+                           context_candle: pd.Series,
+                           context_name: str):
+
+        td = datetime.timedelta(seconds=pd.Timedelta(context_name).total_seconds())
+        return candle.name - context_candle.name == td
 
     def get_current_run(self, broker: Broker,
                         scrip: str,
@@ -315,12 +320,6 @@ class Strategy(ABC, LoggerMixin):
     def __can_trade_in_given_timeslot(self, window: pd.DataFrame):
         row = window.iloc[-1]
         for non_trading_timeslot in self.non_trading_timeslots:
-            if (row.name.hour > non_trading_timeslot["from"]["hour"]
-                or (row.name.hour == non_trading_timeslot["from"]["hour"] and
-                    row.name.minute >= non_trading_timeslot["from"]["minute"])):
-                if (row.name.hour < non_trading_timeslot["to"]["hour"]
-                    or (row.name.hour == non_trading_timeslot["to"]["hour"] and
-                    row.name.minute <= non_trading_timeslot["to"]["minute"])):
             if (row.name.hour > non_trading_timeslot["from"]["hour"]
                 or (row.name.hour == non_trading_timeslot["from"]["hour"] and
                     row.name.minute >= non_trading_timeslot["from"]["minute"])):

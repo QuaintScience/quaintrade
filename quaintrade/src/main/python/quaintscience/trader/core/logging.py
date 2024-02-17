@@ -409,10 +409,6 @@ class DefaultPythonLogger(Logger):
         logger = logging.LoggerAdapter(self._logger, self.context)
         if typ == "warn":
             typ = "warning"  # Python deprecation of warn
-<<<<<<< HEAD
         print(f"LOG [{self.__class__.__name__}] [{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]| {typ}: {msg}", flush=True)
-=======
-        print(f"LOG [{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]| {typ}: {msg}", flush=True)
->>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
         #getattr(logger, typ)(msg)
         return self
