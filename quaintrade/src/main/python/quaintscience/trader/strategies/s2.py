@@ -34,16 +34,16 @@ from ..core.util import (new_id,
                          get_pivot_value)
 
 
-class Strategy4(Strategy):
+class S2(Strategy):
 
     def __init__(self,
-                *args,
-                atr_period: int = 14,
-                dc_period: int = 50,
-                ma_period: int = 100,
-                rsi_period: int = 14,
-                product: TradingProduct = TradingProduct.MIS,
-                **kwargs):
+                 *args,
+                 atr_period: int = 14,
+                 dc_period: int = 15,
+                 ma_period: int = 100,
+                 rsi_period: int = 14,
+                 product: TradingProduct = TradingProduct.MIS,
+                 **kwargs):
         self.atr_period = atr_period
         self.atr_indicator = ATRIndicator(period=self.atr_period)
         self.atr_col = self.atr_indicator.get_default_column_names()["ATR"]
@@ -136,7 +136,7 @@ class Strategy4(Strategy):
         kwargs["squareoff_minute"] = 5
 
 
-        self.target_factor = 1.5
+        self.target_factor = 2
         self.slippage = 0.01
         # self.max_risk = 2.
         self.product = TradingProduct.MIS
@@ -175,7 +175,7 @@ class Strategy4(Strategy):
                 
                ):
                 next_trade = TradeType.LONG
-                entry_price = window.iloc[-1]["high"] + 1
+                entry_price = window.iloc[-1]["high"] #+ 0.05 * atr
                 sl_price = max(window.iloc[-2]["low"], window.iloc[-1]["high"] - atr)
                 target_price = entry_price + 3 * (entry_price - sl_price)
             #elif (current_run != TradeType.SHORT

@@ -360,9 +360,6 @@ class Strategy(ABC, LoggerMixin):
             all_tags.append(self.long_position_tag)
         elif trade_type == TradeType.SHORT:
             all_tags.append(self.short_position_tag)
-            all_tags.append(self.long_position_tag)
-        elif trade_type == TradeType.SHORT:
-            all_tags.append(self.short_position_tag)
         else:
             raise ValueError(f"Don't know how to handle {trade_type}")
         order = None

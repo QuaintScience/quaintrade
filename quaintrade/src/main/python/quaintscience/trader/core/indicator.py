@@ -229,8 +229,8 @@ class DonchianIndicator(Indicator):
     def get_default_column_names_impl(self,
                                       output_column_names: dict[str, str],
                                       settings: dict) -> dict[str, str]:
-        x = ["donchianUpper", "donchianMiddle", "donchianLower"]
-        y = [f"{val}_{settings['period']}" for val in x]
+        x = ["upper", "basis", "lower"]
+        y = [f"donchian_{val}_{settings['period']}" for val in x]
         output_column_names.update(dict(zip(x, y)))
         return output_column_names
 
@@ -238,9 +238,9 @@ class DonchianIndicator(Indicator):
                 output_column_names: dict[str, str],
                 settings: dict) -> pd.DataFrame:
             
-        df[output_column_names["donchianUpper"]] = df["high"].rolling(settings['period']).apply(lambda x: max(x))
-        df[output_column_names["donchianLower"]] = df["low"].rolling(settings['period']).apply(lambda x: min(x))
-        df[output_column_names["donchianMiddle"]] = (df[output_column_names["donchianUpper"]] + df[output_column_names["donchianLower"]]) / 2
+        df[output_column_names["upper"]] = df["high"].rolling(settings['period']).apply(lambda x: max(x))
+        df[output_column_names["lower"]] = df["low"].rolling(settings['period']).apply(lambda x: min(x))
+        df[output_column_names["basis"]] = (df[output_column_names["upper"]] + df[output_column_names["lower"]]) / 2
         return df
 
 
@@ -995,11 +995,217 @@ class BreakoutDetector(Indicator):
                      output_column_names: dict[str, str],
                      settings: dict | None = None) -> pd.DataFrame:
 
+        df[output_column_names["breakout"]] = 0.
         if settings['direction'] == BreakoutDetector.BREAKOUT_DIRECTION_UP:
-            df[output_column_names["breakout"]] = df[settings['signal']].shift() >= df[settings['threshold_signal']]
+            df.loc[df[settings['signal']].shift() >= df[settings['threshold_signal']], output_column_names["breakout"]] = 1.0
         elif settings['direction'] == BreakoutDetector.BREAKOUT_DIRECTION_DOWN:
-            df[output_column_names["breakout"]] = df[settings['signal']].shift() <= df[settings['threshold_signal']]
+            df.loc[df[settings['signal']].shift() <= df[settings['threshold_signal']], output_column_names["breakout"]] = -1.0
         else:
             raise ValueError(f"Direction {settings['direction']} not understood.")
         
         return df
+
+
+
+class PostBreakoutCrossDetector(Indicator):
+
+    def __init__(self,
+                 condition_signals: str,
+                 negation_signal: str,
+                 *args,
+                 **kwargs):
+        self.condition_signals = condition_signals
+        self.negation_signal = negation_signal
+        kwargs['setting_attrs'] = ["condition_signals", "negation_signal"]
+        super().__init__(*args, **kwargs)
+
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+
+        output_column_names.update({"signal": f"condition_hold_{'_'.join(settings['condition_signals'])}_{settings['negation_signal']}"})
+        return output_column_names
+
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_names: dict[str, str],
+                     settings: dict | None = None) -> pd.DataFrame:
+        
+        df["_sig"] = df[settings['condition_signals'][0]]
+        for ii in range(len(settings['condition_signals'])):
+            df["_sig"] = df["_sig"] + df[settings['condition_signals'][ii]]
+        df.loc[df["_sig"] == 0., "_sig"] = pd.NA
+        df["_sig"].ffill(inplace=True)
+        negation_up = (df["close"] > df[settings["negation_signal"]]) & (df["open"] < df[settings["negation_signal"]]) & (df["_sig"] < 0)
+        negation_down = (df["close"] < df[settings["negation_signal"]]) & (df["open"] > df[settings["negation_signal"]]) & (df["_sig"] > 0)
+        df[output_column_names["signal"]] = 0.
+        df.loc[negation_up, output_column_names["signal"]] = 1.0
+        df.loc[negation_down, output_column_names["signal"]] = -1.0
+        return df
+
+
+
+
+class CCIIndicator(Indicator):
+
+    def __init__(self,
+                 *args,
+                 period: int = 14,
+                 **kwargs):
+        self.period = period
+        kwargs['setting_attrs'] = ["period",]
+        super().__init__(*args, **kwargs)
+
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+
+        output_column_names.update({"cci": f"cci_{settings['period']}"})
+        return output_column_names
+
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_names: dict[str, str],
+                     settings: dict | None = None) -> pd.DataFrame:
+
+        df[output_column_names["cci"]] = talib.CCI(high=df["high"],
+                                                   low=df["low"],
+                                                   close=df["close"],
+                                                   timeperiod=settings['period'])
+
+        return df
+
+
+class StochRSIIndicator(Indicator):
+
+    def __init__(self,
+                 *args,
+                 signal: str = "close",
+                 period: int = 14,
+                 fastk_period: int = 5,
+                 fastd_period: int = 3,
+                 fastd_matype: int = 0,
+                 **kwargs):
+        self.signal = signal
+        self.period = period
+        self.fastk_period = fastk_period
+        self.fastd_period = fastd_period
+        self.fastd_matype = fastd_matype
+        kwargs['setting_attrs'] = ["period",
+                                   "signal",
+                                   "fastk_period",
+                                   "fastd_period",
+                                   "fastd_matype"]
+        super().__init__(*args, **kwargs)
+
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+
+        output_column_names.update({"fastk": f"stochrsi_fastk_{settings['signal']}_{settings['period']}",
+                                    "fastd": f"stochrsi_fastd_{settings['signal']}_{settings['period']}"})
+        return output_column_names
+
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_names: dict[str, str],
+                     settings: dict | None = None) -> pd.DataFrame:
+
+        df[output_column_names["fastk"]], df[output_column_names["fastd"]] = talib.STOCHRSI(df[settings['signal']],
+                                                                                            timeperiod=settings['period'],
+                                                                                            fastk_period=settings["fastk_period"],
+                                                                                            fastd_period=settings["fastd_period"],
+                                                                                            fastd_matype=settings["fastd_matype"])
+
+        return df
+
+
+class WilliamsFractals(Indicator):
+
+    def __init__(self, period: int = 2, *args, **kwargs):
+        self.period = period
+        kwargs["setting_attrs"] = ["period"]
+    
+    
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+
+        output_column_names.update({"up_fractal": "up_fractal",
+                                    "down_fractal": "down_fractal"})
+        return output_column_names
+
+    def compute_impl(self, df: pd.DataFrame, output_column_names: dict[str, str], settings: dict) -> pd.DataFrame:
+        period = settings["period"]
+        window = 2 * period + 1 # default 5
+
+        bears = df['high'].rolling(window, center=True).apply(lambda x: x[period] == max(x), raw=True)
+        bulls = df['low'].rolling(window, center=True).apply(lambda x: x[period] == min(x), raw=True)
+        df[output_column_names["up_fractal"]] = bulls
+        df[output_column_names["down_fractal"]] = bears
+
+        return df
+
+
+
+class CCDStochRSIScalpSignalGenerator(Indicator):
+
+    def __init__(self,
+                 *args,
+                 ema_signal1: str = "EMA_close_9",
+                 ema_signal2: str = "EMA_close_20",
+                 ema_signal3: str = "EMA_close_50",
+                 cci_signal: str = "cci_14",
+                 stochrsi_fastk: str = "stochrsi_fastk_close_14",
+                 stochrsi_fastd: str = "stochrsi_fastd_close_14",
+                 rsi_oversold_value: int = 30,
+                 rsi_overbought_value: int = 70,
+                 cci_trigger: int = 100,
+                 **kwargs):
+        self.ema_signal1 = ema_signal1
+        self.ema_signal2 = ema_signal2
+        self.ema_signal3 = ema_signal3
+        self.cci_signal = cci_signal
+        self.rsi_oversold_value = rsi_oversold_value
+        self.rsi_overbought_value = rsi_overbought_value
+        self.cci_trigger = cci_trigger
+        self.stochrsi_fastk = stochrsi_fastk
+        self.stochrsi_fastd = stochrsi_fastd
+        kwargs['setting_attrs'] = ["ema_signal1",
+                                   "ema_signal2",
+                                   "ema_signal3",
+                                   "cci_signal",
+                                   "stochrsi_fastk",
+                                   "stochrsi_fastd",
+                                   "rsi_oversold_value",
+                                   "rsi_overbought_value",
+                                   "cci_trigger"]
+        super().__init__(*args, **kwargs)
+
+    def get_default_column_names_impl(self,
+                                      output_column_names: dict[str, str],
+                                      settings: dict) -> dict[str, str]:
+
+        output_column_names.update({"scalpsignal": f"ccdstochrsi_scalp_signal_"
+                                                   f"{settings['ema_signal1']}"
+                                                   f"_{settings['ema_signal2']}"
+                                                   f"_{settings['ema_signal3']}"
+                                                   f"_{settings['cci_signal']}"
+                                                   f"_{settings['stochrsi_fastk']}"})
+        return output_column_names
+
+    def compute_impl(self, df: pd.DataFrame,
+                     output_column_names: dict[str, str],
+                     settings: dict | None = None) -> pd.DataFrame:
+
+        df[output_column_names["scalpsignal"]] = 0
+        long_condition = df[settings['ema_signal3']] < df['low']
+        long_condition = long_condition & (df[settings['stochrsi_fastk']] <= settings['rsi_oversold_value'])
+        #long_condition = long_condition & (df[settings['stochrsi_fastk']] >= df[settings['stochrsi_fastd']])
+        long_condition = long_condition & (df[settings['cci_signal']] <= -settings['cci_trigger'])
+        df.loc[long_condition, output_column_names['scalpsignal']] = 1.0
+        short_condition = df[settings['ema_signal3']] > df['high']
+        short_condition = short_condition & (df[settings['stochrsi_fastk']] >= settings['rsi_overbought_value'])
+        #short_condition = short_condition & (df[settings['stochrsi_fastk']] <= df[settings['stochrsi_fastd']])
+        short_condition = short_condition & (df[settings['cci_signal']] >= settings['cci_trigger'])
+        df.loc[short_condition, output_column_names['scalpsignal']] = -1.0
+        return df
+
+

@@ -6,7 +6,6 @@ import pandas as pd
 
 from ..core.graphing import live_ohlc_plot
 from ..core.ds import OHLCStorageType
-<<<<<<< HEAD
 from .common import BotService
 
 
@@ -17,18 +16,6 @@ class OHLCRealtimeGrapher(BotService):
     def __init__(self,
                  *args,
                  interval: str = "2min",
-=======
-from .common import DataProviderService
-
-
-class OHLCRealtimeGrapher(DataProviderService):
-
-    default_config_file = ".historic.trader.env"
-
-    def __init__(self,
-                 *args,
-                 interval: str = "1min",
->>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
                  context_days: int = 1,
                  **kwargs):
         self.to_date = datetime.datetime.now()

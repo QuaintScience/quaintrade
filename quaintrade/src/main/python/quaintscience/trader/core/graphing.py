@@ -60,10 +60,10 @@ def live_ohlc_plot(get_live_ohlc_func: callable,
 
 def plot_backtesting_results(df: pd.DataFrame,
                              context: dict[str, pd.DataFrame],
-                             events: pd.DataFrame,
                              interval: str,
                              indicator_fields: list[Union[dict, str]],
                              title: str = "Backtesting Results",
+                             events: Optional[pd.DataFrame] = None,
                              make_mpf_style_kwargs: Optional[dict] = None,
                              plot_contexts: Optional[list[str]] = None,
                              mpf_custom_kwargs: Optional[dict] = None,
@@ -83,21 +83,22 @@ def plot_backtesting_results(df: pd.DataFrame,
 
     buy_events_exist, sell_events_exist = False, False
     df = copy.deepcopy(df)
-    print(events[:])
     if events is not None:
-        sell_events_df = copy.deepcopy(events[events["transaction_type"] == TransactionType.SELL])
-        sell_events_df["sell_signals"] = sell_events_df["price"]
-        sell_events_df = sell_events_df[["sell_signals"]]
-        if len(sell_events_df) > 0:
-            sell_events_exist = True
-            df = df.merge(sell_events_df, how='left', left_index=True, right_index=True)
+        print(events[:])
+        if events is not None:
+            sell_events_df = copy.deepcopy(events[events["transaction_type"] == TransactionType.SELL])
+            sell_events_df["sell_signals"] = sell_events_df["price"]
+            sell_events_df = sell_events_df[["sell_signals"]]
+            if len(sell_events_df) > 0:
+                sell_events_exist = True
+                df = df.merge(sell_events_df, how='left', left_index=True, right_index=True)
 
-        buy_events_df = copy.deepcopy(events[events["transaction_type"] == TransactionType.BUY])
-        buy_events_df["buy_signals"] = buy_events_df["price"]
-        buy_events_df = buy_events_df[["buy_signals"]]
-        if len(buy_events_df) > 0:
-            buy_events_exist = True
-            df = df.merge(buy_events_df, on="date", how='left')
+            buy_events_df = copy.deepcopy(events[events["transaction_type"] == TransactionType.BUY])
+            buy_events_df["buy_signals"] = buy_events_df["price"]
+            buy_events_df = buy_events_df[["buy_signals"]]
+            if len(buy_events_df) > 0:
+                buy_events_exist = True
+                df = df.merge(buy_events_df, on="date", how='left')
 
     event_plots = []
     

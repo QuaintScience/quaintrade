@@ -208,7 +208,8 @@ class BotService(DataProviderService, BrokerService):
                      "data_provider": self.data_provider,
                      "live_data_context_size": bot_live_data_context_size,
                      "online_mode": bot_online_mode,
-                     "backtesting_print_tables": bot_backtesting_print_tables}
+                     "backtesting_print_tables": bot_backtesting_print_tables,
+                     }
         if bot_custom_kwargs is None:
             bot_custom_kwargs = {}
         bot_kwargs.update(bot_custom_kwargs)

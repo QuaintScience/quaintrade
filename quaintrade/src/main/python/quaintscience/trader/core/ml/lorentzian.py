@@ -424,6 +424,9 @@ class LorentzianClassificationIndicator(Indicator):
         historicalAtr = ta.ATR(high.values, low.values, close.values, maxLength)
         return (recentAtr > historicalAtr)
 
+    def get_default_column_names_impl(self, output_column_names: dict[str, str], settings: dict) -> dict[str, str]:
+        return {}
+
     def get_feature(self, df: pd.DataFrame, f: str):
         match f[0]:
             case "RSI":
@@ -450,7 +453,7 @@ class LorentzianClassificationIndicator(Indicator):
 
 
     def compute_impl(self, df: pd.DataFrame,
-                     output_column_name: str | dict[str, str] | None = None,
+                     output_column_names: str | dict[str, str] | None = None,
                      settings: dict | None = None) -> pd.DataFrame:
 
         features = []
@@ -749,8 +752,8 @@ class LorentzianClassificationIndicator(Indicator):
         df["isBullish"] = isBullishSmooth
         df["yhat1"] = yhat1
         df["yhat2"] = yhat2
-        self.plot(df, yhat1, yhat2, "test")
-        return df, output_column_name, settings
+        #self.plot(df, yhat1, yhat2, "test")
+        return df, output_column_names, settings
 
     # =============================
     # ==== Dump or Return Data ====

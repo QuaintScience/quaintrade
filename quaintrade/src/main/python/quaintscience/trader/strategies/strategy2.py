@@ -14,7 +14,7 @@ from ..core.ds import (Order,
 from ..core.strategy import Strategy
 from ..core.indicator import (IndicatorPipeline,
                               HeikinAshiIndicator,
-                              WMAIndicator,
+                              MAIndicator,
                               PivotIndicator,
                               ATRIndicator,
                               ADXIndicator,
@@ -422,15 +422,15 @@ class Strategy2(Strategy):
         self.monotonically_increasing_context = monotonically_increasing_context
         self.monotonically_decreasing_context = monotonically_decreasing_context
         self.atr_col = f"ATR_{self.atr_period}"
-        self.short_wma_col = f"WMA_{self.short_wma_period}"
-        self.medium_wma_col = f"WMA_{self.medium_wma_period}"
+        self.short_wma_col = f"WMA_close_{self.short_wma_period}"
+        self.medium_wma_col = f"WMA_close_{self.medium_wma_period}"
         self.dc_period = dc_period
         self.short_dc_period = short_dc_period
         self.pivot_period = pivot_period
-        self.dc_upper_col = f"donchianUpper_{self.dc_period}"
-        self.dc_lower_col = f"donchianLower_{self.dc_period}"
-        self.dc_sl_upper_col = f"donchianUpper_{self.short_dc_period}"
-        self.dc_sl_lower_col = f"donchianLower_{self.short_dc_period}"
+        self.dc_upper_col = f"donchian_upper_{self.dc_period}"
+        self.dc_lower_col = f"donchian_lower_{self.dc_period}"
+        self.dc_sl_upper_col = f"donchian_upper_{self.short_dc_period}"
+        self.dc_sl_lower_col = f"donchian_lower_{self.short_dc_period}"
         self.rsi_col = f"RSI_{self.rsi_period}"
         self.pivot_high_col = f"pivot_high_{self.pivot_period}"
         self.pivot_low_col = f"pivot_low_{self.pivot_period}"
@@ -438,7 +438,7 @@ class Strategy2(Strategy):
         self.adx_col = f"ADX_{self.adx_period}"
         indicators =IndicatorPipeline([(ATRIndicator(period=self.atr_period), None, None),
                                        (DonchianIndicator(period=self.dc_period), None, None),
-                                       (WMAIndicator(period=self.medium_wma_period), None, None),
+                                       (MAIndicator(ma_type="WMA", period=self.medium_wma_period), None, None),
                                        (RSIIndicator(period=self.rsi_period), None, None),
                                        (PivotIndicator(left_period=self.pivot_period,
                                                        right_period=self.pivot_period), None, None),
@@ -455,7 +455,7 @@ class Strategy2(Strategy):
                                                                           regime_threshold=1), None, None)])
         indicators_long_context = IndicatorPipeline([(HeikinAshiIndicator(), None, None),
                                                      (ATRIndicator(period=self.atr_period), None, None),
-                                                     (WMAIndicator(period=self.short_wma_period), None, None),
+                                                     (MAIndicator(ma_type="WMA", period=self.short_wma_period), None, None),
                                                      (RSIIndicator(period=self.rsi_period), None, None),
                                                      (ADXIndicator(period=self.adx_period), None, None),
                                                      (DonchianIndicator(period=self.dc_period), None, None),

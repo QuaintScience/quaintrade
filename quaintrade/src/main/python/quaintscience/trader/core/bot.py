@@ -38,6 +38,7 @@ class Bot(LoggerMixin):
                  backtesting_print_tables: bool = True,
                  backtest_results_folder: str = "backtest-results",
                  backtest_type: str = "standard",
+                 backtest_display_data_only: bool = False,
                  **kwargs):
         super().__init__(*args, **kwargs)
         self.broker = broker
@@ -54,6 +55,7 @@ class Bot(LoggerMixin):
         self.backtest_results_folder = backtest_results_folder
         self.backtest_type = backtest_type
         self.one_time_download_done = False
+        self.backtest_display_data_only = backtest_display_data_only
         self.live_data_cache = {}
 
     def do(self,
@@ -259,188 +261,200 @@ class Bot(LoggerMixin):
             print(context)
             ts = None
             first_timeset_done = False
-            
-            if isinstance(from_date, str):
-                from_date = datestring_to_datetime(from_date)
-            start_ii = data.index.get_indexer([from_date], method="nearest")[0]
-            
-            for ii in range(start_ii, len(data) - window_size + 1, 1):
-                window = data.iloc[ii: ii + window_size]
-                if ts is None or ts.day != window.iloc[-1].name.day:
-                    self.logger.info(f"Trading on {window.iloc[-1].name.day}")
-                ts = window.iloc[-1].name
-                now_tick = window.iloc[-1].name.to_pydatetime()
-                prev_tick = window.iloc[-2].name.to_pydatetime()
-                if not first_timeset_done:
-                    self.broker.set_current_time(prev_tick, traverse=False)
-                    first_timeset_done = True
-                try:
-                    this_context = self.pick_relevant_context(context, now_tick)
-                    self.logger.info(f"Time now is {now_tick}; "
-                                     f"last-data point is at {prev_tick}")
-                    context_empty = False
-                    for k, v in this_context.items():
-                        if len(v) == 0:
-                            context_empty = True
-                            break
-                        print(f"{now_tick} {k} last tick: {v.iloc[-1].name}")
-                    if context_empty:
-                        continue
-                    self.do(window=window[:-1], context=this_context, scrip=scrip, exchange=exchange)                    
-                    if self.backtesting_print_tables:
-                        self.logger.info(f"--------------Tables After Strategy Computation Start {now_tick}-------------")
-                        self.broker.get_orders_as_table()
-                        self.broker.get_positions_as_table()
-                        self.logger.info(f"--------------Tables After Strategy Computation End {now_tick}-------------")
 
-                    self.logger.info(f"--------------Start Broker Activity for {now_tick} -------------")
-                   
-                    self.broker.set_current_time(now_tick, traverse=True)
-                    self.logger.info(f"--------------End Broker Activity for {now_tick} -------------")
+            if not self.backtest_display_data_only:
 
-                except PaperTraderTimeExceededException:
-                    self.logger.warn(f"Could not set time in paper broker to {now_tick}")
+                if isinstance(from_date, str):
+                    from_date = datestring_to_datetime(from_date)
+                start_ii = data.index.get_indexer([from_date], method="nearest")[0]
 
+                for ii in range(start_ii, len(data) - window_size + 1, 1):
+                    window = data.iloc[ii: ii + window_size]
+                    if ts is None or ts.day != window.iloc[-1].name.day:
+                        self.logger.info(f"Trading on {window.iloc[-1].name.day}")
+                    ts = window.iloc[-1].name
+                    now_tick = window.iloc[-1].name.to_pydatetime()
+                    prev_tick = window.iloc[-2].name.to_pydatetime()
+                    if not first_timeset_done:
+                        self.broker.set_current_time(prev_tick, traverse=False)
+                        first_timeset_done = True
+                    try:
+                        this_context = self.pick_relevant_context(context, now_tick)
+                        self.logger.info(f"Time now is {now_tick}; "
+                                        f"last-data point is at {prev_tick}")
+                        context_empty = False
+                        for k, v in this_context.items():
+                            if len(v) == 0:
+                                context_empty = True
+                                break
+                            print(f"{now_tick} {k} last tick: {v.iloc[-1].name}")
+                        if context_empty:
+                            continue
+                        self.do(window=window[:-1], context=this_context, scrip=scrip, exchange=exchange)                    
+                        if self.backtesting_print_tables:
+                            self.logger.info(f"--------------Tables After Strategy Computation Start {now_tick}-------------")
+                            self.broker.get_orders_as_table()
+                            self.broker.get_positions_as_table()
+                            self.logger.info(f"--------------Tables After Strategy Computation End {now_tick}-------------")
+
+                        self.logger.info(f"--------------Start Broker Activity for {now_tick} -------------")
+                    
+                        self.broker.set_current_time(now_tick, traverse=True)
+                        self.logger.info(f"--------------End Broker Activity for {now_tick} -------------")
+
+                    except PaperTraderTimeExceededException:
+                        self.logger.warn(f"Could not set time in paper broker to {now_tick}")
         elif self.backtest_type == "live_simulation":
             self.logger.info(f"Live simulation backtest")
-            timeslots = self.get_trading_timeslots(interval,
-                                                   d=to_date - datetime.timedelta(days=1))
+            if not self.backtest_display_data_only:
+                timeslots = self.get_trading_timeslots(interval,
+                                                    d=to_date - datetime.timedelta(days=1))
 
-            self.broker.set_current_time(timeslots[0][1], traverse=False)
-            for timeslot, exec_time  in timeslots:
-                print(f"============== Start {timeslot} ================")
-                from_date = to_date - datetime.timedelta(days=self.live_data_context_size)
-                from_date = from_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                context, data = self.__get_context_data(scrip=data_provider_instrument["scrip"],
-                                                        exchange=data_provider_instrument["exchange"],
-                                                        from_date=from_date,
-                                                        to_date=timeslot,
-                                                        interval=interval,
-                                                        blend_live_data=True,
-                                                        prefer_live_data=True)
-                print(f"timeslot {timeslot} data")
-                print(data)
-                this_context = self.pick_relevant_context(context, timeslot)
-                try:
-                    self.broker.set_current_time(exec_time, traverse=True)
-                except PaperTraderTimeExceededException:
-                    self.logger.warn(f"Could not set time in paper broker to {exec_time}")
-                    continue
-                self.do(window=data,
-                        context=this_context,
-                        scrip=scrip,
-                        exchange=exchange)
-                if self.backtesting_print_tables:
-                    self.logger.info("--------------Tables After Strategy Computation Start-------------")
-                    self.broker.get_orders_as_table()
-                    self.broker.get_positions_as_table()
-                    self.logger.info("--------------Tables After Strategy Computation End-------------")
-                print(f"============== End {timeslot} ================")
+                self.broker.set_current_time(timeslots[0][1], traverse=False)
+                for timeslot, exec_time  in timeslots:
+                    print(f"============== Start {timeslot} ================")
+                    from_date = to_date - datetime.timedelta(days=self.live_data_context_size)
+                    from_date = from_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                    context, data = self.__get_context_data(scrip=data_provider_instrument["scrip"],
+                                                            exchange=data_provider_instrument["exchange"],
+                                                            from_date=from_date,
+                                                            to_date=timeslot,
+                                                            interval=interval,
+                                                            blend_live_data=True,
+                                                            prefer_live_data=True)
+                    print(f"timeslot {timeslot} data")
+                    print(data)
+                    this_context = self.pick_relevant_context(context, timeslot)
+                    try:
+                        self.broker.set_current_time(exec_time, traverse=True)
+                    except PaperTraderTimeExceededException:
+                        self.logger.warn(f"Could not set time in paper broker to {exec_time}")
+                        continue
+                    self.do(window=data,
+                            context=this_context,
+                            scrip=scrip,
+                            exchange=exchange)
+                    if self.backtesting_print_tables:
+                        self.logger.info("--------------Tables After Strategy Computation Start-------------")
+                        self.broker.get_orders_as_table()
+                        self.broker.get_positions_as_table()
+                        self.logger.info("--------------Tables After Strategy Computation End-------------")
+                    print(f"============== End {timeslot} ================")
 
-        self.broker.get_tradebook_storage().commit()
+        if not self.backtest_display_data_only:
+            self.broker.get_tradebook_storage().commit()
 
-        self.logger.info("===================== Stats ========================")
-        pnl_data = []
-        for k, v in self.broker.trade_pnl.items():
-            pnl_data.append([k,
-                             self.broker.trade_timestamps[k][0],
-                             self.broker.trade_timestamps[k][1],
-                             self.broker.trade_transaction_types[k],
-                             v])
-        cnts = [1 for v in self.broker.trade_pnl.values() if v > 0]
-        if len(cnts) > 0:
-            cnts = sum(cnts)
-        else:
-            cnts = 0
-        accuracy = 0.
-        if len(self.broker.trade_pnl) > 0:
-            accuracy = cnts / len(self.broker.trade_pnl)
-        max_drawdown = 0.
-        curr_drawdown = 0.
-        running_sum = 0.
-        lowest_point = 0.
-        max_profit_streak = 0
-        max_loss_streak = 0
-        loss_streak = 0
-        profit_streak = 0
-        for k, v in self.broker.trade_pnl.items():
-            running_sum += v
-            lowest_point = min(running_sum, lowest_point)
-            if v > 0:
-                if curr_drawdown < 0:
-                    max_drawdown = min(max_drawdown, curr_drawdown)
-                    max_loss_streak = max(loss_streak, max_loss_streak)
-                    curr_drawdown = 0.
-                    loss_streak = 0
-                profit_streak += 1
+            self.logger.info("===================== Stats ========================")
+            pnl_data = []
+            for k, v in self.broker.trade_pnl.items():
+                pnl_data.append([k,
+                                self.broker.trade_timestamps[k][0],
+                                self.broker.trade_timestamps[k][1],
+                                self.broker.trade_transaction_types[k],
+                                v])
+            cnts = [1 for v in self.broker.trade_pnl.values() if v > 0]
+            if len(cnts) > 0:
+                cnts = sum(cnts)
             else:
-                curr_drawdown += v
-                loss_streak += 1
-                max_profit_streak = max(profit_streak, max_profit_streak)
-                profit_streak = 0
-        if curr_drawdown < 0:
-            max_drawdown = min(max_drawdown, curr_drawdown)
-        max_profit_streak = max(profit_streak, max_profit_streak)
-        max_loss_streak = max(loss_streak, max_loss_streak)
-        os.makedirs(self.backtest_results_folder, exist_ok=True)
-        fname = f"backtest-{scrip}:{exchange}-{self.strategy.__class__.__name__}-{interval}-{from_date.strftime('%Y%m%d')}-{to_date.strftime('%Y%m%d')}.txt"
-        with open(os.path.join(self.backtest_results_folder, fname), 'w') as fid:
-            print(tabulate(pnl_data, headers=["order_id", "entry_time", "exit_time", "pnl"]), file=fid)
-            print(f"Found {len(self.broker.trade_pnl)} trades.", file=fid)
-            print(f"Accuracy: {accuracy}", file=fid)
-            print(f"Max Drawdown: {max_drawdown}", file=fid)
-            print(f"Lowest point: {lowest_point}", file=fid)
-            print(f"Longest Loss Streak: {max_loss_streak}", file=fid)
-            print(f"Longest Profit Streak: {max_profit_streak}", file=fid)
-            print(f"Final Pnl: {running_sum}", file=fid)
-            print(f"Largest loss: {min(self.broker.trade_pnl.values()) if len(self.broker.trade_pnl) > 0 else 0}", file=fid)
-        print(tabulate(pnl_data, headers=["order_id", "entry_time", "exit_time", "pnl"]))
-        self.logger.info(f"Found {len(self.broker.trade_pnl)} trades.")
-        self.logger.info(f"Accuracy: {accuracy}")
-        self.logger.info(f"Max Drawdown: {max_drawdown}")
-        self.logger.info(f"Lowest point: {lowest_point}")
-        self.logger.info(f"Longest Loss Streak: {max_loss_streak}")
-        self.logger.info(f"Longest Profit Streak: {max_profit_streak}")
-        self.logger.info(f"Final Pnl: {running_sum}")
-        self.logger.info(f"Largest loss: {min(self.broker.trade_pnl.values()) if len(self.broker.trade_pnl) > 0 else 0}")
+                cnts = 0
+            accuracy = 0.
+            if len(self.broker.trade_pnl) > 0:
+                accuracy = cnts / len(self.broker.trade_pnl)
+            max_drawdown = 0.
+            curr_drawdown = 0.
+            running_sum = 0.
+            lowest_point = 0.
+            max_profit_streak = 0
+            max_loss_streak = 0
+            loss_streak = 0
+            profit_streak = 0
+            for k, v in self.broker.trade_pnl.items():
+                running_sum += v
+                lowest_point = min(running_sum, lowest_point)
+                if v > 0:
+                    if curr_drawdown < 0:
+                        max_drawdown = min(max_drawdown, curr_drawdown)
+                        max_loss_streak = max(loss_streak, max_loss_streak)
+                        curr_drawdown = 0.
+                        loss_streak = 0
+                    profit_streak += 1
+                else:
+                    curr_drawdown += v
+                    loss_streak += 1
+                    max_profit_streak = max(profit_streak, max_profit_streak)
+                    profit_streak = 0
+            if curr_drawdown < 0:
+                max_drawdown = min(max_drawdown, curr_drawdown)
+            max_profit_streak = max(profit_streak, max_profit_streak)
+            max_loss_streak = max(loss_streak, max_loss_streak)
+            os.makedirs(self.backtest_results_folder, exist_ok=True)
+            fname = f"backtest-{scrip}:{exchange}-{self.strategy.__class__.__name__}-{interval}-{from_date.strftime('%Y%m%d')}-{to_date.strftime('%Y%m%d')}.txt"
+            with open(os.path.join(self.backtest_results_folder, fname), 'w') as fid:
+                print(tabulate(pnl_data, headers=["order_id", "entry_time", "exit_time", "pnl"]), file=fid)
+                print(f"Found {len(self.broker.trade_pnl)} trades.", file=fid)
+                print(f"Accuracy: {accuracy}", file=fid)
+                print(f"Max Drawdown: {max_drawdown}", file=fid)
+                print(f"Lowest point: {lowest_point}", file=fid)
+                print(f"Longest Loss Streak: {max_loss_streak}", file=fid)
+                print(f"Longest Profit Streak: {max_profit_streak}", file=fid)
+                print(f"Final Pnl: {running_sum}", file=fid)
+                print(f"Largest loss: {min(self.broker.trade_pnl.values()) if len(self.broker.trade_pnl) > 0 else 0}", file=fid)
+            print(tabulate(pnl_data, headers=["order_id", "entry_time", "exit_time", "pnl"]))
+            self.logger.info(f"Found {len(self.broker.trade_pnl)} trades.")
+            self.logger.info(f"Accuracy: {accuracy}")
+            self.logger.info(f"Max Drawdown: {max_drawdown}")
+            self.logger.info(f"Lowest point: {lowest_point}")
+            self.logger.info(f"Longest Loss Streak: {max_loss_streak}")
+            self.logger.info(f"Longest Profit Streak: {max_profit_streak}")
+            self.logger.info(f"Final Pnl: {running_sum}")
+            self.logger.info(f"Largest loss: {min(self.broker.trade_pnl.values()) if len(self.broker.trade_pnl) > 0 else 0}")
 
-        if plot_results:
-            storage = self.broker.get_tradebook_storage()
-            positions = storage.get_positions_for_run(self.broker.strategy,
-                                                      self.broker.run_name,
-                                                      run_id=self.broker.run_id,
-                                                      from_date=from_date,
-                                                      to_date=to_date)
-            if positions is not None:
-                positions = positions[(positions["scrip"] == scrip) & (positions["exchange"] == exchange)]
-                data = data.merge(positions, on="date", how='left')
+        if plot_results or self.backtest_display_data_only:
+            if not self.backtest_display_data_only:
+                storage = self.broker.get_tradebook_storage()
+                positions = storage.get_positions_for_run(self.broker.strategy,
+                                                        self.broker.run_name,
+                                                        run_id=self.broker.run_id,
+                                                        from_date=from_date,
+                                                        to_date=to_date)
+                if positions is not None:
+                    positions = positions[(positions["scrip"] == scrip) & (positions["exchange"] == exchange)]
+                    data = data.merge(positions, on="date", how='left')
 
-                data["pnl"].fillna(0., inplace=True)
-                #import ipdb
-                #ipdb.set_trace()
-                daily_pnl = data["pnl"].resample('1d').apply('last').resample(interval,
-                                                                              origin=datetime.datetime.fromisoformat('1970-01-01 09:15:00')).ffill().fillna(0.)
-                data = data.merge(daily_pnl, how='left', left_index=True, right_index=True)
-                data["daily_pnl"] = data["pnl_y"]
-                data["pnl"] = data["pnl_x"]
-                data.drop(["pnl_x", "pnl_y"], axis=1, inplace=True)
+                    data["pnl"].fillna(0., inplace=True)
+                    #import ipdb
+                    #ipdb.set_trace()
+                    daily_pnl = data["pnl"].resample('1d').apply('last').resample(interval,
+                                                                                origin=datetime.datetime.fromisoformat('1970-01-01 09:15:00')).ffill().fillna(0.)
+                    data = data.merge(daily_pnl, how='left', left_index=True, right_index=True)
+                    data["daily_pnl"] = data["pnl_y"]
+                    data["pnl"] = data["pnl_x"]
+                    data.drop(["pnl_x", "pnl_y"], axis=1, inplace=True)
 
-                monthly_pnl = data["pnl"].resample('1M').apply('last').resample(interval).ffill().fillna(0.)
-                data = data.merge(monthly_pnl, how='left', left_index=True, right_index=True)
-                data["monthly_pnl"] = data["pnl_y"].fillna(0.)
-                data["pnl"] = data["pnl_x"]
-                data.drop(["pnl_x", "pnl_y"], axis=1, inplace=True)
-                print(data)
-                self.strategy.plottables["indicator_fields"].append({"field": "pnl", "panel": 1})
-                self.strategy.plottables["indicator_fields"].append({"field": "daily_pnl", "panel": 1})
-                self.strategy.plottables["indicator_fields"].append({"field": "monthly_pnl", "panel": 1})
-            events = storage.get_events(self.broker.strategy, self.broker.run_name, run_id=self.broker.run_id)
-            if events is not None:
-                events = events[(events["scrip"] == scrip) & (events["exchange"] == exchange)]
-            plot_backtesting_results(data, context=context, interval=interval, events=events,
-                                     indicator_fields=self.strategy.plottables["indicator_fields"],
-                                     plot_contexts=self.strategy.plot_context_candles,
-                                     mpf_custom_kwargs=self.strategy.custom_plot_kwargs)
+                    monthly_pnl = data["pnl"].resample('1M').apply('last').resample(interval).ffill().fillna(0.)
+                    data = data.merge(monthly_pnl, how='left', left_index=True, right_index=True)
+                    data["monthly_pnl"] = data["pnl_y"].fillna(0.)
+                    data["pnl"] = data["pnl_x"]
+                    data.drop(["pnl_x", "pnl_y"], axis=1, inplace=True)
+                    print(data)
+                    self.strategy.plottables["indicator_fields"].append({"field": "pnl", "panel": 1})
+                    self.strategy.plottables["indicator_fields"].append({"field": "daily_pnl", "panel": 1})
+                    self.strategy.plottables["indicator_fields"].append({"field": "monthly_pnl", "panel": 1})
+                events = storage.get_events(self.broker.strategy, self.broker.run_name, run_id=self.broker.run_id)
+                if events is not None:
+                    events = events[(events["scrip"] == scrip) & (events["exchange"] == exchange)]
+                plot_backtesting_results(data, context=context, interval=interval, events=events,
+                                        indicator_fields=self.strategy.plottables["indicator_fields"],
+                                        plot_contexts=self.strategy.plot_context_candles,
+                                        mpf_custom_kwargs=self.strategy.custom_plot_kwargs)
+            else:
+                for entry in self.strategy.plottables["indicator_fields"]:
+                    if entry["panel"] > 0:
+                        entry["panel"] -= 1
+                plot_backtesting_results(data, context=context, interval=interval, events=None,
+                                        indicator_fields=self.strategy.plottables["indicator_fields"],
+                                        plot_contexts=self.strategy.plot_context_candles,
+                                        mpf_custom_kwargs=self.strategy.custom_plot_kwargs)
 
     def get_trading_timeslots(self,
                               interval,
