@@ -23,7 +23,11 @@ DEFAULT_MPF_STYLE_KWARGS = {"base_mpf_style": 'yahoo', "rc": {'font.size': 6}}
 
 
 def __animate_live_ohlc_plot(*fargs, ax=None, style=None, get_live_ohlc_func=None,
+                             indicator_fields=None,
                              args=None, kwargs=None):
+    if indicator_fields is None:
+        indicator_fields = []
+
     ax.clear()
     mpf.plot(get_live_ohlc_func(*args, **kwargs),
              ax=ax,
@@ -35,7 +39,9 @@ def live_ohlc_plot(get_live_ohlc_func: callable,
                    args: Optional[tuple] = None,
                    kwargs: Optional[dict] = None,
                    title: str = "Live Data",
-                   interval: float = 250.):
+                   interval: float = 250.,
+                   return_fig: bool = False,
+                   indicator_fields: list[Union[dict, str]] = None):
     if args is None:
         args = ()
     if kwargs is None:
@@ -55,6 +61,8 @@ def live_ohlc_plot(get_live_ohlc_func: callable,
                       get_live_ohlc_func=get_live_ohlc_func,
                       args=args, kwargs=kwargs)
     anim = animation.FuncAnimation(fig, animate, interval=interval)
+    if return_fig:
+        return fig, axes
     mpf.show()
 
 

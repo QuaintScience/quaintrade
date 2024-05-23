@@ -9,20 +9,138 @@
 
 import sys
 import os
+import datetime, time
 import yaml
-
-from PyQt6.QtWidgets import QApplication, QLabel, QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QPushButton, QComboBox, QTabWidget, QListWidget
-
+import logging
+from functools import partial
+import pandas as pd
+from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QPushButton, QComboBox, QTabWidget, QListWidget, QDialogButtonBox, QDialog, QCheckBox, QTextEdit, QTableView, QGridLayout, QRadioButton
+from PyQt5.QtCore import QUrl, QAbstractTableModel, Qt
+from PyQt5.QtGui import QDesktopServices
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
+from lightweight_charts.widgets import QtChart
+
+from jugaad_data.nse import NSELive
+
+from typing import Optional
+from quaintscience.trader.service.common import DataProviderService, BrokerService, Service
+from quaintscience.trader.core.roles import Broker
+from quaintscience.trader.core.bot import Bot
+from quaintscience.trader.core.ds import TradeType
+from quaintscience.trader.core.graphing import live_ohlc_plot
+from quaintscience.trader.core.strategy import Strategy
+from quaintscience.trader.core.indicator import MAIndicator, IndicatorPipeline
+
+INTEGRATIONS = ["Fyers", "Neo"]
+
+
+
+
+class EMAStrategy(Strategy):
+
+    def __init__(self,
+                 *args,
+                 ema_period1: int = 9,
+                 ema_period2: int = 22,
+                 **kwargs):
+        self.ema1 = MAIndicator(period=ema_period1, signal="close", ma_type="EMA")
+        self.ema2 = MAIndicator(period=ema_period2, signal="close", ma_type="EMA")
+        indicators =[
+                    (self.ema1, None, None),
+                    (self.ema2, None, None)
+                    ]
+        indicators = IndicatorPipeline(indicators)
+        kwargs["indicator_pipeline"] = {"window": indicators,
+                                        "context": {}}
+        super().__init__(*args, **kwargs)
+
+    def apply_impl(self,
+                   broker: Broker,
+                   scrip: str,
+                   exchange: str,
+                   window: pd.DataFrame,
+                   context: dict[str, pd.DataFrame]) -> Optional[TradeType]:
+        pass
+
+class TableModel(QAbstractTableModel):
+
+    def __init__(self, data):
+        super(TableModel, self).__init__()
+        self._data = data
+
+    def data(self, index, role):
+        if role == Qt.ItemDataRole.DisplayRole:
+            value = self._data.iloc[index.row(), index.column()]
+            return str(value)
+
+    def rowCount(self, index):
+        return self._data.shape[0]
+
+    def columnCount(self, index):
+        return self._data.shape[1]
+
+    def headerData(self, section, orientation, role):
+        # section is the index of the column/row.
+        if role == Qt.ItemDataRole.DisplayRole:
+            if orientation == Qt.Orientation.Horizontal:
+                return str(self._data.columns[section])
+
+            if orientation == Qt.Orientation.Vertical:
+                return str(self._data.index[section])
+
+
+class NSELiveHandler:
+
+    def __init__(self, cache=".nsecache"):
+        self.nse_live = None
+        self.cache = cache
+        self.data = {}
+        self.__load_cache()
+    
+    def __load_cache(self):
+        self.clear_cache()
+        if os.path.exists(self.cache):
+            with open(self.cache, 'r', encoding='utf-8') as fid:
+                self.data = yaml.safe_load(fid)
+    
+    def get_nse_live(self):
+        if self.nse_live is None:
+            self.nse_live = NSELive()
+        return self.nse_live
+
+    def index_option_chain(self, index):
+        if index not in self.data["index_option_chain"]:
+            res = self.get_nse_live().index_option_chain(index)
+            self.data["index_option_chain"][index] = res
+            self.__save_cache()
+        return self.data["index_option_chain"][index]
+
+    def all_indices(self):
+        if self.data["all_indices"] is None or len(self.data["all_indices"]) == 0:
+            self.data["all_indices"] = self.get_nse_live().all_indices()
+            self.__save_cache()
+        return self.data["all_indices"]
+
+    def __save_cache(self):
+        with open(self.cache, 'w', encoding='utf-8') as fid:
+            yaml.dump(self.data, fid)
+
+    def clear_cache(self):
+        self.data = {"index_option_chain": {}, "all_indices": None}
 
 class ScalperApp():
 
     def __init__(self,
-                 settings_file: str = ".scalper.settings"):
+                 settings_file: str = ".auth.env"):
+        self.logger = logging.getLogger()
+        self.logger.setLevel(logging.DEBUG)
+        self.logger.addHandler(logging.StreamHandler())
         self.settings_file = settings_file
-        self.login_data = {}
+        self.nse_live_handler = NSELiveHandler()
+        self.config = {}
+        self.provider_objs = {}
         self.init()
 
     def init(self) -> None:
@@ -30,54 +148,275 @@ class ScalperApp():
         self.init_data()
         self.refresh_ui()
 
-    
     def init_data(self) -> None:
+        self.logger.debug("init_data called.")
         if os.path.exists(self.settings_file):
+            self.logger.info(f"Found config data in {self.settings_file}")
             with open(self.settings_file, 'r', encoding='utf-8') as fid:
-                self.login_data = yaml.safe_load(fid)
+                self.config = yaml.safe_load(fid)
+                self.provider_objs = dict.fromkeys(self.config["providers"].keys())
+                for k, v in self.provider_objs.items():
+                    self.provider_objs[k] = {}
+        self.logger.info(f"Init config data {self.config}")
 
     def refresh_ui(self) -> None:
-        self.save_login_data_btn.clicked.connect(self.ui_save_login_creds)
-        self.login_providers.changeEvent.connect(self.ui_update_login_details)
+        self.logger.info("refresh_ui called.")
         self.login_btn.clicked.connect(self.ui_perform_login)
-    
-    def ui_save_login_creds(self):
-        api_key = self.api_key.text
-        api_secret = self.api_secret.text
-        provider = self.login_providers.currentText()
-        self.login_data[provider] = {"api_key": api_key, "api_secret": api_secret}
-        with open(self.settings_file, 'w', encoding='utf-8') as fid:
-            yaml.dump(fid, self.login_data)
+        self.index_name.currentIndexChanged.connect(self.ui_update_expiries)
+        self.expiry.currentIndexChanged.connect(self.ui_get_atm_strikes)
+        self.clear_nse_cache_btn.clicked.connect(self.ui_clear_nse_live_cache)
+        self.new_order1l.clicked.connect(partial(self.ui_show_graph, "1l"))
+        self.new_order1r.clicked.connect(partial(self.ui_show_graph, "1r"))
+        self.new_order2l.clicked.connect(partial(self.ui_show_graph, "2l"))
+        self.new_order2r.clicked.connect(partial(self.ui_show_graph, "2r"))
+        self.ui_update_expiries()
+        self.ui_update_provider_states()
 
-    def ui_update_login_details(self):
-        provider = self.login_providers.currentText()
-        if provider in self.login_data:
-            self.api_key.setText(self.login_data[provider]["api_key"])
-            self.api_secret.setText(self.login_data[provider]["api_secret"])
+    def ui_clear_nse_live_cache(self):
+        try:
+            self.nse_live_handler.clear_cache()
+            self.create_message("NSE Cache cleared.")
+        except:
+            self.create_message("NSE Cache could not be cleared.")
+
+    def create_message(self, message: str):
+            dialog = QDialog()
+            ok = QPushButton("OK")
+            layout = QVBoxLayout()
+            message = QLabel(message)
+            layout.addWidget(message)
+            layout.addWidget(ok)
+            ok.clicked.connect(lambda x: dialog.close())
+            dialog.setLayout(layout)
+            dialog.exec()
+
+    def try_login(self, provider: Service):
+        not_ready = False
+        for instruction in provider.login():
+            if isinstance(instruction, bool):
+                not_ready = not instruction
+                break
+            if isinstance(instruction, str):
+                url = QUrl(instruction)
+                QDesktopServices.openUrl(url)
+        provider.init()
+        return not_ready
 
     def ui_perform_login(self):
+        provider = self.login_providers.currentText().lower()
+        if provider not in self.config["providers"]:
+            self.create_message("Provider credentials not found.")
+            return
+        components = self.config["providers"][provider]
+        refresh_cache = self.login_refresh_cache.isChecked()
+        print(f"Refresh cache {refresh_cache}")
+        not_ready = refresh_cache
+        if "historic_data_provider_class" in components:
+            self.provider_objs[provider]["historic"] = DataProviderService(data_path=self.config["data_path"],
+                                                                           DataProviderClass=components["historic_data_provider_class"],
+                                                                           data_provider_login=False,
+                                                                           data_provider_init=False,
+                                                                           instruments=[],
+                                                                           StorageClass=self.config["storage_class"],
+                                                                           data_provider_auth_credentials=components["data_provider_auth_credentials"],
+                                                                           data_provider_auth_cache_filepath=self.config["data_provider_auth_cache_filepath"],
+                                                                           data_provider_reset_auth_cache=not_ready)
+            not_ready = self.try_login(self.provider_objs[provider]["historic"].data_provider)
+            
+        if "streaming_provider_class" in components:
+            self.provider_objs[provider]["live"] = DataProviderService(data_path=self.config["data_path"],
+                                                                       DataProviderClass=components["streaming_provider_class"],
+                                                                       data_provider_login=False,
+                                                                       data_provider_init=False,
+                                                                       instruments=[],
+                                                                       StorageClass=self.config["storage_class"],
+                                                                       data_provider_auth_credentials=components["data_provider_auth_credentials"],
+                                                                       data_provider_auth_cache_filepath=self.config["data_provider_auth_cache_filepath"],
+                                                                       data_provider_reset_auth_cache=not_ready)
+            not_ready = self.try_login(self.provider_objs[provider]["live"].data_provider)
         
+        if "broker_class" in components:
+            self.provider_objs[provider]["broker"] = BrokerService(data_path=self.config["data_path"],
+                                                                   DataProviderClass=components["broker_class"],
+                                                                   data_provider_login=False,
+                                                                   data_provider_init=False,
+                                                                   instruments=[],
+                                                                   StorageClass=self.config["storage_class"],
+                                                                   data_provider_auth_credentials=components["data_provider_auth_credentials"],
+                                                                   data_provider_auth_cache_filepath=self.config["data_provider_auth_cache_filepath"],
+                                                                   data_provider_reset_auth_cache=not_ready)
+            not_ready = self.try_login(self.provider_objs[provider]["broker"].broker)
+        state = "Success"
+        if not_ready:
+            state = "Failure"
+        self.create_message(f"Login state: {state}")
+        self.provider_objs[provider]["state"] = not not_ready
+        self.ui_update_provider_states()
+    
+    def ui_update_provider_states(self):
+        summary = []
+        for provider, obj in self.provider_objs.items():
+            data = {"Name": provider, "H": "N", "L": "N", "B": "N", "State": "N/A"}
+            if "historic" in obj:
+                data["H"] = "Y"
+            if "live" in obj:
+                data["L"] = "Y"
+            if "broker" in obj:
+                                data["B"] = "Y"
+            if "state" in obj:
+                if obj["state"]:
+                    data["State"] = "Logged in"
+                else:
+                    data["State"] = "Login Failed"
+            summary.append(data)
+        self.login_status_list.setModel(TableModel(pd.DataFrame(summary)))
+        self.login_status_list.resizeColumnsToContents()
+
+    def get_some_obj(provider_data: dict):
+        for item in ["historic", "live", "broker"]:
+            if item in provider_data and provider_data[item] is not None:
+                return provider_data[item]
+
+    def ui_update_expiries(self):
+        index = self.index_name.currentText()
+        nifty_options_chain = self.nse_live_handler.index_option_chain(index)
+        expiry_dates = list(map(lambda x: datetime.datetime.strptime(x, "%d-%b-%Y"), nifty_options_chain["records"]["expiryDates"]))
+        expiry_dates = sorted(expiry_dates, key=lambda x: x - datetime.datetime.now())
+        self.expiry.addItems(map(lambda x: x.strftime("%d-%b-%Y"), expiry_dates[:2]))
+        self.ui_get_atm_strikes()
+    
+    def ui_get_atm_strikes(self):
+        self.scrip_list.clear()
+        index = self.index_name.currentText()
+        all_indices = self.nse_live_handler.all_indices()
+        mapper = {"NIFTY": "NIFTY 50", "BANKNIFTY": "NIFTY BANK"}
+        index_info = [item for item in all_indices["data"] if item["index"] == mapper[index]]
+        if len(index_info) == 0:
+            self.create_message(f"Could not find index {index} in nse.com data")
+            return
+        index_info = index_info[0]
+        ltp = index_info["last"]
+        expiry = datetime.datetime.strptime(self.expiry.currentText(), "%d-%b-%Y")
+        opts = []
+        atm = round(ltp/100) * 100
+        if index == "NIFTY":
+            for ii, ty in zip([100, 50], ["ITM1", "ITM2"]):
+                opts.append(f"CE > {ty} > {index}{expiry.strftime('%y%b')}{atm - ii}CE")
+            for ii, ty in zip([0, 50, 100], ["ATM", "OTM1", "OTM2"]):
+                opts.append(f"CE > {ty} > {index}{expiry.strftime('%y%b')}{atm + ii}CE")
+            for ii, ty in zip([100, 50], ["OTM1", "OTM2"]):
+                opts.append(f"PE > {ty} > {index}{expiry.strftime('%y%b')}{atm - ii}PE")
+            for ii, ty in zip([0, 50, 100], ["ATM", "ITM1", "ITM2"]):
+                opts.append(f"PE > {ty} > {index}{expiry.strftime('%y%b')}{atm + ii}PE")
+        elif index == "BANKNIFTY":
+            for ii, ty in zip([200, 100], ["ITM1", "ITM2"]):
+                opts.append(f"CE > {ty} > {index}{expiry.strftime('%y%b')}{atm - ii}CE")
+            for ii, ty in zip([0, 100, 200], ["ATM", "OTM1", "OTM2"]):
+                opts.append(f"CE > {ty} > {index}{expiry.strftime('%y%b')}{atm + ii}CE")
+            for ii, ty in zip([200, 100], ["OTM1", "OTM2"]):
+                opts.append(f"PE > {ty} > {index}{expiry.strftime('%y%b')}{atm - ii}PE")
+            for ii, ty in zip([0, 100, 200], ["ATM", "ITM1", "ITM2"]):
+                opts.append(f"PE > {ty} > {index}{expiry.strftime('%y%b')}{atm + ii}PE")    
+        self.scrip_list.addItems(opts)
+
+    def get_ohlc_data(self):
+        historic_data_provider = self.historic_data_provider.currentText().lower()
+        if historic_data_provider not in self.provider_objs:
+            self.create_message(f"Provider {historic_data_provider} not found in provider objs (Available: {list(self.provider_obj.keys())}). Please report this bug.")
+        if "historic" not in self.provider_objs[historic_data_provider]:
+            self.create_message(f"Provider does not support historic data.")
+            return
+        historic_data_provider = self.provider_objs[historic_data_provider]["historic"]
+        if historic_data_provider is None:
+            self.create_message(f"Historic data provider is not initialized.")
+            return
+        bot  = Bot(None, EMAStrategy(), historic_data_provider.data_provider, online_mode=False, live_data_context_size= 15)
+        recent_data = bot.get_recent_data(instruments=[{"exchange": "NFO", "scrip" : self.scrip_list.currentText().split(">")[2].strip()}])
+        return recent_data[list(recent_data.keys())[0]]["data"]
+
+    def ui_show_graph(self, location):
+        data = self.get_ohlc_data()
+
+        location_idx_map = {"1l" : 0, "1r": 1, "2l": 2, "2r": 3}
+        row_map = {"1l" : 0, "1r": 0, "2l": 1, "2r": 1}
+        col_map = {"1l" : 0, "1r": 1, "2l": 0, "2r": 1}
+        idx = location_idx_map[location]
+        
+        self.graphics_area_layout.removeWidget(self.canvases[idx])
+        self.canvases[idx].deleteLater()
+        # self.canvas = FigureCanvas(fig)
+        # self.nav_bar = NavigationToolbar(self.canvas)
+        # self.graphics_area_layout.addWidget(self.canvas, stretch=3)
+        # self.graphics_area_layout.addWidget(self.nav_bar, stretch=3)
+        scrip = self.scrip_list.currentText()
+        canvas = QWidget()
+        self.figures[idx] = QtChart(canvas)
+        self.figures[idx].legend(True)
+        self.figures[idx].topbar.textbox('symbol', scrip)
+        self.figures[idx].events.click += partial(self.ui_on_graph_click, location, scrip)
+        self.canvases[idx] = self.figures[idx].get_webview()
+        self.figures[idx].set(data)
+        self.graphics_area_layout.addWidget(self.canvases[idx], row_map[location], col_map[location])
+        self.graphics_area_layout.setContentsMargins(0, 0, 0, 0)
+
+    def ui_on_graph_click(self, location, scrip, chart, *args):
+        self.create_order.clear()
+        barindex = args[0]
+        timestamp = args[1]
+        open = args[2]
+        high = args[3]
+        low = args[4]
+        close = args[5]
+        col = "red"
+        if scrip.endswith("CE"):
+            col = "green"
+        action = "BUY" if self.buy_radio.isChecked() else "SELL"
+        tolerance = float(self.tol_edit.text())
+        slippage = float(self.slippage_edit.text())
+        rr = float(self.rr_edit.text())
+        entry_trigger, entry_limit, sl_trigger, sl_limit, target = 0, 0, 0, 0, 0
+        action_col = "green"
+        if action == "BUY":
+            entry_trigger = high + tolerance
+            entry_limit = high + tolerance + slippage
+            sl_trigger = low - tolerance
+            sl_limit = low - tolerance - slippage
+            target = round(low - (high - low) * rr, 1)
+        else:
+            sl_trigger = high + tolerance
+            sl_limit = high + tolerance + slippage
+            entry_trigger = low - tolerance
+            entry_limit = low - tolerance - slippage
+            target = round(high + (high - low) * rr, 1)
+            action_col = "red"
+        lot_size = 25
+        if "BANKNIFTY" in scrip:
+            lot_size = 15
+        elif "NIFTY" in scrip:
+            lot_size = 25
+        max_loss = lot_size * abs(sl_limit - entry_trigger)
+        max_profit = lot_size * abs(target - entry_limit)
+        self.create_order.setText(f'''<b style="display:inline;color:yellow; font_size: 16px">{location.upper()} </b> | <b style="display:inline; font-size: 16px; color:{col}">{scrip}</b> | <b style="color:{action_col}; font-size: 14px">{action}</b><br><b>O:</b> {open}, <b>H:</b> {high}, <b>L:</b> {low}, <b>C:</b> {close}<br><b style="color: blue">ENT</b> SL-LMT TRG: {entry_trigger} LMT: {entry_limit}<br><b style="color: red">SL</b> SL-LMT TRG: {sl_trigger} LMT: {sl_limit} | <b style="color: green">TGT</b> LMT: {target}<br><b style="color:green; font-size: 14px">Max Profit: {max_profit:.1f}</b><br><b style="color:red; font-size: 14px">Max Loss: {max_loss:.1f}</b>''')
 
     def init_ui(self) -> None:
         self.app = QApplication([])
 
         self.window = QWidget()
         self.window.setWindowTitle("Quaint Scalper")
-
         self.login_widget = QWidget()
         self.login_details_layout = QHBoxLayout()
-        self.api_key = QLineEdit()
-        self.api_secret = QLineEdit()
         self.login_btn = QPushButton("Login")
-        self.save_login_data_btn = QPushButton("Save Creds")
+        self.clear_nse_cache_btn = QPushButton("Clear NSE Cache")
         self.login_providers = QComboBox()
-        self.login_providers.addItems(["Fyers", "Zerodha", "Neo"])
+        self.login_providers.addItems(INTEGRATIONS)
+        self.login_refresh_cache = QCheckBox()
+        self.login_details_layout.addWidget(QLabel("Refresh login cache"))
+        self.login_details_layout.addWidget(self.login_refresh_cache)
         self.login_details_layout.addWidget(QLabel("Login"))
         self.login_details_layout.addWidget(self.login_providers)
-        self.login_details_layout.addWidget(self.api_key)
-        self.login_details_layout.addWidget(self.api_secret)
         self.login_details_layout.addWidget(self.login_btn)
-        self.login_details_layout.addWidget(self.save_login_data_btn)
+        self.login_details_layout.addWidget(QLabel("Clear NSE Cache"))
+        self.login_details_layout.addWidget(self.clear_nse_cache_btn)
         self.login_widget.setLayout(self.login_details_layout)
 
         self.side_widget = QListWidget()
@@ -87,8 +426,23 @@ class ScalperApp():
 
         self.login_status_tab = QWidget()
         self.login_status_layout = QVBoxLayout()
-        self.login_status_list = QListWidget()
+        self.login_status_list = QTableView()
         self.logout_button = QPushButton("Logout")
+
+        self.historic_data_provider = QComboBox()
+        self.historic_data_provider.addItems(INTEGRATIONS)
+        self.live_data_provider = QComboBox()
+        self.live_data_provider.addItems(INTEGRATIONS)
+        self.broker = QComboBox()
+        self.broker.addItems(INTEGRATIONS)
+
+        self.login_status_layout.addWidget(QLabel("Historic Data Provider"))
+        self.login_status_layout.addWidget(self.historic_data_provider)
+        self.login_status_layout.addWidget(QLabel("Live Data Provider"))
+        self.login_status_layout.addWidget(self.live_data_provider)
+        self.login_status_layout.addWidget(QLabel("Broker"))
+        self.login_status_layout.addWidget(self.broker)
+        self.login_status_layout.addWidget(QLabel("Login status of providers"))
         self.login_status_layout.addWidget(self.login_status_list)
         self.login_status_layout.addWidget(self.logout_button)
         self.login_status_tab.setLayout(self.login_status_layout)
@@ -96,20 +450,73 @@ class ScalperApp():
         self.order_tab = QWidget()
         self.order_tab_layout = QVBoxLayout()
 
-        self.orders_list = QListWidget()
+        self.create_order = QTextEdit()
+        self.create_order.setReadOnly(True)
+
+        self.current_order = QTextEdit()
+        self.current_order.setReadOnly(True)
+
         self.modify_order = QPushButton("Modify")
         self.delete_order = QPushButton("Delete")
-        self.scrip_list = QListWidget()
-        self.new_order = QPushButton("New")
+        
+        radio_widget = QWidget()
+        radio_widget_layout = QHBoxLayout()
+        radio_widget.setLayout(radio_widget_layout)
+        self.buy_radio = QRadioButton("BUY")
+        self.buy_radio.action = "BUY"
+        self.buy_radio.setStyleSheet('QRadioButton{font: 20pt Helvetica MS;color: green} QRadioButton::indicator { width: 20px; height: 20px;};')
+        self.sell_radio = QRadioButton("SELL")
+        self.sell_radio.action = "SELL"
+        self.sell_radio.setStyleSheet('QRadioButton{font: 20pt Helvetica MS;color: red} QRadioButton::indicator { width: 20px; height: 20px;};')
+        tol_widget = QWidget()
+        tol_widget_layout = QHBoxLayout()
+        tol_widget.setLayout(tol_widget_layout)
+        self.tol_edit = QLineEdit()
+        self.tol_edit.setText("1")
+        self.slippage_edit = QLineEdit()
+        self.slippage_edit.setText("1")
+        self.rr_edit = QLineEdit()
+        self.rr_edit.setText("2")
+        tol_widget_layout.addWidget(QLabel("Tol"))
+        tol_widget_layout.addWidget(self.tol_edit)
+        tol_widget_layout.addWidget(QLabel("Slip"))
+        tol_widget_layout.addWidget(self.slippage_edit)
+        tol_widget_layout.addWidget(QLabel("RR"))
+        tol_widget_layout.addWidget(self.rr_edit)
+        radio_widget_layout.addWidget(self.buy_radio)
+        radio_widget_layout.addWidget(self.sell_radio)
+        self.index_name = QComboBox()
+        self.index_name.addItems(["NIFTY", "BANKNIFTY"])
+        self.expiry = QComboBox()
 
-        self.order_tab_layout.addWidget(self.orders_list)
+        self.scrip_list = QComboBox()
+        self.new_order1l = QPushButton("1L")
+        self.new_order1r = QPushButton("1R")
+        self.new_order2l = QPushButton("2L")
+        self.new_order2r = QPushButton("2R")
+        self.refresh_scrips = QPushButton("Refresh Scrips")
+        self.order_tab_layout.addWidget(self.create_order)
+        self.order_tab_layout.addWidget(radio_widget)
+        self.order_tab_layout.addWidget(tol_widget)
+        self.order_tab_layout.addWidget(self.current_order)
         self.order_tab_layout.addWidget(self.modify_order)
         self.order_tab_layout.addWidget(self.delete_order)
+        self.order_tab_layout.addWidget(self.index_name)
+        self.order_tab_layout.addWidget(self.expiry)
         self.order_tab_layout.addWidget(self.scrip_list)
-        self.order_tab_layout.addWidget(self.new_order)
+        
+        button_grid = QWidget()
+        button_grid_layout = QGridLayout()
+
+        button_grid_layout.addWidget(self.new_order1l, 0, 0)
+        button_grid_layout.addWidget(self.new_order1r, 0, 1)
+        button_grid_layout.addWidget(self.new_order2l, 1, 0)
+        button_grid_layout.addWidget(self.new_order2r, 1, 1)
+        button_grid.setLayout(button_grid_layout)
+        self.order_tab_layout.addWidget(button_grid)
         self.order_tab.setLayout(self.order_tab_layout)
 
-        self.control_tabs.addTab(self.login_status_tab, "Login")
+        self.control_tabs.addTab(self.login_status_tab, "Setup")
         self.control_tabs.addTab(self.order_tab, "Orders")
 
         self.side_widget_layout.addWidget(self.control_tabs)
@@ -117,18 +524,29 @@ class ScalperApp():
 
         self.working_area = QWidget()
         self.working_area_layout = QHBoxLayout()
-        self.working_area_layout.addWidget(self.side_widget)
+        self.working_area_layout.addWidget(self.side_widget, 1)
+        self.graphics_area = QWidget()
+        self.graphics_area_layout = QGridLayout()
+        self.graphics_area.setLayout(self.graphics_area_layout)
         self.figure = Figure()
         self.canvas = FigureCanvas(self.figure)
-        self.working_area_layout.addWidget(self.canvas, stretch=3)
+        self.figures = []
+        self.canvases = []
+        for ii in range(0, 4):
+            self.figures.append(Figure())
+            self.canvases.append(FigureCanvas(self.figures[-1]))
+        self.working_area_layout.addWidget(self.graphics_area, 3)
         self.working_area.setLayout(self.working_area_layout)
 
-
+        self.graphics_area_layout.addWidget(self.canvases[0], 0, 0)
+        self.graphics_area_layout.addWidget(self.canvases[1], 0, 1)
+        self.graphics_area_layout.addWidget(self.canvases[2], 1, 0)
+        self.graphics_area_layout.addWidget(self.canvases[3], 1, 1)
+        
 
         self.main_layout = QVBoxLayout()
         self.main_layout.addWidget(self.login_widget)
         self.main_layout.addWidget(self.working_area)
-
         self.window.setLayout(self.main_layout)
 
     def run(self) -> None:

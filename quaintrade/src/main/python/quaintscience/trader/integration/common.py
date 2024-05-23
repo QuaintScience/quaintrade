@@ -10,6 +10,7 @@ def get_instrument_for_provider(instrument: dict, provider: TradingServiceProvid
 
 def get_instruments_for_provider(instruments: list[dict], provider: TradingServiceProvider):
     instruments = deepcopy(instruments)
+    print(instruments)
     for ii, instrument in enumerate(instruments):
         instruments[ii] = get_instrument_for_provider(instrument, provider)
     return instruments

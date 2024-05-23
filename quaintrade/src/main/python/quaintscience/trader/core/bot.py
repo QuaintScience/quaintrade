@@ -73,13 +73,15 @@ class Bot(LoggerMixin):
     def get_context(self,
                     data: pd.DataFrame,
                     interval: str):
+        
         rsdata = resample_candle_data(data, interval)
-        rsdata = self.strategy.indicator_pipeline["window"].compute(rsdata)[0]
         context = {}
-        for ctx, pipeline in self.strategy.indicator_pipeline["context"].items():
-            ctx_data = resample_candle_data(data, ctx)
-            ctx_data = pipeline.compute(ctx_data)[0]
-            context[ctx] = ctx_data
+        if self.strategy is not None:
+            rsdata = self.strategy.indicator_pipeline["window"].compute(rsdata)[0]
+            for ctx, pipeline in self.strategy.indicator_pipeline["context"].items():
+                ctx_data = resample_candle_data(data, ctx)
+                ctx_data = pipeline.compute(ctx_data)[0]
+                context[ctx] = ctx_data
         return rsdata, context
 
     def __get_live_data_cache(self, scrip: str,
@@ -492,6 +494,27 @@ class Bot(LoggerMixin):
         all_jobs = schedule.get_jobs()
         self.logger.debug(f"{datetime.datetime.now()}: Pending job status")
         print(tabulate([[str(x.next_run)] for x in all_jobs]), flush=True)
+
+    def get_recent_data(self, instruments, interval="1min"):
+        to_date = datetime.datetime.now().replace(second=0, microsecond=0)
+        from_date = to_date - datetime.timedelta(days=self.live_data_context_size)
+        from_date = from_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        print(f"Get data {from_date} {to_date}")
+        data_provider_instruments = get_instruments_for_provider(instruments,
+                                                                 self.data_provider.__class__)
+        ret_data = {}
+        for ii, instrument in enumerate(data_provider_instruments):
+            scrip, exchange = instrument["scrip"], instrument["exchange"]
+            context, data = self.__get_context_data(scrip=scrip,
+                                                    exchange=exchange,
+                                                    from_date=from_date,
+                                                    to_date=to_date,
+                                                    interval=interval,
+                                                    blend_live_data=True)
+            context = self.pick_relevant_context(context, datetime.datetime.now())
+            ret_data[f"{scrip}:{exchange}"] = {"context": context, "data": data}
+        return ret_data
+
 
     def do_live_trade_task(self,
                            instruments: list[dict[str, str]],

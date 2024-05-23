@@ -39,18 +39,22 @@ class FyersBaseMixin(AuthenticatorMixin):
                     self.auth_state = json.load(fid)
                     self.logger.info(f"Found auth state {self.auth_state}")
                 except Exception:
-                    self.generate_access_token()
+                    for output in self.generate_access_token():
+                        yield output
         else:
-            self.generate_access_token()
-        self.finish_login()
+            for output in self.generate_access_token():
+                yield output
+        yield self.finish_login()
 
     @staticmethod
     def denormalize_instrument(instrument: dict):
         scrip = instrument["scrip"]
         exchange = instrument["exchange"]
         if exchange == "NSE" or exchange == "BSE":
-            if not scrip.endswith("-EQ"):
+            if not scrip.endswith("-EQ") and not scrip.lower().startswith("nifty") and not scrip.lower().startswith("banknifty"):
                 scrip = f'{scrip}-EQ'
+        if exchange == "NFO":
+            exchange = "NSE"
         return {"scrip": scrip, "exchange": exchange}
 
     def generate_access_token(self):
@@ -75,6 +79,8 @@ class FyersBaseMixin(AuthenticatorMixin):
                                              grant_type=grant_type)
         generateTokenUrl = appSession.generate_authcode()
         print(generateTokenUrl, flush=True)
+        yield generateTokenUrl
+        
         response = self.listen_to_login_callback()
         appSession.set_token(response["query_params"]["auth_code"][0])
         response = appSession.generate_token()
@@ -83,6 +89,7 @@ class FyersBaseMixin(AuthenticatorMixin):
         self.auth_state["login_time"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(self.access_token_filepath, 'w', encoding='utf-8') as fid:
             json.dump(self.auth_state, fid)
+        yield True
 
     def finish_login(self):
         try:
@@ -90,9 +97,11 @@ class FyersBaseMixin(AuthenticatorMixin):
                                                 is_async=False,
                                                 client_id=self.auth_credentials["CLIENT_ID"],
                                                 log_path="")
+            return True
         except Exception:
             self.auth_state["state"] = "Login Error"
             self.auth_state["traceback"] = traceback.format_exc()
+            return False
 
     def init(self):
         pass
