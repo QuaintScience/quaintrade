@@ -14,8 +14,8 @@ import yaml
 import logging
 from functools import partial
 import pandas as pd
-from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QPushButton, QComboBox, QTabWidget, QListWidget, QDialogButtonBox, QDialog, QCheckBox, QTextEdit, QTableView, QGridLayout, QRadioButton
-from PyQt5.QtCore import QUrl, QAbstractTableModel, Qt
+from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QPushButton, QComboBox, QTabWidget, QListWidget, QDialogButtonBox, QDialog, QCheckBox, QTextEdit, QTableView, QGridLayout, QRadioButton, QInputDialog
+from PyQt5.QtCore import QUrl, QAbstractTableModel, Qt, QVariant
 from PyQt5.QtGui import QDesktopServices
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
@@ -66,30 +66,28 @@ class EMAStrategy(Strategy):
 
 class TableModel(QAbstractTableModel):
 
-    def __init__(self, data):
+    def __init__(self, data: pd.DataFrame):
         super(TableModel, self).__init__()
         self._data = data
 
-    def data(self, index, role):
-        if role == Qt.ItemDataRole.DisplayRole:
-            value = self._data.iloc[index.row(), index.column()]
-            return str(value)
+    def data(self, index, role=Qt.DisplayRole):
+        if index.isValid():
+            if role == Qt.DisplayRole:
+                return QVariant(str(
+                    self._data.iloc[index.row()][index.column()]))
+        return QVariant()
 
-    def rowCount(self, index):
-        return self._data.shape[0]
+    def rowCount(self, parent=None):
+        return len(self._data.values)
 
-    def columnCount(self, index):
-        return self._data.shape[1]
+    def columnCount(self, parent=None):
+        return self._data.columns.size
+    
 
-    def headerData(self, section, orientation, role):
-        # section is the index of the column/row.
-        if role == Qt.ItemDataRole.DisplayRole:
-            if orientation == Qt.Orientation.Horizontal:
-                return str(self._data.columns[section])
-
-            if orientation == Qt.Orientation.Vertical:
-                return str(self._data.index[section])
-
+    def headerData(self, col, orientation, role):
+        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+            return self._data.columns[col]
+        return None
 
 class NSELiveHandler:
 
@@ -190,6 +188,13 @@ class ScalperApp():
             dialog.setLayout(layout)
             dialog.exec()
 
+    def create_input_dialog(self, message: str):
+        # dialog = QInputDialog()
+        name, done = QInputDialog.getText(self.window, message, message)
+        if done:
+            return name
+        self.create_message("You cancelled the input dialog.")
+
     def try_login(self, provider: Service):
         not_ready = False
         for instruction in provider.login():
@@ -199,6 +204,9 @@ class ScalperApp():
             if isinstance(instruction, str):
                 url = QUrl(instruction)
                 QDesktopServices.openUrl(url)
+            elif isinstance(instruction, dict):
+                data = self.create_input_dialog(f'Enter {instruction["text"]}')
+                provider.auth_inputs[instruction["field"]] = data
         provider.init()
         return not_ready
 
@@ -218,8 +226,8 @@ class ScalperApp():
                                                                            data_provider_init=False,
                                                                            instruments=[],
                                                                            StorageClass=self.config["storage_class"],
-                                                                           data_provider_auth_credentials=components["data_provider_auth_credentials"],
-                                                                           data_provider_auth_cache_filepath=self.config["data_provider_auth_cache_filepath"],
+                                                                           data_provider_auth_credentials=components["auth_credentials"],
+                                                                           data_provider_auth_cache_filepath=self.config["auth_cache_filepath"],
                                                                            data_provider_reset_auth_cache=not_ready)
             not_ready = self.try_login(self.provider_objs[provider]["historic"].data_provider)
             
@@ -230,21 +238,22 @@ class ScalperApp():
                                                                        data_provider_init=False,
                                                                        instruments=[],
                                                                        StorageClass=self.config["storage_class"],
-                                                                       data_provider_auth_credentials=components["data_provider_auth_credentials"],
-                                                                       data_provider_auth_cache_filepath=self.config["data_provider_auth_cache_filepath"],
+                                                                       data_provider_auth_credentials=components["auth_credentials"],
+                                                                       data_provider_auth_cache_filepath=self.config["auth_cache_filepath"],
                                                                        data_provider_reset_auth_cache=not_ready)
             not_ready = self.try_login(self.provider_objs[provider]["live"].data_provider)
         
         if "broker_class" in components:
             self.provider_objs[provider]["broker"] = BrokerService(data_path=self.config["data_path"],
-                                                                   DataProviderClass=components["broker_class"],
-                                                                   data_provider_login=False,
-                                                                   data_provider_init=False,
+                                                                   BrokerClass=components["broker_class"],
+                                                                   broker_audit_records_path=components["broker_audit_records_path"],
+                                                                   broker_login=False,
+                                                                   broker_init=False,
                                                                    instruments=[],
                                                                    StorageClass=self.config["storage_class"],
-                                                                   data_provider_auth_credentials=components["data_provider_auth_credentials"],
-                                                                   data_provider_auth_cache_filepath=self.config["data_provider_auth_cache_filepath"],
-                                                                   data_provider_reset_auth_cache=not_ready)
+                                                                   broker_auth_credentials=components["auth_credentials"],
+                                                                   broker_auth_cache_filepath=self.config["auth_cache_filepath"],
+                                                                   broker_reset_auth_cache=not_ready)
             not_ready = self.try_login(self.provider_objs[provider]["broker"].broker)
         state = "Success"
         if not_ready:
@@ -254,15 +263,21 @@ class ScalperApp():
         self.ui_update_provider_states()
     
     def ui_update_provider_states(self):
+        self.historic_data_provider.clear()
+        self.live_data_provider.clear()
+        self.broker.clear()
         summary = []
         for provider, obj in self.provider_objs.items():
             data = {"Name": provider, "H": "N", "L": "N", "B": "N", "State": "N/A"}
             if "historic" in obj:
                 data["H"] = "Y"
+                self.historic_data_provider.addItem(provider)
             if "live" in obj:
                 data["L"] = "Y"
+                self.live_data_provider.addItem(provider)
             if "broker" in obj:
-                                data["B"] = "Y"
+                data["B"] = "Y"
+                self.broker.addItem(provider)
             if "state" in obj:
                 if obj["state"]:
                     data["State"] = "Logged in"
@@ -271,6 +286,7 @@ class ScalperApp():
             summary.append(data)
         self.login_status_list.setModel(TableModel(pd.DataFrame(summary)))
         self.login_status_list.resizeColumnsToContents()
+        
 
     def get_some_obj(provider_data: dict):
         for item in ["historic", "live", "broker"]:
@@ -322,7 +338,8 @@ class ScalperApp():
     def get_ohlc_data(self):
         historic_data_provider = self.historic_data_provider.currentText().lower()
         if historic_data_provider not in self.provider_objs:
-            self.create_message(f"Provider {historic_data_provider} not found in provider objs (Available: {list(self.provider_obj.keys())}). Please report this bug.")
+            self.create_message(f"Provider {historic_data_provider} not found in provider objs (Available: {list(self.provider_objs.keys())}). Please report this bug.")
+            return
         if "historic" not in self.provider_objs[historic_data_provider]:
             self.create_message(f"Provider does not support historic data.")
             return
@@ -450,19 +467,79 @@ class ScalperApp():
         self.order_tab = QWidget()
         self.order_tab_layout = QVBoxLayout()
 
-        self.create_order = QTextEdit()
-        self.create_order.setReadOnly(True)
+        #self.create_order = QTextEdit()
+        #self.create_order.setReadOnly(True)
+        self.create_order = QWidget()
+        create_order_layout = QGridLayout()
+        self.create_order.setLayout(create_order_layout)
+        self.entry_order = QLineEdit()
+        self.sl_order = QLineEdit()
+
+        self.target1_order = QLineEdit()
+        self.target2_order = QLineEdit()
+        self.target3_order = QLineEdit()
+        self.entry_order_enabled = QCheckBox()
+        self.entry_lots = QLineEdit()
+        self.entry_lots.setText("1")
+        self.entry_order_enabled.setChecked(True)
+        self.sl_order_enabled = QCheckBox()
+        self.sl_order_enabled.setChecked(True)
+        self.target1_order_enabled = QCheckBox()
+        self.target1_order_enabled.setChecked(True)
+        self.target1_lots = QLineEdit()
+        self.target1_lots.setText("1")
+        self.target2_order_enabled = QCheckBox()
+        self.target2_lots = QLineEdit()
+        self.target3_order_enabled = QCheckBox()
+        self.target3_lots = QLineEdit()
+
+        create_order_layout.addWidget(QLabel("Entry"), 0, 0)
+        create_order_layout.addWidget(self.entry_order, 0, 1)
+        create_order_layout.addWidget(QLabel("Lots"), 0, 2)
+        create_order_layout.addWidget(self.entry_lots, 0, 3)
+        create_order_layout.addWidget(self.entry_order_enabled, 0, 4)
+
+        create_order_layout.addWidget(QLabel("SL"), 1, 0)
+        create_order_layout.addWidget(self.sl_order, 1, 1)
+        create_order_layout.addWidget(self.sl_order_enabled, 1, 2)
+
+        create_order_layout.addWidget(QLabel("Target1"), 2, 0)
+        create_order_layout.addWidget(self.target1_order, 2, 1)
+        create_order_layout.addWidget(QLabel("Lots"), 2, 2)
+        create_order_layout.addWidget(self.target1_lots, 2, 3)
+        create_order_layout.addWidget(self.target1_order_enabled, 2, 4)
+
+        create_order_layout.addWidget(QLabel("Target2"), 3, 0)
+        create_order_layout.addWidget(self.target2_order, 3, 1)
+        create_order_layout.addWidget(QLabel("Lots"), 3, 2)
+        create_order_layout.addWidget(self.target2_lots, 3, 3)
+        create_order_layout.addWidget(self.target2_order_enabled, 3, 4)
+
+        create_order_layout.addWidget(QLabel("Target3"), 4, 0)
+        create_order_layout.addWidget(self.target3_order, 4, 1)
+        create_order_layout.addWidget(QLabel("Lots"), 4, 2)
+        create_order_layout.addWidget(self.target3_lots, 4, 3)
+        create_order_layout.addWidget(self.target3_order_enabled, 4, 4)
+        
+        self.modify_order = QPushButton("MKT Square off")
+
+        self.delete_order = QPushButton("Remove Stoploss")
+        self.delete_order = QPushButton("Remove Targets")
+        
+        self.mtm_value = QLineEdit()
+        self.protect_mtm_button = QPushButton("Protect MTM")
+
+        self.average_down_target = QLineEdit()
+        self.average_down_button = QPushButton("Average Down")
 
         self.current_order = QTextEdit()
         self.current_order.setReadOnly(True)
 
-        self.modify_order = QPushButton("Modify")
-        self.delete_order = QPushButton("Delete")
-        
         radio_widget = QWidget()
         radio_widget_layout = QHBoxLayout()
         radio_widget.setLayout(radio_widget_layout)
         self.buy_radio = QRadioButton("BUY")
+        self.buy_radio.setChecked(True)
         self.buy_radio.action = "BUY"
         self.buy_radio.setStyleSheet('QRadioButton{font: 20pt Helvetica MS;color: green} QRadioButton::indicator { width: 20px; height: 20px;};')
         self.sell_radio = QRadioButton("SELL")
@@ -477,14 +554,19 @@ class ScalperApp():
         self.slippage_edit.setText("1")
         self.rr_edit = QLineEdit()
         self.rr_edit.setText("2")
-        tol_widget_layout.addWidget(QLabel("Tol"))
+        tol_widget_layout.addWidget(QLabel("Filter"))
         tol_widget_layout.addWidget(self.tol_edit)
         tol_widget_layout.addWidget(QLabel("Slip"))
         tol_widget_layout.addWidget(self.slippage_edit)
-        tol_widget_layout.addWidget(QLabel("RR"))
+        tol_widget_layout.addWidget(QLabel("R:R"))
         tol_widget_layout.addWidget(self.rr_edit)
         radio_widget_layout.addWidget(self.buy_radio)
         radio_widget_layout.addWidget(self.sell_radio)
+        
+        self.graphs_tab = QWidget()
+        graphs_tab_layout = QVBoxLayout()
+        self.graphs_tab.setLayout(graphs_tab_layout)
+        
         self.index_name = QComboBox()
         self.index_name.addItems(["NIFTY", "BANKNIFTY"])
         self.expiry = QComboBox()
@@ -501,9 +583,11 @@ class ScalperApp():
         self.order_tab_layout.addWidget(self.current_order)
         self.order_tab_layout.addWidget(self.modify_order)
         self.order_tab_layout.addWidget(self.delete_order)
-        self.order_tab_layout.addWidget(self.index_name)
-        self.order_tab_layout.addWidget(self.expiry)
-        self.order_tab_layout.addWidget(self.scrip_list)
+        self.order_tab.setLayout(self.order_tab_layout)
+
+        graphs_tab_layout.addWidget(self.index_name)
+        graphs_tab_layout.addWidget(self.expiry)
+        graphs_tab_layout.addWidget(self.scrip_list)
         
         button_grid = QWidget()
         button_grid_layout = QGridLayout()
@@ -513,11 +597,11 @@ class ScalperApp():
         button_grid_layout.addWidget(self.new_order2l, 1, 0)
         button_grid_layout.addWidget(self.new_order2r, 1, 1)
         button_grid.setLayout(button_grid_layout)
-        self.order_tab_layout.addWidget(button_grid)
-        self.order_tab.setLayout(self.order_tab_layout)
+        graphs_tab_layout.addWidget(button_grid)
 
         self.control_tabs.addTab(self.login_status_tab, "Setup")
         self.control_tabs.addTab(self.order_tab, "Orders")
+        self.control_tabs.addTab(self.graphs_tab, "Graphs")
 
         self.side_widget_layout.addWidget(self.control_tabs)
         self.side_widget.setLayout(self.side_widget_layout)
