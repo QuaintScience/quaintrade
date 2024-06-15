@@ -11,3 +11,4 @@ do
     export PYTHONPATH=$PYTHONPATH:$(pwd)/${package}/src/main/python
     pip install -r $package/requirements.txt
 done
+export QTWEBENGINE_DISABLE_SANDBOX=1

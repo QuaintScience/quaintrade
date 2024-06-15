@@ -203,7 +203,8 @@ class Bot(LoggerMixin):
         data.sort_index(inplace=True)
         print("Final data")
         print(data)
-        self.logger.info(f"First {data.iloc[0].name} - Latest {data.iloc[-1].name}")
+        if len(data) > 0:
+            self.logger.info(f"First {data.iloc[0].name} - Latest {data.iloc[-1].name}")
         data, context = self.get_context(data, interval)
         #data = resample_candle_data(data, interval)
         return context, data
@@ -245,7 +246,6 @@ class Bot(LoggerMixin):
         data_provider_instrument = get_instrument_for_provider({"scrip": scrip,
                                                                 "exchange": exchange},
                                                                 self.data_provider.__class__)
-        
 
         context, data = None, None
         if self.backtest_type == "standard":

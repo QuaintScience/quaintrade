@@ -119,7 +119,7 @@ class KiteStreamingMixin():
         self.on_order_update_callable = on_order_update
         self.on_error_callable = on_error
 
-    def start_streamer(self):
+    def start(self):
         self.kws = KiteTicker(self.auth_credentials["API_KEY"],
                               self.auth_state["access_token"])
         if self.on_message_callable is not None:
@@ -501,17 +501,7 @@ class KiteBroker(KiteBaseMixin,
                     self.__update_order_from_dct(from_order, order)
 
     def start_order_change_streamer(self):
-        self.start_streamer()
-
-class KiteStreamingDataProvider(KiteBaseMixin, StreamingDataProvider, KiteStreamingMixin):
-
-    ProviderName = "kite"
-
-    def __init__(self, *args, **kwargs):
-        StreamingDataProvider.__init__(self, *args, **kwargs)
-        KiteBaseMixin.__init__(self, *args, **kwargs)
-        kwargs["on_message"] = self.on_message
-        KiteStreamingMixin.__init__(self, *args, **kwargs)
+        self.start()
 
 class KiteStreamingDataProvider(KiteBaseMixin, StreamingDataProvider, KiteStreamingMixin):
 
@@ -560,4 +550,4 @@ class KiteStreamingDataProvider(KiteBaseMixin, StreamingDataProvider, KiteStream
         if isinstance(instruments, dict):
             instruments = [instruments]
         self.ticker_instruments = instruments
-        self.start_streamer()
+        self.start()

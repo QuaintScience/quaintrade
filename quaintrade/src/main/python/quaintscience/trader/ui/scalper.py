@@ -12,9 +12,12 @@ import os
 import datetime, time
 import yaml
 import logging
+import copy
+import traceback
+import threading
 from functools import partial
 import pandas as pd
-from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QPushButton, QComboBox, QTabWidget, QListWidget, QDialogButtonBox, QDialog, QCheckBox, QTextEdit, QTableView, QGridLayout, QRadioButton, QInputDialog
+from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QPushButton, QComboBox, QTabWidget, QListWidget, QDialogButtonBox, QDialog, QCheckBox, QTextEdit, QTableView, QGridLayout, QRadioButton, QInputDialog, QShortcut, QListView
 from PyQt5.QtCore import QUrl, QAbstractTableModel, Qt, QVariant
 from PyQt5.QtGui import QDesktopServices
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -28,10 +31,12 @@ from typing import Optional
 from quaintscience.trader.service.common import DataProviderService, BrokerService, Service
 from quaintscience.trader.core.roles import Broker
 from quaintscience.trader.core.bot import Bot
-from quaintscience.trader.core.ds import TradeType
+from quaintscience.trader.core.ds import TradeType, Order, TransactionType, TradingProduct, OrderType
 from quaintscience.trader.core.graphing import live_ohlc_plot
 from quaintscience.trader.core.strategy import Strategy
 from quaintscience.trader.core.indicator import MAIndicator, IndicatorPipeline
+from quaintscience.trader.integration.nselive import NSELiveHandler
+from pyqttoast import Toast, ToastPreset
 
 INTEGRATIONS = ["Fyers", "Neo"]
 
@@ -89,45 +94,6 @@ class TableModel(QAbstractTableModel):
             return self._data.columns[col]
         return None
 
-class NSELiveHandler:
-
-    def __init__(self, cache=".nsecache"):
-        self.nse_live = None
-        self.cache = cache
-        self.data = {}
-        self.__load_cache()
-    
-    def __load_cache(self):
-        self.clear_cache()
-        if os.path.exists(self.cache):
-            with open(self.cache, 'r', encoding='utf-8') as fid:
-                self.data = yaml.safe_load(fid)
-    
-    def get_nse_live(self):
-        if self.nse_live is None:
-            self.nse_live = NSELive()
-        return self.nse_live
-
-    def index_option_chain(self, index):
-        if index not in self.data["index_option_chain"]:
-            res = self.get_nse_live().index_option_chain(index)
-            self.data["index_option_chain"][index] = res
-            self.__save_cache()
-        return self.data["index_option_chain"][index]
-
-    def all_indices(self):
-        if self.data["all_indices"] is None or len(self.data["all_indices"]) == 0:
-            self.data["all_indices"] = self.get_nse_live().all_indices()
-            self.__save_cache()
-        return self.data["all_indices"]
-
-    def __save_cache(self):
-        with open(self.cache, 'w', encoding='utf-8') as fid:
-            yaml.dump(self.data, fid)
-
-    def clear_cache(self):
-        self.data = {"index_option_chain": {}, "all_indices": None}
-
 class ScalperApp():
 
     def __init__(self,
@@ -139,6 +105,12 @@ class ScalperApp():
         self.nse_live_handler = NSELiveHandler()
         self.config = {}
         self.provider_objs = {}
+        self.bot = None
+        self.ui_instruments = {"1l" : None, "2l": None, "1r": None, "2r": None}
+        self.location_idx_map = {"1l" : 0, "1r": 1, "2l": 2, "2r": 3}
+        self.row_map = {"1l" : 0, "1r": 0, "2l": 1, "2r": 1}
+        self.col_map = {"1l" : 0, "1r": 1, "2l": 0, "2r": 1}
+        self.chart_update_frequency = 2
         self.init()
 
     def init(self) -> None:
@@ -156,6 +128,8 @@ class ScalperApp():
                 for k, v in self.provider_objs.items():
                     self.provider_objs[k] = {}
         self.logger.info(f"Init config data {self.config}")
+        self.update_chart_data_thread = threading.Thread(target=self.update_chart_data)
+        self.update_chart_data_thread.start()
 
     def refresh_ui(self) -> None:
         self.logger.info("refresh_ui called.")
@@ -167,8 +141,140 @@ class ScalperApp():
         self.new_order1r.clicked.connect(partial(self.ui_show_graph, "1r"))
         self.new_order2l.clicked.connect(partial(self.ui_show_graph, "2l"))
         self.new_order2r.clicked.connect(partial(self.ui_show_graph, "2r"))
+        self.place_order_shortcut.activated.connect(self.ui_place_order)
+        self.buy_shortcut.activated.connect(partial(self.ui_select_action, "buy"))
+        self.sell_shortcut.activated.connect(partial(self.ui_select_action, "sell")) 
+        self.refresh_shortcut.activated.connect(partial(self.ui_refresh_broker_info))
         self.ui_update_expiries()
         self.ui_update_provider_states()
+
+    def get_broker(self) -> BrokerService:
+        broker_provider = self.broker.currentText()
+
+        if broker_provider not in self.provider_objs:
+            self.create_message(f"Provider {broker_provider} not found in provider objs (Available: {list(self.provider_objs.keys())}). Please report this bug.")
+            return
+        if "broker" not in self.provider_objs[broker_provider]:
+            self.create_message(f"Provider does not support broker.")
+            return
+        broker = self.provider_objs[broker_provider]["broker"]
+        if broker is None:
+            self.create_message(f"Broker is not initialized.")
+            return
+        return broker
+
+    def ui_refresh_broker_info(self):
+        self.create_message("Refresh info shortcut pressed.")
+        broker = self.get_broker()
+        if broker is None:
+            return
+        orders = []
+        try:
+            orders = broker.broker.get_orders()
+        except IOError:
+            exc = traceback.format_exc()
+            self.create_message("Broker did not work properly when fetching orders: {exc}")
+        table_data = []
+        for order in orders:
+            table_data.append({"order_type": order.order_type.value,
+                               "scrip": order.scrip,
+                               "quantity": order.quantity,
+                               "limit": order.limit_price,                               
+                               "state": order.state.value,
+                               "trigger": order.trigger_price,
+                               "exchange": order.exchange})
+        self.orders.setModel(TableModel(pd.DataFrame(table_data)))
+        self.orders.resizeColumnsToContents()
+        positions = []
+        try:
+            positions = broker.broker.get_positions()
+        except IOError:
+            exc = traceback.format_exc()
+            self.create_message("Broker did not work properly when fetching positions: {exc}")
+        table_data = []
+        for position in positions:
+            table_data.append({"scip": position.scrip,
+                               "quantity": position.quantity,
+                               "avg_price": position.average_price})
+        self.positions.setModel(TableModel(pd.DataFrame(table_data)))
+        self.positions.resizeColumnsToContents()
+
+    def ui_select_action(self, action: str):
+        if action == "buy":
+            self.buy_radio.setChecked(True)
+            self.sell_radio.setChecked(False)
+        elif action == "sell":
+            self.buy_radio.setChecked(False)
+            self.sell_radio.setChecked(True)
+
+    def get_transaction_type(self):
+        if self.buy_radio.isChecked:
+            return TransactionType.BUY
+        return TransactionType.SELL
+
+    def ui_place_order(self):
+        self.create_message(message="Preparing order.", title="Order")
+        broker = self.get_broker()
+        
+        if broker is None:
+            return
+        scrip = self.scrip_list.currentText()
+        exchange = "NFO"
+        order_params = {"scrip": scrip,
+                        "exchange": exchange,
+                        "exchange_id": exchange,
+                        "scrip_id": scrip,
+                        "transaction_type": self.get_transaction_type()}
+        opposite_tx = TransactionType.BUY
+        if order_params["transaction_type"] == TransactionType.BUY:
+            opposite_tx = TransactionType.SELL
+
+        entry_order_params = copy.deepcopy(order_params)
+        entry_order_params["order_type"] = OrderType.SL_LIMIT
+        entry_order_params["trigger_price"] = float(self.entry_trigger.text())
+        entry_order_params["limit_price"] = float(self.entry_order.text())
+        entry_order_params["quantity"] = int(self.entry_lots.text())
+        entry_order = Order(**entry_order_params)
+        try:
+            entry_order = broker.broker.place_order(entry_order)
+            self.create_message(f"Entry order placed @ {self.entry_trigger.text()} for {self.entry_lots.text()} lots.", title="EntryOrder", preset=ToastPreset.SUCCESS_DARK)
+        except:
+            traceback.print_exc()
+            self.create_message(f"Entry order FAILED @ {self.entry_trigger.text()} for {self.entry_lots.text()} lots.", title="EntryOrder", preset=ToastPreset.ERROR_DARK)
+            return
+        if entry_order is not None:
+            if self.sl_order_enabled.isChecked():
+                sl_order_params = copy.deepcopy(order_params)
+                sl_order_params["order_type"] = OrderType.SL_LIMIT
+                sl_order_params["trigger_price"] = float(self.sl_trigger.text())
+                sl_order_params["limit_price"] = float(self.sl_order.text())
+                sl_order_params["quantity"] = float(self.entry_lots.text())
+                sl_order_params["parent_order_id"] = entry_order.order_id
+                sl_order_params["transaction_type"] = opposite_tx
+                sl_order = Order(**sl_order_params)
+                try:
+                    broker.broker.place_gtt_order(entry_order, sl_order)
+                    self.create_message(f"SL order placed @ {self.sl_trigger.text()} for {self.entry_lots.text()} lots.", title="SlOrder", preset=ToastPreset.SUCCESS_DARK)
+                except:
+                    traceback.print_exc()
+                    self.create_message(f"SL order FAILED @ {self.sl_trigger.text()} for {self.entry_lots.text()} lots.", title="SlOrder", preset=ToastPreset.ERROR_DARK)
+            targets = ["target1", "target2", "target3"]
+            for target in targets:
+                
+                if getattr(self, f"{target}_order_enabled").isChecked():
+                    target_order_params = copy.deepcopy(order_params)
+                    target_order_params["order_type"] = OrderType.LIMIT
+                    target_order_params["limit_price"] = float(getattr(self, f"{target}_order").text())
+                    target_order_params["quantity"] = float(getattr(self, f"{target}_lots").text())
+                    target_order_params["parent_order_id"] = entry_order.order_id
+                    target_order_params["transaction_type"] = opposite_tx
+                    target_order = Order(**target_order_params)
+                    try:
+                        broker.broker.place_gtt_order(entry_order, target_order)
+                        self.create_message(f"Target order placed @ {getattr(self, f'{target}_order').text()} for {getattr(self, f'{target}_lots').text()} lots.", title=f"{target}Order", preset=ToastPreset.SUCCESS_DARK)
+                    except:
+                        traceback.print_exc()
+                        self.create_message(f"Target order FAILED @ {getattr(self, f'{target}_order').text()} for {getattr(self, f'{target}_lots').text()} lots.", title=f"{target}Order", preset=ToastPreset.ERROR_DARK)
 
     def ui_clear_nse_live_cache(self):
         try:
@@ -177,19 +283,28 @@ class ScalperApp():
         except:
             self.create_message("NSE Cache could not be cleared.")
 
-    def create_message(self, message: str):
-            dialog = QDialog()
-            ok = QPushButton("OK")
-            layout = QVBoxLayout()
-            message = QLabel(message)
-            layout.addWidget(message)
-            layout.addWidget(ok)
-            ok.clicked.connect(lambda x: dialog.close())
-            dialog.setLayout(layout)
-            dialog.exec()
+    def create_message(self, message: str, title: str = None, duration: int = 5, preset: ToastPreset = None):
+            toast = Toast(self.window)
+            toast.setDuration(duration * 1000)
+            if title is not None:
+                toast.setTitle(title)
+            toast.setText(message)
+            if preset is not None:
+                toast.applyPreset(preset)
+            else:
+                toast.applyPreset(ToastPreset.INFORMATION_DARK)
+            toast.show()
+            # dialog = QDialog()
+            # ok = QPushButton("OK")
+            # layout = QVBoxLayout()
+            # message = QLabel(message)
+            # layout.addWidget(message)
+            # layout.addWidget(ok)
+            # ok.clicked.connect(lambda x: dialog.close())
+            # dialog.setLayout(layout)
+            # dialog.exec()
 
     def create_input_dialog(self, message: str):
-        # dialog = QInputDialog()
         name, done = QInputDialog.getText(self.window, message, message)
         if done:
             return name
@@ -230,7 +345,7 @@ class ScalperApp():
                                                                            data_provider_auth_cache_filepath=self.config["auth_cache_filepath"],
                                                                            data_provider_reset_auth_cache=not_ready)
             not_ready = self.try_login(self.provider_objs[provider]["historic"].data_provider)
-            
+
         if "streaming_provider_class" in components:
             self.provider_objs[provider]["live"] = DataProviderService(data_path=self.config["data_path"],
                                                                        DataProviderClass=components["streaming_provider_class"],
@@ -261,7 +376,18 @@ class ScalperApp():
         self.create_message(f"Login state: {state}")
         self.provider_objs[provider]["state"] = not not_ready
         self.ui_update_provider_states()
-    
+        self.start_streams(provider)
+
+    def start_streams(self, provider: str):
+        if self.start_streamers.isChecked():
+            provider_obj = self.provider_objs[provider]
+            if "live" in provider_obj and provider_obj["live"] is not None:
+                self.create_message(f"Starting live streamer for {provider}")
+                provider_obj["live"].data_provider.start([])
+            if "broker" in provider_obj and provider_obj["broker"] is not None:
+                self.create_message(f"Starting broker order streamer for {provider}")
+                provider_obj["broker"].broker.start()
+
     def ui_update_provider_states(self):
         self.historic_data_provider.clear()
         self.live_data_provider.clear()
@@ -295,47 +421,23 @@ class ScalperApp():
 
     def ui_update_expiries(self):
         index = self.index_name.currentText()
-        nifty_options_chain = self.nse_live_handler.index_option_chain(index)
-        expiry_dates = list(map(lambda x: datetime.datetime.strptime(x, "%d-%b-%Y"), nifty_options_chain["records"]["expiryDates"]))
-        expiry_dates = sorted(expiry_dates, key=lambda x: x - datetime.datetime.now())
-        self.expiry.addItems(map(lambda x: x.strftime("%d-%b-%Y"), expiry_dates[:2]))
-        self.ui_get_atm_strikes()
+        expiries = self.nse_live_handler.get_expiries(index)
+        self.expiry.clear()
+        self.expiry.addItems(expiries)
+        # self.ui_get_atm_strikes()
     
     def ui_get_atm_strikes(self):
         self.scrip_list.clear()
         index = self.index_name.currentText()
-        all_indices = self.nse_live_handler.all_indices()
-        mapper = {"NIFTY": "NIFTY 50", "BANKNIFTY": "NIFTY BANK"}
-        index_info = [item for item in all_indices["data"] if item["index"] == mapper[index]]
-        if len(index_info) == 0:
-            self.create_message(f"Could not find index {index} in nse.com data")
+        expiry = self.expiry.currentText()
+        if expiry == "":
             return
-        index_info = index_info[0]
-        ltp = index_info["last"]
-        expiry = datetime.datetime.strptime(self.expiry.currentText(), "%d-%b-%Y")
-        opts = []
-        atm = round(ltp/100) * 100
-        if index == "NIFTY":
-            for ii, ty in zip([100, 50], ["ITM1", "ITM2"]):
-                opts.append(f"CE > {ty} > {index}{expiry.strftime('%y%b')}{atm - ii}CE")
-            for ii, ty in zip([0, 50, 100], ["ATM", "OTM1", "OTM2"]):
-                opts.append(f"CE > {ty} > {index}{expiry.strftime('%y%b')}{atm + ii}CE")
-            for ii, ty in zip([100, 50], ["OTM1", "OTM2"]):
-                opts.append(f"PE > {ty} > {index}{expiry.strftime('%y%b')}{atm - ii}PE")
-            for ii, ty in zip([0, 50, 100], ["ATM", "ITM1", "ITM2"]):
-                opts.append(f"PE > {ty} > {index}{expiry.strftime('%y%b')}{atm + ii}PE")
-        elif index == "BANKNIFTY":
-            for ii, ty in zip([200, 100], ["ITM1", "ITM2"]):
-                opts.append(f"CE > {ty} > {index}{expiry.strftime('%y%b')}{atm - ii}CE")
-            for ii, ty in zip([0, 100, 200], ["ATM", "OTM1", "OTM2"]):
-                opts.append(f"CE > {ty} > {index}{expiry.strftime('%y%b')}{atm + ii}CE")
-            for ii, ty in zip([200, 100], ["OTM1", "OTM2"]):
-                opts.append(f"PE > {ty} > {index}{expiry.strftime('%y%b')}{atm - ii}PE")
-            for ii, ty in zip([0, 100, 200], ["ATM", "ITM1", "ITM2"]):
-                opts.append(f"PE > {ty} > {index}{expiry.strftime('%y%b')}{atm + ii}PE")    
+        print("EXpiry", expiry)
+        opts = self.nse_live_handler.get_strikes(index, expiry=expiry)
+        self.scrip_list.clear()
         self.scrip_list.addItems(opts)
 
-    def get_ohlc_data(self):
+    def get_historic_data_provider(self) -> DataProviderService:
         historic_data_provider = self.historic_data_provider.currentText().lower()
         if historic_data_provider not in self.provider_objs:
             self.create_message(f"Provider {historic_data_provider} not found in provider objs (Available: {list(self.provider_objs.keys())}). Please report this bug.")
@@ -347,37 +449,84 @@ class ScalperApp():
         if historic_data_provider is None:
             self.create_message(f"Historic data provider is not initialized.")
             return
-        bot  = Bot(None, EMAStrategy(), historic_data_provider.data_provider, online_mode=False, live_data_context_size= 15)
-        recent_data = bot.get_recent_data(instruments=[{"exchange": "NFO", "scrip" : self.scrip_list.currentText().split(">")[2].strip()}])
+        return historic_data_provider
+
+    def get_ohlc_data(self, scrip: str):
+        historic_data_provider = self.get_historic_data_provider()
+        if historic_data_provider is None:
+            return
+        if self.bot is None:
+            self.bot  = Bot(None, EMAStrategy(), historic_data_provider.data_provider, online_mode=self.online_mode.isChecked(), live_data_context_size= 15)
+        else:
+            self.bot.online_mode = self.online_mode.isChecked()
+        recent_data = self.bot.get_recent_data(instruments=[{"exchange": "NFO", "scrip" : scrip}])
         return recent_data[list(recent_data.keys())[0]]["data"]
 
-    def ui_show_graph(self, location):
-        data = self.get_ohlc_data()
+    def get_live_data_provider(self):
+        live_data_provider = self.live_data_provider.currentText().lower()
+        if live_data_provider not in self.provider_objs:
+            self.create_message(f"Provider {live_data_provider} not found in provider objs (Available: {list(self.provider_objs.keys())}). Please report this bug.")
+            return
+        if "live" not in self.provider_objs[live_data_provider]:
+            self.create_message(f"Provider does not support live data.")
+            return
+        live_data_provider = self.provider_objs[live_data_provider]["live"]
+        if live_data_provider is None:
+            self.create_message(f"Live data provider is not initialized.")
+            return
+        return live_data_provider
 
-        location_idx_map = {"1l" : 0, "1r": 1, "2l": 2, "2r": 3}
-        row_map = {"1l" : 0, "1r": 0, "2l": 1, "2r": 1}
-        col_map = {"1l" : 0, "1r": 1, "2l": 0, "2r": 1}
-        idx = location_idx_map[location]
-        
+    def update_streamer(self, location):
+        if self.start_streamers.isChecked():
+            live_data_provider = self.get_live_data_provider()
+            if live_data_provider is None:
+                return
+            scrip = self.scrip_list.currentText()
+            if self.ui_instruments[location] == scrip:
+                return
+            if self.ui_instruments[location] is not None:
+                live_data_provider.data_provider.unsubscribe([{"scrip": self.ui_instruments[location], "exchange": "NFO"}])
+            self.ui_instruments[location] = scrip
+            live_data_provider.data_provider.subscribe([{"exchange": "NFO", "scrip" : scrip}])
+
+    def update_chart_data(self):
+        while True:
+            if self.start_streamers.isChecked():
+                for location, scrip in self.ui_instruments.items():
+                    if scrip is None:
+                        continue
+                    data = self.get_ohlc_data(scrip)
+                    idx = self.location_idx_map[location]
+                    try:
+                        self.figures[idx].update(data.iloc[-1])
+                    except:
+                        traceback.print_exc()
+            time.sleep(self.chart_update_frequency)
+
+    def ui_show_graph(self, location):
+        scrip = self.scrip_list.currentText()
+        self.update_streamer(location)
+        idx = self.location_idx_map[location]
         self.graphics_area_layout.removeWidget(self.canvases[idx])
         self.canvases[idx].deleteLater()
         # self.canvas = FigureCanvas(fig)
         # self.nav_bar = NavigationToolbar(self.canvas)
         # self.graphics_area_layout.addWidget(self.canvas, stretch=3)
         # self.graphics_area_layout.addWidget(self.nav_bar, stretch=3)
-        scrip = self.scrip_list.currentText()
         canvas = QWidget()
         self.figures[idx] = QtChart(canvas)
         self.figures[idx].legend(True)
         self.figures[idx].topbar.textbox('symbol', scrip)
         self.figures[idx].events.click += partial(self.ui_on_graph_click, location, scrip)
         self.canvases[idx] = self.figures[idx].get_webview()
+        data = self.get_ohlc_data(scrip)
         self.figures[idx].set(data)
-        self.graphics_area_layout.addWidget(self.canvases[idx], row_map[location], col_map[location])
+        self.graphics_area_layout.addWidget(self.canvases[idx], self.row_map[location], self.col_map[location])
         self.graphics_area_layout.setContentsMargins(0, 0, 0, 0)
 
     def ui_on_graph_click(self, location, scrip, chart, *args):
-        self.create_order.clear()
+        print(location, scrip, chart, args)
+
         barindex = args[0]
         timestamp = args[1]
         open = args[2]
@@ -391,29 +540,45 @@ class ScalperApp():
         tolerance = float(self.tol_edit.text())
         slippage = float(self.slippage_edit.text())
         rr = float(self.rr_edit.text())
-        entry_trigger, entry_limit, sl_trigger, sl_limit, target = 0, 0, 0, 0, 0
+        entry_trigger, entry_limit, sl_trigger, sl_limit, target1, target2, target3 = 0, 0, 0, 0, 0, 0, 0
         action_col = "green"
         if action == "BUY":
             entry_trigger = high + tolerance
             entry_limit = high + tolerance + slippage
-            sl_trigger = low - tolerance
-            sl_limit = low - tolerance - slippage
-            target = round(low - (high - low) * rr, 1)
+            sl_trigger = max(low - tolerance, 0)
+            sl_limit = max(low - tolerance - slippage, 0)
+            diff = entry_trigger - sl_trigger
+            target1 = round(high + (diff) * rr, 1)
+            target2 = round(high + (diff) * (rr + 1), 1)
+            target3 = round(high + (diff) * (rr + 2), 1)
         else:
             sl_trigger = high + tolerance
             sl_limit = high + tolerance + slippage
-            entry_trigger = low - tolerance
-            entry_limit = low - tolerance - slippage
-            target = round(high + (high - low) * rr, 1)
+            entry_trigger = max(low - tolerance, 0)
+            entry_limit = max(low - tolerance - slippage, 0)
+            diff = sl_trigger - entry_trigger
+            target1 = round(low - (diff) * rr, 1)
+            target2 = round(low - ((diff) * (rr + 1)), 1)
+            target3 = round(low - ((diff) * (rr + 2)), 1)
             action_col = "red"
         lot_size = 25
         if "BANKNIFTY" in scrip:
             lot_size = 15
         elif "NIFTY" in scrip:
             lot_size = 25
-        max_loss = lot_size * abs(sl_limit - entry_trigger)
-        max_profit = lot_size * abs(target - entry_limit)
-        self.create_order.setText(f'''<b style="display:inline;color:yellow; font_size: 16px">{location.upper()} </b> | <b style="display:inline; font-size: 16px; color:{col}">{scrip}</b> | <b style="color:{action_col}; font-size: 14px">{action}</b><br><b>O:</b> {open}, <b>H:</b> {high}, <b>L:</b> {low}, <b>C:</b> {close}<br><b style="color: blue">ENT</b> SL-LMT TRG: {entry_trigger} LMT: {entry_limit}<br><b style="color: red">SL</b> SL-LMT TRG: {sl_trigger} LMT: {sl_limit} | <b style="color: green">TGT</b> LMT: {target}<br><b style="color:green; font-size: 14px">Max Profit: {max_profit:.1f}</b><br><b style="color:red; font-size: 14px">Max Loss: {max_loss:.1f}</b>''')
+        max_loss = lot_size * abs(sl_limit - entry_limit) * int(self.entry_lots.text())
+        max_profit = lot_size * abs(target1 - entry_trigger) * int(self.entry_lots.text())
+        # self.create_order.setText(f'''<b style="display:inline;color:yellow; font_size: 16px">{location.upper()} </b> | <b style="display:inline; font-size: 16px; color:{col}">{scrip}</b> | <b style="color:{action_col}; font-size: 14px">{action}</b><br><b>O:</b> {open}, <b>H:</b> {high}, <b>L:</b> {low}, <b>C:</b> {close}<br><b style="color: blue">ENT</b> SL-LMT TRG: {entry_trigger} LMT: {entry_limit}<br><b style="color: red">SL</b> SL-LMT TRG: {sl_trigger} LMT: {sl_limit} | <b style="color: green">TGT</b> LMT: {target}<br><b style="color:green; font-size: 14px">Max Profit: {max_profit:.1f}</b><br><b style="color:red; font-size: 14px">Max Loss: {max_loss:.1f}</b>''')
+        self.entry_order.setText(f"{entry_limit:0.2f}")
+        self.sl_order.setText(f"{sl_limit:0.2f}")
+        self.entry_trigger.setText(f"{entry_trigger:0.2f}")
+        self.sl_trigger.setText(f"{sl_trigger:0.2f}")
+        self.target1_order.setText(f"{target1:0.2f}")
+        self.target2_order.setText(f"{target2:0.2f}")
+        self.target3_order.setText(f"{target3:0.2f}")
+
+        self.anticipated_profit.setText(f"{max_profit:.2f}")
+        self.anticipated_loss.setText(f"{max_loss:.2f}")
 
     def init_ui(self) -> None:
         self.app = QApplication([])
@@ -427,8 +592,11 @@ class ScalperApp():
         self.login_providers = QComboBox()
         self.login_providers.addItems(INTEGRATIONS)
         self.login_refresh_cache = QCheckBox()
+        self.start_streamers = QCheckBox()
         self.login_details_layout.addWidget(QLabel("Refresh login cache"))
         self.login_details_layout.addWidget(self.login_refresh_cache)
+        self.login_details_layout.addWidget(QLabel("Start Streamers"))
+        self.login_details_layout.addWidget(self.start_streamers)
         self.login_details_layout.addWidget(QLabel("Login"))
         self.login_details_layout.addWidget(self.login_providers)
         self.login_details_layout.addWidget(self.login_btn)
@@ -463,21 +631,23 @@ class ScalperApp():
         self.login_status_layout.addWidget(self.login_status_list)
         self.login_status_layout.addWidget(self.logout_button)
         self.login_status_tab.setLayout(self.login_status_layout)
+        self.online_mode = QCheckBox("Online Mode")
+        self.login_status_layout.addWidget(self.online_mode)
 
         self.order_tab = QWidget()
         self.order_tab_layout = QVBoxLayout()
 
-        #self.create_order = QTextEdit()
-        #self.create_order.setReadOnly(True)
         self.create_order = QWidget()
         create_order_layout = QGridLayout()
         self.create_order.setLayout(create_order_layout)
         self.entry_order = QLineEdit()
         self.sl_order = QLineEdit()
-
+        self.entry_trigger = QLineEdit()
+        self.sl_trigger = QLineEdit()
         self.target1_order = QLineEdit()
         self.target2_order = QLineEdit()
         self.target3_order = QLineEdit()
+
         self.entry_order_enabled = QCheckBox()
         self.entry_lots = QLineEdit()
         self.entry_lots.setText("1")
@@ -494,14 +664,14 @@ class ScalperApp():
         self.target3_lots = QLineEdit()
 
         create_order_layout.addWidget(QLabel("Entry"), 0, 0)
-        create_order_layout.addWidget(self.entry_order, 0, 1)
+        create_order_layout.addWidget(self.entry_trigger, 0, 1)
         create_order_layout.addWidget(QLabel("Lots"), 0, 2)
         create_order_layout.addWidget(self.entry_lots, 0, 3)
         create_order_layout.addWidget(self.entry_order_enabled, 0, 4)
 
         create_order_layout.addWidget(QLabel("SL"), 1, 0)
-        create_order_layout.addWidget(self.sl_order, 1, 1)
-        create_order_layout.addWidget(self.sl_order_enabled, 1, 2)
+        create_order_layout.addWidget(self.sl_trigger, 1, 1)
+        create_order_layout.addWidget(self.sl_order_enabled, 1, 4)
 
         create_order_layout.addWidget(QLabel("Target1"), 2, 0)
         create_order_layout.addWidget(self.target1_order, 2, 1)
@@ -520,21 +690,25 @@ class ScalperApp():
         create_order_layout.addWidget(QLabel("Lots"), 4, 2)
         create_order_layout.addWidget(self.target3_lots, 4, 3)
         create_order_layout.addWidget(self.target3_order_enabled, 4, 4)
+        self.anticipated_profit = QTextEdit()
+        self.anticipated_profit.setReadOnly(True)
+        self.anticipated_profit.setMaximumHeight(20)
+        self.anticipated_profit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.anticipated_profit.setTextColor(Qt.GlobalColor.green)
+        self.anticipated_loss = QTextEdit()
+        self.anticipated_loss.setMaximumHeight(20)
+        self.anticipated_loss.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.anticipated_loss.setReadOnly(True)
+        self.anticipated_loss.setTextColor(Qt.GlobalColor.red)
+        create_order_layout.addWidget(QLabel("Max Profit"), 5, 0)
+        create_order_layout.addWidget(self.anticipated_profit, 5, 1)
+        create_order_layout.addWidget(QLabel("Max Loss"), 5, 2)
+        create_order_layout.addWidget(self.anticipated_loss, 5, 3)
         
-        self.modify_order = QPushButton("MKT Square off")
-
-        self.delete_order = QPushButton("Remove Stoploss")
-        self.delete_order = QPushButton("Remove Targets")
-        
-        self.mtm_value = QLineEdit()
-        self.protect_mtm_button = QPushButton("Protect MTM")
-
-        self.average_down_target = QLineEdit()
-        self.average_down_button = QPushButton("Average Down")
-
-        self.current_order = QTextEdit()
-        self.current_order.setReadOnly(True)
-
+        self.delete_order = QPushButton("Delete Order")
+        self.orders = QTableView()
+        self.positions = QTableView()
+        self.squareoff_position = QPushButton("Squareoff Position")
         radio_widget = QWidget()
         radio_widget_layout = QHBoxLayout()
         radio_widget.setLayout(radio_widget_layout)
@@ -562,7 +736,12 @@ class ScalperApp():
         tol_widget_layout.addWidget(self.rr_edit)
         radio_widget_layout.addWidget(self.buy_radio)
         radio_widget_layout.addWidget(self.sell_radio)
-        
+        self.place_order_shortcut = QShortcut("Ctrl+Shift+A", self.window)
+        self.buy_shortcut = QShortcut("Ctrl+Shift+B", self.window)
+        self.sell_shortcut = QShortcut("Ctrl+Shift+S", self.window)
+        self.refresh_shortcut = QShortcut("Ctrl+Shift+R", self.window)
+        self.update_lots_shortcut = QShortcut("Ctrl+Shift+X", self.window)
+
         self.graphs_tab = QWidget()
         graphs_tab_layout = QVBoxLayout()
         self.graphs_tab.setLayout(graphs_tab_layout)
@@ -580,9 +759,10 @@ class ScalperApp():
         self.order_tab_layout.addWidget(self.create_order)
         self.order_tab_layout.addWidget(radio_widget)
         self.order_tab_layout.addWidget(tol_widget)
-        self.order_tab_layout.addWidget(self.current_order)
-        self.order_tab_layout.addWidget(self.modify_order)
+        self.order_tab_layout.addWidget(self.orders)
         self.order_tab_layout.addWidget(self.delete_order)
+        self.order_tab_layout.addWidget(self.positions)
+        self.order_tab_layout.addWidget(self.squareoff_position)
         self.order_tab.setLayout(self.order_tab_layout)
 
         graphs_tab_layout.addWidget(self.index_name)

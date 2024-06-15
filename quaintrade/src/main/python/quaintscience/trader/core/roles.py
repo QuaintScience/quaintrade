@@ -173,7 +173,7 @@ class DataProvider(TradingServiceProvider):
             elif storage_type == OHLCStorageType.LIVE:
                 return os.path.join(root, f"{scrip}__{exchange}_live.sqlite")
             else:
-                raise ValueError(f"Cannot find DB for type {storage_type}")
+                raise ValueError(f"Cannot find DB for type {storage_type} [{type(storage_type)}]")
         else:
             raise ValueError(f"Cannot handle storage type {self.StorageClass}")
 
@@ -786,7 +786,7 @@ class Broker(TradingServiceProvider):
                         
                         self.place_order(other_order, refresh_cache=False)
                         continue
-                elif (entry_order.state == OrderState.CANCELLED):
+                elif (entry_order.state == OrderState.CANCELLED or entry_order.state == OrderState.REJECTED):
                     gtt_state_changed = True
                     continue
                 new_gtt_orders.append((entry_order, other_order))

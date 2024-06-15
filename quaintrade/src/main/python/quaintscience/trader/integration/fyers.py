@@ -50,9 +50,14 @@ class FyersBaseMixin(AuthenticatorMixin):
     def denormalize_instrument(instrument: dict):
         scrip = instrument["scrip"]
         exchange = instrument["exchange"]
-        if exchange == "NSE" or exchange == "BSE":
-            if not scrip.endswith("-EQ") and not scrip.lower().startswith("nifty") and not scrip.lower().startswith("banknifty"):
-                scrip = f'{scrip}-EQ'
+        if ">" in scrip:
+            ty, index, loc, strike, expiry = [v.strip() for v in scrip.split(">")]
+            expiry = datetime.datetime.strptime(expiry, "%Y%m%d")
+            scrip = f"{index}{expiry.strftime('%y%-m%d')}{strike}{ty}"
+        else:
+            if exchange == "NSE" or exchange == "BSE":
+                if not scrip.endswith("-EQ") and not scrip.lower().startswith("nifty") and not scrip.lower().startswith("banknifty"):
+                    scrip = f'{scrip}-EQ'
         if exchange == "NFO":
             exchange = "NSE"
         return {"scrip": scrip, "exchange": exchange}
@@ -181,10 +186,22 @@ class FyersStreamingDataProvider(FyersBaseMixin, StreamingDataProvider):
     def __init__(self, *args, **kwargs):
         StreamingDataProvider.__init__(self, *args, **kwargs)
         FyersBaseMixin.__init__(self, *args, **kwargs)
+    
+    def unsubscribe(self, instruments: list[str]):
+        instruments = [self.denormalize_instrument(instrument) for instrument in instruments]
+        ticker_instruments = [f"{instrument['exchange']}:{instrument['scrip']}" for instrument in instruments]
+        self.fws.unsubscribe(ticker_instruments)
+        self.ticker_instruments = list(set(self.ticker_instruments).difference(set(ticker_instruments)))
+    
+    def subscribe(self, instruments: list[str]):
+        instruments = [self.denormalize_instrument(instrument) for instrument in instruments]
+        ticker_instruments = [f"{instrument['exchange']}:{instrument['scrip']}" for instrument in instruments]
+        self.fws.subscribe(ticker_instruments)
+        self.ticker_instruments = list(set(self.ticker_instruments).union(set(ticker_instruments)))
 
     def start(self, instruments: list[str], *args, **kwargs):
-
-        self.ticker_instruments = [f"{instrument['exchange']}:{instrument['scrip']}-EQ" for instrument in instruments]
+        instruments = [self.denormalize_instrument(instrument) for instrument in instruments]
+        self.ticker_instruments = [f"{instrument['exchange']}:{instrument['scrip']}" for instrument in instruments]
 
         self.fws = data_ws.FyersDataSocket(access_token=self.auth_state["access_token"],
                                            log_path="",
@@ -211,6 +228,7 @@ class FyersStreamingDataProvider(FyersBaseMixin, StreamingDataProvider):
         self.logger.info(f"Ticker Websock closed {code} / {reason}.")
 
     def on_message(self, message, *args, **kwargs):
+        print(message)
         if self.kill_tick_thread:
             self.kill_tick_thread = False
             raise KeyError("Killed Tick Thread!")
