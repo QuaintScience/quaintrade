@@ -370,6 +370,8 @@ class NeoBrokerProvider(NeoBaseMixin,
         try:
             resp = self.client.place_order(**order_kwargs)
             print(resp)
+            if "nOrdNo" not in resp:
+                raise ValueError("nOrdNo not found in response")
             order.order_id = resp["nOrdNo"]
         except Exception:
             traceback.print_exc()
@@ -539,7 +541,7 @@ class NeoBrokerProvider(NeoBaseMixin,
                                   transaction_type=self.__reverse_translate_transaction_type(order["trnsTp"]),
                                   raw_dict=order,
                                   state=self.__reverse_translate_order_state(order["ordSt"]),
-                                  timestamp=order["ordDtTm"],
+                                  timestamp=datetime.datetime.strptime(order["ordDtTm"], "%d-%b-%Y %H:%M:%S"),
                                   order_type = self.__reverse_translate_order_type(order["prcTp"]),
                                   product = self.__reverse_translate_product(order["prod"]),
                                   quantity = int(order["qty"]),

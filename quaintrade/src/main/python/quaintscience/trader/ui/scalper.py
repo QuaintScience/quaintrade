@@ -17,7 +17,7 @@ import traceback
 import threading
 from functools import partial
 import pandas as pd
-from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QPushButton, QComboBox, QTabWidget, QListWidget, QDialogButtonBox, QDialog, QCheckBox, QTextEdit, QTableView, QGridLayout, QRadioButton, QInputDialog, QShortcut, QListView
+from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QPushButton, QComboBox, QTabWidget, QListWidget, QDialogButtonBox, QDialog, QCheckBox, QTextEdit, QTableView, QGridLayout, QRadioButton, QInputDialog, QShortcut, QListView, QSpacerItem, QSizePolicy
 from PyQt5.QtCore import QUrl, QAbstractTableModel, Qt, QVariant
 from PyQt5.QtGui import QDesktopServices
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -39,8 +39,6 @@ from quaintscience.trader.integration.nselive import NSELiveHandler
 from pyqttoast import Toast, ToastPreset
 
 INTEGRATIONS = ["Fyers", "Neo"]
-
-
 
 
 class EMAStrategy(Strategy):
@@ -176,13 +174,15 @@ class ScalperApp():
             self.create_message("Broker did not work properly when fetching orders: {exc}")
         table_data = []
         for order in orders:
-            table_data.append({"order_type": order.order_type.value,
+            table_data.append({"timestamp": order.timestamp.strftime("%m %b %H:%M "),
+                               "order_type": order.order_type.value,
                                "scrip": order.scrip,
                                "quantity": order.quantity,
                                "limit": order.limit_price,                               
                                "state": order.state.value,
                                "trigger": order.trigger_price,
                                "exchange": order.exchange})
+        table_data.reverse()
         self.orders.setModel(TableModel(pd.DataFrame(table_data)))
         self.orders.resizeColumnsToContents()
         positions = []
@@ -237,6 +237,8 @@ class ScalperApp():
         entry_order = Order(**entry_order_params)
         try:
             entry_order = broker.broker.place_order(entry_order)
+            if entry_order is None:
+                raise ValueError("Order not placed.")
             self.create_message(f"Entry order placed @ {self.entry_trigger.text()} for {self.entry_lots.text()} lots.", title="EntryOrder", preset=ToastPreset.SUCCESS_DARK)
         except:
             traceback.print_exc()
@@ -585,54 +587,57 @@ class ScalperApp():
 
         self.window = QWidget()
         self.window.setWindowTitle("Quaint Scalper")
-        self.login_widget = QWidget()
-        self.login_details_layout = QHBoxLayout()
+        
+        self.side_widget = QListWidget()
+
+        self.side_widget_layout = QVBoxLayout()
+        self.login_status_tab = QWidget()
+        self.login_status_layout = QVBoxLayout()
+        self.login_status_list = QTableView()
+        self.logout_button = QPushButton("Logout")
+        self.control_tabs = QTabWidget()
         self.login_btn = QPushButton("Login")
         self.clear_nse_cache_btn = QPushButton("Clear NSE Cache")
         self.login_providers = QComboBox()
         self.login_providers.addItems(INTEGRATIONS)
         self.login_refresh_cache = QCheckBox()
         self.start_streamers = QCheckBox()
-        self.login_details_layout.addWidget(QLabel("Refresh login cache"))
-        self.login_details_layout.addWidget(self.login_refresh_cache)
-        self.login_details_layout.addWidget(QLabel("Start Streamers"))
-        self.login_details_layout.addWidget(self.start_streamers)
-        self.login_details_layout.addWidget(QLabel("Login"))
-        self.login_details_layout.addWidget(self.login_providers)
-        self.login_details_layout.addWidget(self.login_btn)
-        self.login_details_layout.addWidget(QLabel("Clear NSE Cache"))
-        self.login_details_layout.addWidget(self.clear_nse_cache_btn)
-        self.login_widget.setLayout(self.login_details_layout)
-
-        self.side_widget = QListWidget()
-
-        self.side_widget_layout = QVBoxLayout()
-        self.control_tabs = QTabWidget()
-
-        self.login_status_tab = QWidget()
-        self.login_status_layout = QVBoxLayout()
-        self.login_status_list = QTableView()
-        self.logout_button = QPushButton("Logout")
-
         self.historic_data_provider = QComboBox()
         self.historic_data_provider.addItems(INTEGRATIONS)
         self.live_data_provider = QComboBox()
         self.live_data_provider.addItems(INTEGRATIONS)
         self.broker = QComboBox()
         self.broker.addItems(INTEGRATIONS)
+        self.online_mode = QCheckBox()
+        login_options_widget = QWidget()
+        login_options_layout = QGridLayout()
+        
+        login_options_layout.addWidget(QLabel("Refresh login cache"), 0, 0)
+        login_options_layout.addWidget(self.login_refresh_cache, 0, 1)
+        login_options_layout.addWidget(QLabel("Start Streamers"), 1, 0)        
+        login_options_layout.addWidget(self.start_streamers, 1, 1)
+        login_options_layout.addWidget(QLabel("Online Mode"), 2, 0)        
+        login_options_layout.addWidget(self.online_mode, 2, 1)
+        login_options_layout.addWidget(self.login_providers, 3, 0)
+        login_options_layout.addWidget(self.login_btn, 3, 1)
+        login_options_widget.setLayout(login_options_layout)
+        login_options_layout.addWidget(QLabel("Clear NSE Cache"), 4, 0)
+        login_options_layout.addWidget(self.clear_nse_cache_btn, 4, 1)
+        login_options_layout.addWidget(QLabel("Historic Data Provider"), 5, 0)
+        login_options_layout.addWidget(self.historic_data_provider, 5, 1)
+        login_options_layout.addWidget(QLabel("Live Data Provider"), 6, 0)
+        login_options_layout.addWidget(self.live_data_provider, 6, 1)
+        login_options_layout.addWidget(QLabel("Broker"), 7, 0)
+        login_options_layout.addWidget(self.broker, 7, 1)
 
-        self.login_status_layout.addWidget(QLabel("Historic Data Provider"))
-        self.login_status_layout.addWidget(self.historic_data_provider)
-        self.login_status_layout.addWidget(QLabel("Live Data Provider"))
-        self.login_status_layout.addWidget(self.live_data_provider)
-        self.login_status_layout.addWidget(QLabel("Broker"))
-        self.login_status_layout.addWidget(self.broker)
+
+        self.login_status_layout.addWidget(login_options_widget)
+        
+        
         self.login_status_layout.addWidget(QLabel("Login status of providers"))
         self.login_status_layout.addWidget(self.login_status_list)
         self.login_status_layout.addWidget(self.logout_button)
         self.login_status_tab.setLayout(self.login_status_layout)
-        self.online_mode = QCheckBox("Online Mode")
-        self.login_status_layout.addWidget(self.online_mode)
 
         self.order_tab = QWidget()
         self.order_tab_layout = QVBoxLayout()
@@ -736,6 +741,7 @@ class ScalperApp():
         tol_widget_layout.addWidget(self.rr_edit)
         radio_widget_layout.addWidget(self.buy_radio)
         radio_widget_layout.addWidget(self.sell_radio)
+
         self.place_order_shortcut = QShortcut("Ctrl+Shift+A", self.window)
         self.buy_shortcut = QShortcut("Ctrl+Shift+B", self.window)
         self.sell_shortcut = QShortcut("Ctrl+Shift+S", self.window)
@@ -743,7 +749,7 @@ class ScalperApp():
         self.update_lots_shortcut = QShortcut("Ctrl+Shift+X", self.window)
 
         self.graphs_tab = QWidget()
-        graphs_tab_layout = QVBoxLayout()
+        graphs_tab_layout = QGridLayout()
         self.graphs_tab.setLayout(graphs_tab_layout)
         
         self.index_name = QComboBox()
@@ -752,9 +758,13 @@ class ScalperApp():
 
         self.scrip_list = QComboBox()
         self.new_order1l = QPushButton("1L")
+        self.new_order1l.setFixedHeight(40)
         self.new_order1r = QPushButton("1R")
+        self.new_order1r.setFixedHeight(40)
         self.new_order2l = QPushButton("2L")
+        self.new_order2l.setFixedHeight(40)
         self.new_order2r = QPushButton("2R")
+        self.new_order2r.setFixedHeight(40)
         self.refresh_scrips = QPushButton("Refresh Scrips")
         self.order_tab_layout.addWidget(self.create_order)
         self.order_tab_layout.addWidget(radio_widget)
@@ -765,20 +775,17 @@ class ScalperApp():
         self.order_tab_layout.addWidget(self.squareoff_position)
         self.order_tab.setLayout(self.order_tab_layout)
 
-        graphs_tab_layout.addWidget(self.index_name)
-        graphs_tab_layout.addWidget(self.expiry)
-        graphs_tab_layout.addWidget(self.scrip_list)
+        graphs_tab_layout.addWidget(self.index_name, 0, 0)
+        graphs_tab_layout.addWidget(self.expiry, 0, 1)
+        graphs_tab_layout.addWidget(self.scrip_list, 1, 0, 1, 2)
         
-        button_grid = QWidget()
-        button_grid_layout = QGridLayout()
 
-        button_grid_layout.addWidget(self.new_order1l, 0, 0)
-        button_grid_layout.addWidget(self.new_order1r, 0, 1)
-        button_grid_layout.addWidget(self.new_order2l, 1, 0)
-        button_grid_layout.addWidget(self.new_order2r, 1, 1)
-        button_grid.setLayout(button_grid_layout)
-        graphs_tab_layout.addWidget(button_grid)
-
+        graphs_tab_layout.addWidget(self.new_order1l, 2, 0)
+        graphs_tab_layout.addWidget(self.new_order1r, 2, 1)
+        graphs_tab_layout.addWidget(self.new_order2l, 3, 0)
+        graphs_tab_layout.addWidget(self.new_order2r, 3, 1)
+        spacer = QSpacerItem(10, 20, vPolicy=QSizePolicy.Policy.Expanding)
+        graphs_tab_layout.addItem(spacer, 4, 0)
         self.control_tabs.addTab(self.login_status_tab, "Setup")
         self.control_tabs.addTab(self.order_tab, "Orders")
         self.control_tabs.addTab(self.graphs_tab, "Graphs")
@@ -805,11 +812,9 @@ class ScalperApp():
         self.graphics_area_layout.addWidget(self.canvases[0], 0, 0)
         self.graphics_area_layout.addWidget(self.canvases[1], 0, 1)
         self.graphics_area_layout.addWidget(self.canvases[2], 1, 0)
-        self.graphics_area_layout.addWidget(self.canvases[3], 1, 1)
-        
+        self.graphics_area_layout.addWidget(self.canvases[3], 1, 1)        
 
         self.main_layout = QVBoxLayout()
-        self.main_layout.addWidget(self.login_widget)
         self.main_layout.addWidget(self.working_area)
         self.window.setLayout(self.main_layout)
 
