@@ -32,6 +32,7 @@ class SqliteOHLCStorage(SqliteStorage, OHLCStorageMixin):
         table_name = self.create_tables(scrip, exchange,
                                         conflict_resolution_type=conflict_resolution_type)
         df.to_sql(table_name, con=self.connection, if_exists="append")
+        self.connection.commit()
 
     def get(self, scrip: str, exchange: str,
             from_date: Union[str, datetime.datetime],

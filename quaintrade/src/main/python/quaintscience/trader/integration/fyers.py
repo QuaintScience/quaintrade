@@ -53,7 +53,7 @@ class FyersBaseMixin(AuthenticatorMixin):
         if ">" in scrip:
             ty, index, loc, strike, expiry = [v.strip() for v in scrip.split(">")]
             expiry = datetime.datetime.strptime(expiry, "%Y%m%d")
-            scrip = f"{index}{expiry.strftime('%y%-m%d')}{strike}{ty}"
+            scrip = f"{index}{expiry.strftime('%y%b').upper()}{strike}{ty}"
         else:
             if exchange == "NSE" or exchange == "BSE":
                 if not scrip.endswith("-EQ") and not scrip.lower().startswith("nifty") and not scrip.lower().startswith("banknifty"):

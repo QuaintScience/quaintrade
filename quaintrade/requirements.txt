@@ -4,4 +4,4 @@ mplfinance==0.12.10b0
 pandas==2.1.2
 pytz==2023.3.post1
 redis==5.0.1
-TA_Lib==0.4.28
+TA_Lib==0.4.31
