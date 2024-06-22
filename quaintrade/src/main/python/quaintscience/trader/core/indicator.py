@@ -2,12 +2,8 @@ from abc import ABC, abstractmethod
 from typing import Optional, Union, Tuple
 import datetime
 import copy
-import datetime
-import datetime
 import numpy as np
 import pandas as pd
-import pandas_ta as pd_ta
-import pandas_ta as pd_ta
 import pandas_ta as pd_ta
 import talib
 
@@ -16,14 +12,6 @@ from .logging import LoggerMixin
 
 class Indicator(ABC, LoggerMixin):
 
-    def __init__(self, *args,
-                 setting_attrs: Optional[list[str]] = None,
-                 **kwargs):
-        self.setting_attrs = setting_attrs if setting_attrs is not None else []
-    def __init__(self, *args,
-                 setting_attrs: Optional[list[str]] = None,
-                 **kwargs):
-        self.setting_attrs = setting_attrs if setting_attrs is not None else []
     def __init__(self, *args,
                  setting_attrs: Optional[list[str]] = None,
                  **kwargs):
@@ -136,8 +124,6 @@ class Indicator(ABC, LoggerMixin):
                                          Optional[dict]]:
         for _, column_name in output_column_names.items():
             df[column_name] = df[column_name].astype(float)
-        for _, column_name in output_column_names.items():
-            df[column_name] = df[column_name].astype(float)
         return df
 
     def compute(self, df: pd.DataFrame,
@@ -225,7 +211,6 @@ class SlopeIndicator(Indicator):
         return df
 
 
-class DonchianIndicator(Indicator):
 class DonchianIndicator(Indicator):
 
     def __init__(self, *args, period: int = 15, **kwargs):
@@ -603,8 +588,6 @@ class ChoppinessIndicator(Indicator):
                  period: int = 14,
                  atr_length: int = 1,
                  drift: int = 1,
-                 atr_length: int = 1,
-                 drift: int = 1,
                  **kwargs):
         self.period = period
         self.atr_length = atr_length
@@ -632,12 +615,7 @@ class ChoppinessIndicator(Indicator):
     
 
 class SupertrendIndicator(Indicator):
-class SupertrendIndicator(Indicator):
         
-    def __init__(self,
-                 *args,
-                 period: int = 7,
-                 multiplier: float = 3.0,
     def __init__(self,
                  *args,
                  period: int = 7,

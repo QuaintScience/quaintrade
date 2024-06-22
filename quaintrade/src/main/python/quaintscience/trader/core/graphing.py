@@ -2,7 +2,6 @@ from functools import partial
 from typing import Optional, Union
 import copy
 import datetime
-import datetime
 import numpy as np
 import pandas as pd
 
@@ -15,10 +14,6 @@ from matplotlib.widgets import MultiCursor
 from .ds import TransactionType
 from .util import resample_candle_data
 
-#matplotlib.use('TkAgg')
-matplotlib.use('qtagg')
-#matplotlib.use('GTK4Agg')
-#matplotlib.use('TkAgg')
 matplotlib.use('qtagg')
 #matplotlib.use('GTK4Agg')
 
@@ -77,7 +72,6 @@ def plot_backtesting_results(df: pd.DataFrame,
                              title: str = "Backtesting Results",
                              events: Optional[pd.DataFrame] = None,
                              make_mpf_style_kwargs: Optional[dict] = None,
-                             plot_contexts: Optional[list[str]] = None,
                              plot_contexts: Optional[list[str]] = None,
                              mpf_custom_kwargs: Optional[dict] = None,
                              custom_addplots: Optional[list] = None,
@@ -199,8 +193,8 @@ def plot_backtesting_results(df: pd.DataFrame,
             addplot_kwargs["type"] = "step"
             addplot_kwargs["secondary_y"] = False
             event_plots.append(mpf.make_addplot(pdata, **addplot_kwargs))
-                pdata = df[field["field"]]
-                fbfield = f"fill_between_{field['field']}"
+                # pdata = df[field["field"]]
+                # fbfield = f"fill_between_{field['field']}"
 
             addplot_kwargs = {"panel": field.get("panel", 1)}
             if "fill_region" in field:

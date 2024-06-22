@@ -378,8 +378,6 @@ class StreamingDataProvider(DataProvider):
                  clear_live_data_cache: bool = True,
                  market_start_hour: int = 9,
                  market_start_minute: int = 15,
-                 market_start_hour: int = 9,
-                 market_start_minute: int = 15,
                  **kwargs):
         self.kill_tick_thread = False
         self.clear_live_data_cache = clear_live_data_cache
@@ -489,7 +487,6 @@ class Broker(TradingServiceProvider):
                  thread_id: str = "1",
                  disable_state_persistence: bool = False,
                  commission_func: Optional[callable] = None,
-                 commission_func: Optional[callable] = None,
                  **kwargs):
         LoggerMixin.__init__(self, *args, **kwargs)
         if isinstance(TradingBookStorageClass, str):
@@ -586,7 +583,6 @@ class Broker(TradingServiceProvider):
                                             f"{other_order.scrip}/{other_order.exchange}/"
                                             f"{other_order.transaction_type}/{other_order.order_type}"
                                             f"{','.join(other_order.tags)} due OCO (Sibling of {order.order_id})")
-                                            f"{','.join(other_order.tags)} due OCO (Sibling of {order.order_id})")
                             self.cancel_order(other_order, refresh_cache=False)
                             self.delete_gtt_orders_for(other_order)
         if state_changed:
@@ -597,19 +593,16 @@ class Broker(TradingServiceProvider):
             state_changed = False
             if (order.group_id is not None
                 and order.state != OrderState.PENDING):
-                and order.state != OrderState.PENDING):
                 #self.logger.info(f"Searching for group members of "
                 #                 f"{order.order_id} (group_id={order.group_id})")
                 for other_order in self.get_orders(refresh_cache=False):
                     if (other_order.group_id == order.group_id
                         and other_order.order_id != order.order_id
                         and other_order.state == OrderState.PENDING):
-                        and other_order.state == OrderState.PENDING):
                         state_changed = True
                         self.logger.info(f"Cancelling order {other_order.order_id[:4]}/"
                                          f"{other_order.scrip}/{other_order.exchange}/"
                                          f"{other_order.transaction_type}/{other_order.order_type}"
-                                         f"{','.join(other_order.tags)} due OCO (Group of {order.group_id})")
                                          f"{','.join(other_order.tags)} due OCO (Group of {order.group_id})")
                         self.cancel_order(other_order, refresh_cache=False)
                         self.delete_gtt_orders_for(other_order)
@@ -637,7 +630,6 @@ class Broker(TradingServiceProvider):
                                      to_order.order_id[:4],
                                      from_order.order_id[:4],
                                      to_order.group_id[:4] if to_order.group_id is not None else "",
-                                     to_order.group_id[:4] if to_order.group_id is not None else "",
                                      to_order.scrip,
                                      to_order.exchange,
                                      to_order.transaction_type,
@@ -650,21 +642,21 @@ class Broker(TradingServiceProvider):
         print(tabulate(printable_orders, headers=headers, tablefmt="double_outline"))
         return printable_orders, headers
 
-    def get_positions_as_table(self) -> (list[list], list):
-        printable_positions = []
-        # print(self.positions)
-        for position in self.get_positions():
-            printable_positions.append([position.timestamp,
-                                        position.scrip,
-                                        position.exchange,
-                                        position.stats["net_quantity"],
-                                        position.average_price,
-                                        position.last_price,
-                                        position.pnl,
-                                        position.charges])
-        headers = ["time", "scrip", "exchange", "qty", "avgP", "LTP", "PnL", "Comm"]
-        print(tabulate(printable_positions, headers=headers, tablefmt="double_outline"))
-        return printable_positions, headers
+    # def get_positions_as_table(self) -> (list[list], list):
+    #     printable_positions = []
+    #     # print(self.positions)
+    #     for position in self.get_positions():
+    #         printable_positions.append([position.timestamp,
+    #                                     position.scrip,
+    #                                     position.exchange,
+    #                                     position.stats["net_quantity"],
+    #                                     position.average_price,
+    #                                     position.last_price,
+    #                                     position.pnl,
+    #                                     position.charges])
+    #     headers = ["time", "scrip", "exchange", "qty", "avgP", "LTP", "PnL", "Comm"]
+    #     print(tabulate(printable_positions, headers=headers, tablefmt="double_outline"))
+    #     return printable_positions, headers
 
     @abstractmethod
     def get_orders(self, refresh_cache: bool = True) -> list[Order]:
@@ -682,7 +674,6 @@ class Broker(TradingServiceProvider):
 
     @abstractmethod
     def update_order(self, order: Order,
-                     local_update: bool = False,
                      local_update: bool = False,
                      refresh_cache: bool = True) -> Order:
         pass

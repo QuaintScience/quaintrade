@@ -22,7 +22,7 @@ from .common import get_instrument_for_provider
 class PaperTraderTimeExceededException(Exception):
     pass
 
->>>>>>> 1e314e13b6fa1d64fdc5ea31562aa7266bece468
+
 @dataclass(kw_only=True)
 class PaperPosition(Position):
     quantity_and_price_history: list[(float, float)] = default_dataclass_field([])

@@ -14,14 +14,11 @@ from tabulate import tabulate
 
 from .ds import OHLCStorageType, TradingProduct
 from .util import resample_candle_data, get_key_from_scrip_and_exchange, new_id, datestring_to_datetime
-from .ds import OHLCStorageType, TradingProduct
-from .util import resample_candle_data, get_key_from_scrip_and_exchange, new_id, datestring_to_datetime
 from .logging import LoggerMixin
 from .roles import Broker, HistoricDataProvider
 from .strategy import Strategy
 from .graphing import plot_backtesting_results
 
-from ..integration.paper import PaperBroker, PaperTraderTimeExceededException
 from ..integration.paper import PaperBroker, PaperTraderTimeExceededException
 from ..integration.common import get_instruments_for_provider, get_instrument_for_provider
 
@@ -35,7 +32,6 @@ class Bot(LoggerMixin):
                  *args,
                  live_data_context_size: int = 60,
                  online_mode: bool = False,
-                 timeslot_offset_seconds: float = -1.0,
                  timeslot_offset_seconds: float = -1.0,
                  live_trading_market_start_hour: int = 9,
                  live_trading_market_start_minute: int = 15,
@@ -158,8 +154,8 @@ class Bot(LoggerMixin):
         self.__one_time_context_download(scrip=scrip,
                                          exchange=exchange,
                                          to_date=to_date_day_begin)
-                           blend_live_data: bool = False,
-                           prefer_live_data: bool = False):
+                        #    blend_live_data: bool = False,
+                        #    prefer_live_data: bool = False):
         to_date_day_begin = to_date.replace(hour=self.live_trading_market_start_hour,
                                             minute=self.live_trading_market_start_minute,
                                             second=0,
@@ -183,7 +179,6 @@ class Bot(LoggerMixin):
             data = self.data_provider.get_data_as_df(scrip=scrip, exchange=exchange,
                                                     from_date=from_date, to_date=to_date,
                                                     interval="1min",
-                                                    interval="1min",
                                                     storage_type=OHLCStorageType.PERM,
                                                     download_missing_data=self.online_mode)
             data["date"] = data.index
@@ -195,7 +190,6 @@ class Bot(LoggerMixin):
                                                              from_date=to_date_day_begin,
                                                              to_date=to_date,
                                                              interval="1min",
-                                                             interval="1min",
                                                              storage_type=OHLCStorageType.PERM,
                                                              download_missing_data=False)
             data_updates["date"] = data_updates.index
@@ -205,6 +199,9 @@ class Bot(LoggerMixin):
                 data = data_updates
             elif len(data_updates) > 0:
                 data = pd.concat([data, data_updates],
+                                  axis=0,
+                                  ignore_index=True,
+                                  sort=False).drop_duplicates(["date"], keep='last')
             print("Data updates using historic data provider")
             print(data_updates)
             if data is None:
@@ -218,7 +215,6 @@ class Bot(LoggerMixin):
         live_data = self.data_provider.get_data_as_df(scrip=scrip, exchange=exchange,
                                                         from_date=to_date_day_begin,
                                                         to_date=to_date,
-                                                        interval="1min",
                                                         interval="1min",
                                                         storage_type=OHLCStorageType.LIVE)
 
@@ -244,11 +240,6 @@ class Bot(LoggerMixin):
                                   axis=0,
                                   ignore_index=True,
                                   sort=False).drop_duplicates(subset='date', keep='last')
-
-                             axis=0,
-                             ignore_index=True,
-                             sort=False).drop_duplicates(["date"],
-                                                         keep='last')
             
             if prefer_live_data:
                 print("Preferring live data for last slot")
@@ -289,7 +280,6 @@ class Bot(LoggerMixin):
                  exchange: str,
                  from_date: Union[str, datetime.datetime],
                  to_date: Union[str, datetime.datetime],
-                 context_from_date: Optional[Union[str, datetime.datetime]] = None,
                  context_from_date: Optional[Union[str, datetime.datetime]] = None,
                  interval: Optional[str] = None,
                  window_size: int = 5,
@@ -549,11 +539,7 @@ class Bot(LoggerMixin):
             next_timeslot = d + datetime.timedelta(minutes=x)
             next_exectime = next_timeslot + datetime.timedelta(seconds=self.timeslot_offset_seconds)
             next_timeslot = next_timeslot.replace(second=0) - datetime.timedelta(seconds=1)
-            next_timeslot = d + datetime.timedelta(minutes=x)
-            next_exectime = next_timeslot + datetime.timedelta(seconds=self.timeslot_offset_seconds)
-            next_timeslot = next_timeslot.replace(second=0) - datetime.timedelta(seconds=1)
             if next_timeslot > start_datetime:
-                res.append((next_timeslot, next_exectime))
                 res.append((next_timeslot, next_exectime))
             x+= interval
         
@@ -604,7 +590,6 @@ class Bot(LoggerMixin):
                                                                  self.data_provider.__class__)
         broker_instruments = get_instrument_for_provider(instruments, self.broker.__class__)
         self.broker.gtt_order_callback(refresh_cache=True)
-        self.broker.gtt_order_callback(refresh_cache=True)
         for ii, instrument in enumerate(data_provider_instruments):
             scrip, exchange = instrument["scrip"], instrument["exchange"]
             context, data = self.__get_context_data(scrip=scrip,
@@ -627,14 +612,9 @@ class Bot(LoggerMixin):
              interval: Optional[str] = None):
 
         for timeslot, exectime in self.get_trading_timeslots(interval):
-        for timeslot, exectime in self.get_trading_timeslots(interval):
                 func = partial(self.do_live_trade_task,
                                instruments=instruments,
                                interval=interval,
-                               running_for_timeslot=timeslot)
-                run_name = f"run-{self.strategy.__class__.__name__}-at-{exectime.strftime('%H:%M')}"
-                schedule.every().day.at(exectime.strftime("%H:%M:%S")).do(func).tag(run_name)
-                
                                running_for_timeslot=timeslot)
                 run_name = f"run-{self.strategy.__class__.__name__}-at-{exectime.strftime('%H:%M')}"
                 schedule.every().day.at(exectime.strftime("%H:%M:%S")).do(func).tag(run_name)
