@@ -3,8 +3,10 @@ from typing import Optional, Union, Tuple
 import datetime
 import copy
 import datetime
+import datetime
 import numpy as np
 import pandas as pd
+import pandas_ta as pd_ta
 import pandas_ta as pd_ta
 import pandas_ta as pd_ta
 import talib
@@ -14,6 +16,10 @@ from .logging import LoggerMixin
 
 class Indicator(ABC, LoggerMixin):
 
+    def __init__(self, *args,
+                 setting_attrs: Optional[list[str]] = None,
+                 **kwargs):
+        self.setting_attrs = setting_attrs if setting_attrs is not None else []
     def __init__(self, *args,
                  setting_attrs: Optional[list[str]] = None,
                  **kwargs):
@@ -220,9 +226,11 @@ class SlopeIndicator(Indicator):
 
 
 class DonchianIndicator(Indicator):
+class DonchianIndicator(Indicator):
 
     def __init__(self, *args, period: int = 15, **kwargs):
         self.period = period
+        kwargs["setting_attrs"] = ["period"]
         kwargs["setting_attrs"] = ["period"]
         super().__init__(*args, **kwargs)
 
@@ -497,6 +505,24 @@ class MAIndicator(Indicator):
                                                                             timeperiod=self.period)
         return df
 
+class SMMAIndicator(Indicator):
+        
+    def __init__(self, *args,
+                 period: int = 22,
+                 **kwargs):
+        self.period = period
+        kwargs["setting_attrs"] = ["period"]
+        self.period = period
+        kwargs["setting_attrs"] = ["period"]
+        super().__init__(*args, **kwargs)
+
+    def compute_impl(self, df: pd.DataFrame,
+                output_column_names: dict[str, str],
+                settings: dict) -> pd.DataFrame:
+        df[output_column_names["MA"]] = getattr(talib, settings["ma_type"])(df[settings['signal']],
+                                                                            timeperiod=self.period)
+        return df
+
 
 class ADXIndicator(Indicator):
 
@@ -551,6 +577,8 @@ class RSIIndicator(Indicator):
                  **kwargs):
         self.period = period
         kwargs["setting_attrs"] = ["period"]
+        self.period = period
+        kwargs["setting_attrs"] = ["period"]
         super().__init__(*args, **kwargs)
 
     def get_default_column_names_impl(self,
@@ -575,8 +603,13 @@ class ChoppinessIndicator(Indicator):
                  period: int = 14,
                  atr_length: int = 1,
                  drift: int = 1,
+                 atr_length: int = 1,
+                 drift: int = 1,
                  **kwargs):
         self.period = period
+        self.atr_length = atr_length
+        self.drift = drift
+        kwargs["setting_attrs"] = ["period", "atr_length", "drift"]
         self.atr_length = atr_length
         self.drift = drift
         kwargs["setting_attrs"] = ["period", "atr_length", "drift"]
@@ -599,12 +632,20 @@ class ChoppinessIndicator(Indicator):
     
 
 class SupertrendIndicator(Indicator):
+class SupertrendIndicator(Indicator):
         
     def __init__(self,
                  *args,
                  period: int = 7,
                  multiplier: float = 3.0,
+    def __init__(self,
+                 *args,
+                 period: int = 7,
+                 multiplier: float = 3.0,
                  **kwargs):
+        self.period = period
+        self.multiplier = multiplier
+        kwargs["setting_attrs"] = ["period", "multiplier"]
         self.period = period
         self.multiplier = multiplier
         kwargs["setting_attrs"] = ["period", "multiplier"]
@@ -882,6 +923,8 @@ class HeikinAshiIndicator(Indicator):
                                                'volume',
                                                'oi'])
     
+        heikin_ashi_df['close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
+        #heikin_ashi_df['close'] = df["close"]
         heikin_ashi_df['close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
         #heikin_ashi_df['close'] = df["close"]
         
