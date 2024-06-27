@@ -617,7 +617,3 @@ data_provider_auth_credentials:
 ## Contributing
 
 Please contact me on gokul@quaintscience.com with what you'd like to contribute to or with feature requests.
-
-
-## License
-
