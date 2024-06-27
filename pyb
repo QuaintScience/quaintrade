@@ -1,0 +1,21 @@
+#!/bin/bash
+
+if [ -z $1 ]
+then
+	echo "No argument provided. Provide package name"
+	exit 1
+fi
+
+rm -rf $1/target
+export QTRADE_PY_UNITTEST_DATA_DIR=$(pwd)/unittest_resources
+pyb -P package="$1" || true
+
+
+for f in $1/target/reports/TEST*
+do
+    echo ${f}
+    if [ -f ${f} ]
+    then
+        cat ${f}
+    fi
+done
